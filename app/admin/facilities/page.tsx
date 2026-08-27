@@ -584,9 +584,6 @@ export default function AdminFacilitiesPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Manage Health Facilities</h1>
-          <p className="text-xs text-slate-500">
-            Configure ESIC & NHM dispensaries, hospitals, coordinates, and coverage areas.
-          </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">

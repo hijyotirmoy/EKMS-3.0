@@ -207,10 +207,7 @@ export default function ReportsPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">App Reports & Feedback Queue</h1>
-          <p className="text-xs text-slate-500">
-            Monitor reported issues, investigate context, and manage resolution records.
-          </p>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Manage Reports</h1>
         </div>
 
         <div className="flex items-center gap-3">

@@ -44,6 +44,7 @@ import {
   Camera,
   Upload,
   User,
+  GripVertical,
 } from "lucide-react";
 
 export default function AdminTeamsPage() {
@@ -359,6 +360,64 @@ export default function AdminTeamsPage() {
     toast.info("Tier deleted and members moved to Unassigned.");
   };
 
+  // Drag & Drop State
+  const [draggedTierIndex, setDraggedTierIndex] = useState<number | null>(null);
+  const [dragOverTierIndex, setDragOverTierIndex] = useState<number | null>(null);
+  const [draggedUserEmail, setDraggedUserEmail] = useState<string | null>(null);
+  const [dragOverTierId, setDragOverTierId] = useState<string | null>(null);
+
+  // Tier Drag and Drop Reordering
+  const handleTierDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedTierIndex(index);
+    e.dataTransfer.setData("text/tier-index", String(index));
+  };
+
+  const handleTierDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedTierIndex !== null && draggedTierIndex !== index) {
+      setDragOverTierIndex(index);
+    }
+  };
+
+  const handleTierDrop = async (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    setDragOverTierIndex(null);
+    if (draggedTierIndex === null || draggedTierIndex === dropIndex) return;
+
+    const reordered = [...orgTiers];
+    const [moved] = reordered.splice(draggedTierIndex, 1);
+    reordered.splice(dropIndex, 0, moved);
+
+    setOrgTiers(reordered);
+    setDraggedTierIndex(null);
+    await saveTiersToDb(reordered);
+    toast.success("Tier order updated.");
+  };
+
+  // User Drag & Drop Reassignment
+  const handleUserDragStart = (e: React.DragEvent, email: string) => {
+    e.stopPropagation();
+    setDraggedUserEmail(email);
+    e.dataTransfer.setData("text/user-email", email);
+  };
+
+  const handleUserDropOnTier = async (e: React.DragEvent, targetTierId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverTierId(null);
+
+    const email = e.dataTransfer.getData("text/user-email") || draggedUserEmail;
+    if (!email) return;
+
+    // Optimistic local state update
+    setUsers((prev) =>
+      prev.map((u) => (u.email.toLowerCase() === email.toLowerCase() ? { ...u, orgTier: targetTierId } : u))
+    );
+    setDraggedUserEmail(null);
+
+    await handleMoveUserTier(email, targetTierId);
+  };
+
   // Format birthday date display e.g. "Oct 12"
   const formatBirthday = (dobString?: string) => {
     if (!dobString) return null;
@@ -380,9 +439,6 @@ export default function AdminTeamsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Admin Team Management</h1>
-          <p className="text-xs text-slate-500">
-            Manage agents, supervisors, profile photos, birthdays, and organogram hierarchy.
-          </p>
         </div>
 
         <button
@@ -582,149 +638,249 @@ export default function AdminTeamsPage() {
       )}
 
       {/* ----------------------------------------------------
-          TAB 2: ORGANOGRAM SITEMAP BUILDER
+          TAB 2: ORGANOGRAM SITEMAP BUILDER (DRAG & DROP)
           ---------------------------------------------------- */}
       {activeTab === "organogram" && (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-500">
-              Assign team members to hierarchy tiers. Changes synchronize live to database.
-            </span>
+        <div className="space-y-6 animate-in fade-in duration-150">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <p className="text-xs text-slate-500">
+              Drag &amp; drop any member card to reassign tiers, or drag tiers by the handle to reorder hierarchy.
+            </p>
             <button
               onClick={() => {
                 setEditTierId(null);
                 setTierName("");
                 setCatModalOpen(true);
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold shadow-xs"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold shadow-xs self-start"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Add Tier</span>
             </button>
           </div>
 
-          <div className="space-y-4">
-            {orgTiers.map((tier) => {
+          <div className="space-y-6">
+            {orgTiers.map((tier, idx) => {
               const tierMembers = users.filter((u) => u.orgTier === tier.id);
+              const isOverThisTier = dragOverTierId === tier.id;
+              const isDraggingThisTier = draggedTierIndex === idx;
 
               return (
-                <div key={tier.id} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <Layers className="w-4 h-4 text-blue-600" />
-                      <h3 className="font-bold text-slate-900 text-sm">{tier.name}</h3>
-                      <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-bold">
-                        {tierMembers.length}
-                      </span>
-                    </div>
+                <div key={tier.id} className="relative">
+                  {/* Visual tree connecting pipe */}
+                  {idx > 0 && (
+                    <div className="w-0.5 h-6 bg-slate-300 mx-auto -mt-6 mb-3 rounded-full" />
+                  )}
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setEditTierId(tier.id);
-                          setTierName(tier.name);
-                          setCatModalOpen(true);
-                        }}
-                        className="p-1 text-slate-400 hover:text-blue-600 hover:bg-slate-50 rounded"
-                        title="Rename Tier"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteTier(tier.id)}
-                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded"
-                        title="Delete Tier"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {tierMembers.length === 0 ? (
-                      <div className="col-span-full py-4 text-center text-slate-300 text-xs italic">
-                        No members assigned to this tier.
-                      </div>
-                    ) : (
-                      tierMembers.map((m) => (
+                  <div
+                    draggable
+                    onDragStart={(e) => handleTierDragStart(e, idx)}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      handleTierDragOver(e, idx);
+                    }}
+                    onDrop={(e) => {
+                      if (e.dataTransfer.getData("text/tier-index")) {
+                        handleTierDrop(e, idx);
+                      } else {
+                        handleUserDropOnTier(e, tier.id);
+                      }
+                    }}
+                    onDragEnter={() => setDragOverTierId(tier.id)}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                        setDragOverTierId(null);
+                      }
+                    }}
+                    className={`bg-white border rounded-2xl p-5 shadow-xs transition-all ${
+                      isDraggingThisTier
+                        ? "opacity-50 border-dashed border-blue-400"
+                        : isOverThisTier
+                        ? "ring-2 ring-blue-500 border-blue-400 bg-blue-50/30"
+                        : "border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    {/* Tier Header with Drag Handle */}
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                      <div className="flex items-center gap-2">
                         <div
-                          key={m.email}
-                          className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                          className="cursor-grab active:cursor-grabbing p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded"
+                          title="Drag to reorder tier"
                         >
-                          <div className="flex items-center gap-2.5 truncate">
-                            <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center overflow-hidden shrink-0">
-                              {m.photoURL ? (
-                                <img src={m.photoURL} alt="Avatar" className="w-full h-full object-cover" />
-                              ) : (
-                                (m.displayName || m.name || m.email).charAt(0).toUpperCase()
-                              )}
-                            </div>
-                            <div className="truncate">
-                              <div className="font-bold text-slate-900 truncate">{m.displayName || m.name}</div>
-                              <div className="text-[10px] text-slate-400 truncate">{m.role}</div>
-                            </div>
-                          </div>
-
-                          <select
-                            value={m.orgTier || ""}
-                            onChange={(e) => handleMoveUserTier(m.email, e.target.value)}
-                            className="text-[10px] bg-white border border-slate-200 rounded px-1 py-0.5 font-semibold text-slate-600 outline-none"
-                          >
-                            <option value="unassigned">Unassign</option>
-                            {orgTiers.map((t) => (
-                              <option key={t.id} value={t.id}>
-                                {t.name}
-                              </option>
-                            ))}
-                          </select>
+                          <GripVertical className="w-4 h-4" />
                         </div>
-                      ))
-                    )}
+                        <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />
+                        <h3 className="font-bold text-slate-900 text-sm tracking-tight">{tier.name}</h3>
+                        <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded-full text-[10px] font-bold">
+                          {tierMembers.length} {tierMembers.length === 1 ? "member" : "members"}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            setEditTierId(tier.id);
+                            setTierName(tier.name);
+                            setCatModalOpen(true);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-slate-50 rounded-lg transition-colors"
+                          title="Rename Tier"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTier(tier.id)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                          title="Delete Tier"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Member Cards Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                      {tierMembers.length === 0 ? (
+                        <div className="col-span-full py-8 text-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                          <p className="text-xs font-semibold text-slate-400">
+                            Drag and drop team members here to assign to this tier
+                          </p>
+                        </div>
+                      ) : (
+                        tierMembers.map((m) => {
+                          const avatar =
+                            m.photoURL || (m as any).avatarUrl || (m as any).profilePhoto || (m as any).profileImage;
+                          const isBeingDragged = draggedUserEmail === m.email;
+
+                          return (
+                            <div
+                              key={m.email}
+                              draggable
+                              onDragStart={(e) => handleUserDragStart(e, m.email)}
+                              className={`flex items-center justify-between p-3 bg-white border border-slate-200 hover:border-blue-300 rounded-xl text-xs shadow-2xs hover:shadow-md transition-all cursor-grab active:cursor-grabbing group ${
+                                isBeingDragged ? "opacity-40 scale-95 border-dashed" : ""
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                <GripVertical className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 shrink-0" />
+                                <div className="w-8 h-8 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
+                                  {avatar ? (
+                                    <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
+                                  ) : (
+                                    (m.displayName || m.name || m.email).charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-bold text-slate-900 truncate">
+                                    {m.displayName || m.name || "Agent"}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 truncate">{m.role || "Agent"}</div>
+                                </div>
+                              </div>
+
+                              <select
+                                value={m.orgTier || ""}
+                                onChange={(e) => handleMoveUserTier(m.email, e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 font-semibold text-slate-700 outline-none hover:bg-slate-100 shrink-0 ml-1"
+                              >
+                                <option value="unassigned">Unassign</option>
+                                {orgTiers.map((t) => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
                   </div>
                 </div>
               );
             })}
 
-            {/* Unassigned Bucket */}
+            {/* Unassigned Members Bucket */}
             {(() => {
               const unassigned = users.filter((u) => !u.orgTier || u.orgTier === "unassigned");
-              if (unassigned.length === 0) return null;
+              const isOverUnassigned = dragOverTierId === "unassigned";
 
               return (
-                <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-5 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-bold text-slate-600 text-xs uppercase tracking-wider">
-                      Unassigned Members ({unassigned.length})
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragOverTierId("unassigned");
+                  }}
+                  onDragLeave={() => setDragOverTierId(null)}
+                  onDrop={(e) => handleUserDropOnTier(e, "unassigned")}
+                  className={`border-2 border-dashed rounded-2xl p-5 space-y-3 transition-all ${
+                    isOverUnassigned
+                      ? "ring-2 ring-amber-500 border-amber-400 bg-amber-50/40"
+                      : "border-slate-300 bg-slate-50/70"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold text-slate-700 text-xs uppercase tracking-wider flex items-center gap-2">
+                      <span>Unassigned Members</span>
+                      <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-full text-[10px] font-bold">
+                        {unassigned.length}
+                      </span>
                     </h3>
+                    <span className="text-[11px] text-slate-400">Drag members here to unassign</span>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {unassigned.map((m) => (
-                      <div
-                        key={m.email}
-                        className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl text-xs shadow-2xs"
-                      >
-                        <div className="flex items-center gap-2 truncate">
-                          <div className="w-6 h-6 rounded-full bg-slate-200 text-slate-600 font-bold text-[10px] flex items-center justify-center shrink-0">
-                            {(m.displayName || m.name || m.email).charAt(0).toUpperCase()}
-                          </div>
-                          <span className="font-semibold text-slate-800 truncate">{m.displayName || m.name}</span>
-                        </div>
-
-                        <select
-                          value="unassigned"
-                          onChange={(e) => handleMoveUserTier(m.email, e.target.value)}
-                          className="text-[10px] bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 font-semibold text-blue-600 outline-none"
-                        >
-                          <option value="unassigned">Assign Tier...</option>
-                          {orgTiers.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                            </option>
-                          ))}
-                        </select>
+                    {unassigned.length === 0 ? (
+                      <div className="col-span-full py-4 text-center text-xs text-slate-400 italic">
+                        All members have been assigned to hierarchy tiers.
                       </div>
-                    ))}
+                    ) : (
+                      unassigned.map((m) => {
+                        const avatar =
+                          m.photoURL || (m as any).avatarUrl || (m as any).profilePhoto || (m as any).profileImage;
+                        const isBeingDragged = draggedUserEmail === m.email;
+
+                        return (
+                          <div
+                            key={m.email}
+                            draggable
+                            onDragStart={(e) => handleUserDragStart(e, m.email)}
+                            className={`flex items-center justify-between p-3 bg-white border border-slate-200 hover:border-amber-400 rounded-xl text-xs shadow-2xs hover:shadow-md transition-all cursor-grab active:cursor-grabbing group ${
+                              isBeingDragged ? "opacity-40 scale-95 border-dashed" : ""
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <GripVertical className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 shrink-0" />
+                              <div className="w-7 h-7 rounded-full bg-slate-200 text-slate-600 font-bold text-[10px] flex items-center justify-center overflow-hidden shrink-0">
+                                {avatar ? (
+                                  <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
+                                ) : (
+                                  (m.displayName || m.name || m.email).charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <span className="font-semibold text-slate-800 truncate">
+                                {m.displayName || m.name || "Agent"}
+                              </span>
+                            </div>
+
+                            <select
+                              value="unassigned"
+                              onChange={(e) => handleMoveUserTier(m.email, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[10px] bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 font-semibold text-blue-600 outline-none hover:bg-slate-100 shrink-0 ml-1"
+                            >
+                              <option value="unassigned">Assign...</option>
+                              {orgTiers.map((t) => (
+                                <option key={t.id} value={t.id}>
+                                  {t.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
               );

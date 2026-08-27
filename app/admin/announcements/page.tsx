@@ -125,7 +125,7 @@ export default function AdminAnnouncementsPage() {
     <div className="space-y-8 animate-in fade-in duration-200">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Broadcast Announcements</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Announcements</h1>
         </div>
 
         <button
