@@ -145,7 +145,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
                     ESIC KMS
                   </span>
                   <span className="text-[9px] uppercase tracking-wider font-semibold text-blue-600 hidden md:block">
-                    Knowledge Management
+                    Knowledge Management System
                   </span>
                 </div>
               </Link>

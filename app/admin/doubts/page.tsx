@@ -151,7 +151,7 @@ export default function AdminDoubtsPage() {
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Manage Community Doubts</h1>
+        <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Manage Doubts</h1>
       </div>
 
       {/* 4 KPI Metrics */}

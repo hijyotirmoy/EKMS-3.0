@@ -327,7 +327,7 @@ export default function AdminOverviewPage() {
             ---------------------------------------------------- */
         <div className="space-y-8">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Master Overview</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h1>
           </div>
 
           {/* 12 Metric Counter Cards */}
