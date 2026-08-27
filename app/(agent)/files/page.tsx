@@ -95,62 +95,62 @@ export default function FilesPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header with Search & Category Filter in Same Row */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Resource Files Library</h1>
-        </div>
-      </div>
-
-      {/* Filter & Search Bar */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row items-center gap-3">
-        <div className="relative flex-1 w-full">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search documents by title or keyword..."
-            className="w-full pl-10 pr-8 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-          />
-          {searchTerm && (
-            <button
-              onClick={() => setSearchTerm("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              ×
-            </button>
-          )}
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight whitespace-nowrap">Files Library</h1>
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <select
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 outline-none w-full sm:w-auto"
-          >
-            <option value="all">ALL CATEGORIES</option>
-            {categories
-              .filter((c) => c !== "all")
-              .map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat.toUpperCase()}
-                </option>
-              ))}
-          </select>
+        {/* Filter & Search Bar */}
+        <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search documents by title or keyword..."
+              className="w-full pl-10 pr-8 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs font-medium"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 font-bold"
+              >
+                ×
+              </button>
+            )}
+          </div>
 
-          {(selectedCategory !== "all" || searchTerm) && (
-            <button
-              onClick={() => {
-                setSelectedCategory("all");
-                setSearchTerm("");
-              }}
-              className="p-2 border border-slate-200 text-slate-500 hover:bg-slate-50 rounded-xl transition-colors"
-              title="Reset Filters"
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 outline-none w-full sm:w-auto shadow-2xs"
             >
-              <RotateCcw className="w-4 h-4" />
-            </button>
-          )}
+              <option value="all">ALL CATEGORIES</option>
+              {categories
+                .filter((c) => c !== "all")
+                .map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat.toUpperCase()}
+                  </option>
+                ))}
+            </select>
+
+            {(selectedCategory !== "all" || searchTerm) && (
+              <button
+                onClick={() => {
+                  setSelectedCategory("all");
+                  setSearchTerm("");
+                }}
+                className="p-2 bg-white border border-slate-200 text-slate-500 hover:bg-slate-50 rounded-xl transition-colors shadow-2xs"
+                title="Reset Filters"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
