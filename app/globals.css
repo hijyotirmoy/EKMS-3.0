@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --primary-blue: #065fd4;
+    --bg-color: #ffffff;
+    --card-bg: #ffffff;
+    --text-main: #0f0f0f;
+    --text-muted: #606060;
+    --danger: #cc0000;
+    --border-color: #e5e5e5;
+    --hover-bg: #f2f2f2;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-family: var(--font-roboto), Roboto, "Segoe UI", Arial, sans-serif;
+  }
+}
+
+/* Universal Sleek Custom Scrollbars */
+html,
+body,
+*,
+*::before,
+*::after {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 9999px;
+  border: 1.5px solid transparent;
+  background-clip: content-box;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
+
+/* Search Highlighting */
+mark.search-highlight {
+  @apply bg-yellow-300 text-slate-900 px-0.5 rounded-sm font-semibold;
+}
+
+/* Star Rating Radio Button Hack */
+.star-rating-box {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: center;
+  gap: 6px;
+}
+.star-rating-box input {
+  display: none;
+}
+.star-rating-box label {
+  font-size: 28px;
+  color: #d1d5db;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.star-rating-box input:checked ~ label,
+.star-rating-box label:hover,
+.star-rating-box label:hover ~ label {
+  color: #f59e0b;
+}
+
+/* Embedded Q&A Card inside Chapter View */
+.embedded-qa-block {
+  @apply bg-blue-50/60 border border-blue-200 rounded-xl p-5 my-5 shadow-sm transition-shadow relative border-l-4 border-l-blue-600;
+}
+.embedded-qa-block:hover {
+  @apply shadow-md;
+}
+.embedded-qa-badge {
+  @apply flex items-center gap-2.5 mb-2.5 flex-wrap;
+}
+.embedded-qa-code {
+  @apply bg-blue-600 text-white px-2.5 py-0.5 rounded-full text-xs font-bold tracking-wide;
+}
+.embedded-qa-category {
+  @apply bg-indigo-100 text-indigo-800 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+}
+.embedded-qa-question {
+  @apply text-base font-semibold text-slate-900 mb-2 leading-snug;
+}
+.embedded-qa-answer {
+  @apply text-sm text-slate-700 leading-relaxed whitespace-pre-wrap;
+}
+
+/* Rich text editor content */
+.rich-text-content img {
+  @apply max-w-full md:max-w-2xl max-h-96 object-contain block mx-auto my-6 rounded-lg shadow-sm;
+}
+.rich-text-content iframe {
+  @apply w-full aspect-video rounded-lg my-4 border-0 shadow-sm;
+}
+.rich-text-content ol {
+  @apply list-decimal pl-6 my-3 space-y-1;
+}
+.rich-text-content ul {
+  @apply list-disc pl-6 my-3 space-y-1;
+}
+.rich-text-content a {
+  @apply text-blue-600 underline font-medium hover:text-blue-800;
+}

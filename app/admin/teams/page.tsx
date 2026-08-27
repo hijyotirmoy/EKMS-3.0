@@ -1,0 +1,1009 @@
+"use client";
+
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import {
+  collection,
+  onSnapshot,
+  doc,
+  setDoc,
+  deleteDoc,
+  getDocs,
+  writeBatch,
+} from "firebase/firestore";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { db, getSecondaryAuth } from "@/lib/firebase";
+import { getOrFetchCollection, touchMetadata } from "@/lib/cache";
+import { useAuth } from "@/context/AuthContext";
+import { usePopup } from "@/context/PopupContext";
+import { UserProfile, UserRole, OrganogramTier, Quiz, Doubt, Course } from "@/lib/types";
+import { getBase64Image } from "@/lib/utils";
+import {
+  Users,
+  Plus,
+  Trash2,
+  Edit2,
+  Shield,
+  Crown,
+  Headphones,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  PieChart,
+  BarChart3,
+  Network,
+  RotateCcw,
+  Sparkles,
+  Contact,
+  Mail,
+  Cake,
+  Flame,
+  ArrowUp,
+  ArrowDown,
+  Layers,
+  X,
+  Camera,
+  Upload,
+  User,
+} from "lucide-react";
+
+export default function AdminTeamsPage() {
+  const { userProfile: currentAdminProfile, isMasterAdmin } = useAuth();
+  const { toast, showAlert, showConfirm } = usePopup();
+
+  const [activeTab, setActiveTab] = useState<"directory" | "organogram" | "analytics">("directory");
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
+  const [doubts, setDoubts] = useState<Doubt[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [orgTiers, setOrgTiers] = useState<OrganogramTier[]>([
+    { id: "tier-directors", name: "Platform Directors" },
+    { id: "tier-admins", name: "Supervisors & Admins" },
+    { id: "tier-agents", name: "ESIC Agents & Specialists" },
+  ]);
+  const [loading, setLoading] = useState(true);
+
+  // Filters & Search
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedRole, setSelectedRole] = useState<string>("All");
+
+  // Add / Edit User Modal
+  const [userModalOpen, setUserModalOpen] = useState(false);
+  const [editEmail, setEditEmail] = useState<string | null>(null);
+  const [formEmail, setFormEmail] = useState("");
+  const [formPassword, setFormPassword] = useState("");
+  const [formName, setFormName] = useState("");
+  const [formAgentId, setFormAgentId] = useState("");
+  const [formRole, setFormRole] = useState<UserRole>("Agent");
+  const [formBirthday, setFormBirthday] = useState("");
+  const [formPhotoURL, setFormPhotoURL] = useState("");
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [savingUser, setSavingUser] = useState(false);
+  const photoFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Category Tier Modal
+  const [catModalOpen, setCatModalOpen] = useState(false);
+  const [editTierId, setEditTierId] = useState<string | null>(null);
+  const [tierName, setTierName] = useState("");
+
+  // 1. Fetch Users in Realtime
+  useEffect(() => {
+    let isMounted = true;
+
+    const unsubUsers = onSnapshot(
+      collection(db, "users"),
+      (snap) => {
+        const list: UserProfile[] = [];
+        snap.forEach((d) => list.push({ email: d.id, ...(d.data() as Omit<UserProfile, "email">) }));
+        if (isMounted) {
+          setUsers(list);
+          setLoading(false);
+        }
+      },
+      (err) => console.error("Users live sync error:", err)
+    );
+
+    const loadExtras = async () => {
+      try {
+        const [qList, dList, cList] = await Promise.all([
+          getOrFetchCollection<Quiz>("quizzes"),
+          getOrFetchCollection<Doubt>("doubts"),
+          getOrFetchCollection<Course>("onboardings", { metaKey: "onboarding" }),
+        ]);
+
+        if (isMounted) {
+          setQuizzes(qList);
+          setDoubts(dList);
+          setCourses(cList);
+        }
+      } catch (err) {
+        console.error("Extras load error:", err);
+      }
+    };
+    loadExtras();
+
+    const unsubSettings = onSnapshot(doc(db, "settings", "organogram"), (snap) => {
+      if (snap.exists() && snap.data()?.tiers && isMounted) {
+        setOrgTiers(snap.data()?.tiers);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubUsers();
+      unsubSettings();
+    };
+  }, []);
+
+  // Compute Next Sequential Agent ID (e.g. ESIC001A, ESIC015A)
+  const nextGeneratedAgentId = useMemo(() => {
+    let maxNum = 0;
+    users.forEach((u) => {
+      if (u.agentId?.startsWith("ESIC") && u.agentId.endsWith("A")) {
+        const numPart = u.agentId.replace("ESIC", "").replace("A", "");
+        const parsed = parseInt(numPart, 10);
+        if (!isNaN(parsed) && parsed > maxNum) maxNum = parsed;
+      }
+    });
+    const nextNum = maxNum + 1;
+    return "ESIC" + String(nextNum).padStart(3, "0") + "A";
+  }, [users]);
+
+  // Filtered Users List
+  const filteredUsers = useMemo(() => {
+    let list = users;
+    if (selectedRole !== "All") {
+      list = list.filter((u) => u.role === selectedRole);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      list = list.filter(
+        (u) =>
+          u.displayName?.toLowerCase().includes(q) ||
+          u.name?.toLowerCase().includes(q) ||
+          u.email?.toLowerCase().includes(q) ||
+          u.agentId?.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [users, selectedRole, searchQuery]);
+
+  // Open User Modal
+  const handleOpenUserModal = (u?: UserProfile) => {
+    if (u) {
+      setEditEmail(u.email);
+      setFormEmail(u.email);
+      setFormName(u.displayName || u.name || "");
+      setFormAgentId(u.agentId || "");
+      setFormRole(u.role || "Agent");
+      setFormBirthday(u.birthday || (u as any).dob || "");
+      setFormPhotoURL(u.photoURL || (u as any).avatarUrl || (u as any).profilePhoto || (u as any).profileImage || "");
+    } else {
+      setEditEmail(null);
+      setFormEmail("");
+      setFormName("");
+      setFormAgentId(nextGeneratedAgentId);
+      setFormRole("Agent");
+      setFormBirthday("");
+      setFormPhotoURL("");
+    }
+    setUserModalOpen(true);
+  };
+
+  // Upload Profile Photo Handler
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingPhoto(true);
+    try {
+      const dataUri = await getBase64Image(file, 400, 0.8);
+      setFormPhotoURL(dataUri);
+      toast.success("Profile photo attached!");
+    } catch (err: any) {
+      toast.error("Failed to process photo: " + err.message);
+    } finally {
+      setUploadingPhoto(false);
+      e.target.value = "";
+    }
+  };
+
+  // Save User Profile
+  const handleSaveUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formEmail.trim() || !formName.trim()) return;
+
+    setSavingUser(true);
+    const emailKey = formEmail.trim().toLowerCase();
+
+    try {
+      const photoVal = formPhotoURL.trim() || null;
+      const birthdayVal = formBirthday.trim() || null;
+
+      if (!editEmail) {
+        // Create user in Firebase Auth with default password 'esic123' using secondary app instance
+        const secAuth = getSecondaryAuth();
+        try {
+          await createUserWithEmailAndPassword(secAuth, emailKey, "esic123");
+          await secAuth.signOut();
+        } catch (authErr: any) {
+          console.warn("Auth user creation note:", authErr.message);
+        }
+
+        await setDoc(doc(db, "users", emailKey), {
+          email: emailKey,
+          displayName: formName.trim(),
+          name: formName.trim(),
+          agentId: formAgentId.trim() || nextGeneratedAgentId,
+          role: formRole,
+          birthday: birthdayVal,
+          dob: birthdayVal,
+          photoURL: photoVal,
+          avatarUrl: photoVal,
+          profilePhoto: photoVal,
+          createdAt: Date.now(),
+          orgTier: "unassigned",
+        });
+
+        showAlert({
+          title: "Team Member Added!",
+          message: "Agent ID: " + formAgentId + "\nDefault Password: esic123",
+          type: "success",
+        });
+      } else {
+        await setDoc(
+          doc(db, "users", emailKey),
+          {
+            displayName: formName.trim(),
+            name: formName.trim(),
+            agentId: formAgentId.trim(),
+            role: formRole,
+            birthday: birthdayVal,
+            dob: birthdayVal,
+            photoURL: photoVal,
+            avatarUrl: photoVal,
+            profilePhoto: photoVal,
+            updatedAt: Date.now(),
+          },
+          { merge: true }
+        );
+        toast.success("Profile updated successfully!");
+      }
+
+      await touchMetadata("users");
+      setUserModalOpen(false);
+    } catch (err: any) {
+      toast.error("Error saving member: " + err.message);
+    } finally {
+      setSavingUser(false);
+    }
+  };
+
+  // Delete User
+  const handleDeleteUser = async (email: string) => {
+    const confirmed = await showConfirm({
+      title: "Delete Member Profile?",
+      message: "Are you sure you want to permanently delete profile for " + email + "?",
+      isDestructive: true,
+      confirmText: "Delete Profile",
+    });
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, "users", email.toLowerCase()));
+      await touchMetadata("users");
+      toast.success("Profile deleted from database.");
+    } catch (e: any) {
+      toast.error("Delete failed: " + e.message);
+    }
+  };
+
+  // Organogram Move Tier
+  const handleMoveUserTier = async (email: string, targetTierId: string) => {
+    try {
+      await setDoc(doc(db, "users", email.toLowerCase()), { orgTier: targetTierId }, { merge: true });
+      toast.info("Member tier updated.");
+    } catch (e: any) {
+      toast.error("Move failed: " + e.message);
+    }
+  };
+
+  // Save Tiers to Firestore
+  const saveTiersToDb = async (updatedTiers: OrganogramTier[]) => {
+    try {
+      await setDoc(doc(db, "settings", "organogram"), { tiers: updatedTiers }, { merge: true });
+    } catch (e: any) {
+      console.error("Save tiers error:", e);
+    }
+  };
+
+  // Save Category Tier
+  const handleSaveTier = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tierName.trim()) return;
+
+    let updated: OrganogramTier[];
+    if (editTierId) {
+      updated = orgTiers.map((t) => (t.id === editTierId ? { ...t, name: tierName.trim() } : t));
+    } else {
+      updated = [...orgTiers, { id: "tier-" + Date.now(), name: tierName.trim() }];
+    }
+
+    setOrgTiers(updated);
+    await saveTiersToDb(updated);
+    setCatModalOpen(false);
+    toast.success("Tier saved.");
+  };
+
+  // Delete Category Tier
+  const handleDeleteTier = async (tierId: string) => {
+    const confirmed = await showConfirm({
+      title: "Delete Tier?",
+      message: "Are you sure? Members in this tier will be moved to Unassigned.",
+      isDestructive: true,
+      confirmText: "Delete Tier",
+    });
+    if (!confirmed) return;
+
+    const updated = orgTiers.filter((t) => t.id !== tierId);
+    setOrgTiers(updated);
+
+    const batch = writeBatch(db);
+    users.forEach((u) => {
+      if (u.orgTier === tierId) {
+        batch.set(doc(db, "users", u.email.toLowerCase()), { orgTier: "unassigned" }, { merge: true });
+      }
+    });
+
+    await batch.commit();
+    await saveTiersToDb(updated);
+    toast.info("Tier deleted and members moved to Unassigned.");
+  };
+
+  // Format birthday date display e.g. "Oct 12"
+  const formatBirthday = (dobString?: string) => {
+    if (!dobString) return null;
+    try {
+      const parts = dobString.split("-");
+      if (parts.length === 3) {
+        const dateObj = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        return dateObj.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      }
+      return new Date(dobString).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    } catch {
+      return dobString;
+    }
+  };
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-200">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Admin Team Management</h1>
+          <p className="text-xs text-slate-500">
+            Manage agents, supervisors, profile photos, birthdays, and organogram hierarchy.
+          </p>
+        </div>
+
+        <button
+          onClick={() => handleOpenUserModal()}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors self-start"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Add Team Member</span>
+        </button>
+      </div>
+
+      {/* Tabs Navigation */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 select-none">
+        <button
+          onClick={() => setActiveTab("directory")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition-all ${
+            activeTab === "directory"
+              ? "bg-blue-600 text-white shadow-xs"
+              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+          }`}
+        >
+          <Contact className="w-4 h-4" />
+          <span>Member Directory</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("organogram")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition-all ${
+            activeTab === "organogram"
+              ? "bg-blue-600 text-white shadow-xs"
+              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+          }`}
+        >
+          <Network className="w-4 h-4" />
+          <span>Organogram Tiers</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("analytics")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition-all ${
+            activeTab === "analytics"
+              ? "bg-blue-600 text-white shadow-xs"
+              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+          }`}
+        >
+          <PieChart className="w-4 h-4" />
+          <span>Performance Table</span>
+        </button>
+      </div>
+
+      {/* ----------------------------------------------------
+          TAB 1: MEMBER DIRECTORY (MATCHING AGENT TEAM CARDS + EDIT/DELETE)
+          ---------------------------------------------------- */}
+      {activeTab === "directory" && (
+        <div className="space-y-6">
+          {/* Search & Filter Bar */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+            <div className="relative w-full sm:w-80">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search member by name, email, agent ID..."
+                className="w-full pl-9 pr-4 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <select
+                value={selectedRole}
+                onChange={(e) => setSelectedRole(e.target.value)}
+                className="w-full sm:w-auto px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-semibold text-slate-700"
+              >
+                <option value="All">All Roles ({users.length})</option>
+                <option value="Agent">Agents ({users.filter((u) => u.role === "Agent").length})</option>
+                <option value="Admin">Admins ({users.filter((u) => u.role === "Admin").length})</option>
+                <option value="Master Admin">Master Admins ({users.filter((u) => u.role === "Master Admin").length})</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Cards Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 animate-in fade-in duration-150">
+            {loading ? (
+              <div className="col-span-full text-center py-16 text-slate-400 text-xs">
+                Loading team directory...
+              </div>
+            ) : filteredUsers.length === 0 ? (
+              <div className="col-span-full text-center py-16 text-slate-400 text-xs">
+                No team members found matching your search.
+              </div>
+            ) : (
+              filteredUsers.map((member) => {
+                const streak = member.streak || 0;
+                const isMaster = member.role === "Master Admin";
+                const isAdmin = member.role === "Admin";
+                const avatar = member.photoURL || (member as any).avatarUrl || (member as any).profilePhoto || (member as any).profileImage;
+                const bday = formatBirthday(member.birthday || (member as any).dob);
+
+                return (
+                  <div
+                    key={member.email}
+                    className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs hover:shadow-md transition-all text-center flex flex-col items-center justify-between relative group"
+                  >
+                    {/* Top Row: Streak badge (left) & Edit/Delete icons + ID (right) */}
+                    <div className="flex items-center justify-between w-full mb-3 text-xs">
+                      {streak > 0 ? (
+                        <span className="flex items-center gap-1 font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full text-[10px] border border-rose-100">
+                          <Flame className="w-3 h-3 fill-rose-500 text-rose-500" />
+                          <span>{streak}d</span>
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold text-slate-400 font-mono">
+                          {member.agentId || "#---"}
+                        </span>
+                      )}
+
+                      {/* Top Right Action Icons: Edit & Delete */}
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleOpenUserModal(member)}
+                          className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                          title="Edit Member"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUser(member.email)}
+                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
+                          title="Delete Member"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Avatar Circle */}
+                    <div className="w-20 h-20 rounded-full bg-blue-600 text-white font-extrabold text-2xl flex items-center justify-center overflow-hidden shadow-md mb-3 border-2 border-white">
+                      {avatar ? (
+                        <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
+                      ) : (
+                        (member.displayName || member.name || member.email).charAt(0).toUpperCase()
+                      )}
+                    </div>
+
+                    {/* Name & Role */}
+                    <div className="space-y-1 mb-4 flex-1">
+                      <h3 className="font-bold text-slate-900 text-sm">
+                        {member.displayName || member.name || "Team Member"}
+                      </h3>
+                      <span
+                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                          isMaster
+                            ? "bg-rose-50 text-rose-700 border border-rose-200"
+                            : isAdmin
+                            ? "bg-purple-50 text-purple-700 border border-purple-200"
+                            : "bg-blue-50 text-blue-700 border border-blue-200"
+                        }`}
+                      >
+                        {isMaster ? (
+                          <Crown className="w-3 h-3" />
+                        ) : isAdmin ? (
+                          <Shield className="w-3 h-3" />
+                        ) : (
+                          <Headphones className="w-3 h-3" />
+                        )}
+                        <span>{member.role || "Agent"}</span>
+                      </span>
+                    </div>
+
+                    {/* Bottom Details: Email & Birthday */}
+                    <div className="w-full pt-3 border-t border-slate-100 space-y-1 text-xs text-slate-500">
+                      <div className="flex items-center justify-center gap-1.5 truncate px-1">
+                        <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <span
+                          className="truncate text-[11px] text-slate-600 font-medium"
+                          title={member.email}
+                        >
+                          {member.email}
+                        </span>
+                      </div>
+
+                      {bday && (
+                        <div className="flex items-center justify-center gap-1.5 text-amber-600 font-medium text-[11px]">
+                          <Cake className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+                          <span>{bday}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ----------------------------------------------------
+          TAB 2: ORGANOGRAM SITEMAP BUILDER
+          ---------------------------------------------------- */}
+      {activeTab === "organogram" && (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-500">
+              Assign team members to hierarchy tiers. Changes synchronize live to database.
+            </span>
+            <button
+              onClick={() => {
+                setEditTierId(null);
+                setTierName("");
+                setCatModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold shadow-xs"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Tier</span>
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {orgTiers.map((tier) => {
+              const tierMembers = users.filter((u) => u.orgTier === tier.id);
+
+              return (
+                <div key={tier.id} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-blue-600" />
+                      <h3 className="font-bold text-slate-900 text-sm">{tier.name}</h3>
+                      <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-bold">
+                        {tierMembers.length}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          setEditTierId(tier.id);
+                          setTierName(tier.name);
+                          setCatModalOpen(true);
+                        }}
+                        className="p-1 text-slate-400 hover:text-blue-600 hover:bg-slate-50 rounded"
+                        title="Rename Tier"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteTier(tier.id)}
+                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded"
+                        title="Delete Tier"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {tierMembers.length === 0 ? (
+                      <div className="col-span-full py-4 text-center text-slate-300 text-xs italic">
+                        No members assigned to this tier.
+                      </div>
+                    ) : (
+                      tierMembers.map((m) => (
+                        <div
+                          key={m.email}
+                          className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                        >
+                          <div className="flex items-center gap-2.5 truncate">
+                            <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center overflow-hidden shrink-0">
+                              {m.photoURL ? (
+                                <img src={m.photoURL} alt="Avatar" className="w-full h-full object-cover" />
+                              ) : (
+                                (m.displayName || m.name || m.email).charAt(0).toUpperCase()
+                              )}
+                            </div>
+                            <div className="truncate">
+                              <div className="font-bold text-slate-900 truncate">{m.displayName || m.name}</div>
+                              <div className="text-[10px] text-slate-400 truncate">{m.role}</div>
+                            </div>
+                          </div>
+
+                          <select
+                            value={m.orgTier || ""}
+                            onChange={(e) => handleMoveUserTier(m.email, e.target.value)}
+                            className="text-[10px] bg-white border border-slate-200 rounded px-1 py-0.5 font-semibold text-slate-600 outline-none"
+                          >
+                            <option value="unassigned">Unassign</option>
+                            {orgTiers.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Unassigned Bucket */}
+            {(() => {
+              const unassigned = users.filter((u) => !u.orgTier || u.orgTier === "unassigned");
+              if (unassigned.length === 0) return null;
+
+              return (
+                <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-5 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-slate-600 text-xs uppercase tracking-wider">
+                      Unassigned Members ({unassigned.length})
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {unassigned.map((m) => (
+                      <div
+                        key={m.email}
+                        className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl text-xs shadow-2xs"
+                      >
+                        <div className="flex items-center gap-2 truncate">
+                          <div className="w-6 h-6 rounded-full bg-slate-200 text-slate-600 font-bold text-[10px] flex items-center justify-center shrink-0">
+                            {(m.displayName || m.name || m.email).charAt(0).toUpperCase()}
+                          </div>
+                          <span className="font-semibold text-slate-800 truncate">{m.displayName || m.name}</span>
+                        </div>
+
+                        <select
+                          value="unassigned"
+                          onChange={(e) => handleMoveUserTier(m.email, e.target.value)}
+                          className="text-[10px] bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 font-semibold text-blue-600 outline-none"
+                        >
+                          <option value="unassigned">Assign Tier...</option>
+                          {orgTiers.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ----------------------------------------------------
+          TAB 3: PERFORMANCE TABLE
+          ---------------------------------------------------- */}
+      {activeTab === "analytics" && (
+        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
+          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
+                  <th className="p-4">Agent Name</th>
+                  <th className="p-4">Role</th>
+                  <th className="p-4 text-center">Quizzes Taken</th>
+                  <th className="p-4 text-center">Avg Score</th>
+                  <th className="p-4 text-center">Courses Completed</th>
+                  <th className="p-4 text-center">Doubts Asked</th>
+                  <th className="p-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+                {users.map((u) => {
+                  let quizCount = 0;
+                  let sumScore = 0;
+                  if (u.quizScores) {
+                    Object.values(u.quizScores).forEach((sc: any) => {
+                      if (typeof sc === "number") {
+                        sumScore += sc;
+                        quizCount++;
+                      }
+                    });
+                  }
+                  const avg = quizCount > 0 ? Math.round(sumScore / quizCount) : 0;
+
+                  let completedCourses = 0;
+                  if (u.courseProgress) {
+                    Object.values(u.courseProgress).forEach((prog: any) => {
+                      if (prog.status === "completed") completedCourses++;
+                    });
+                  }
+
+                  let doubtsCount = 0;
+                  doubts.forEach((d) => {
+                    if (d.authorEmail?.toLowerCase() === u.email.toLowerCase()) doubtsCount++;
+                  });
+
+                  return (
+                    <tr key={u.email} className="hover:bg-slate-50/70 transition-colors">
+                      <td className="p-4">
+                        <div className="font-bold text-slate-900">{u.displayName || u.name}</div>
+                        <div className="text-[10px] text-slate-400">{u.email}</div>
+                      </td>
+                      <td className="p-4">
+                        <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-md text-[10px] font-bold">
+                          {u.role || "Agent"}
+                        </span>
+                      </td>
+                      <td className="p-4 text-center font-bold text-slate-800">{quizCount}</td>
+                      <td className="p-4 text-center font-extrabold text-emerald-600">{avg}%</td>
+                      <td className="p-4 text-center font-bold text-blue-600">{completedCourses}</td>
+                      <td className="p-4 text-center text-slate-600">{doubtsCount}</td>
+                      <td className="p-4 text-right whitespace-nowrap">
+                        <button
+                          onClick={() => handleOpenUserModal(u)}
+                          className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors"
+                        >
+                          Edit
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================
+          MODAL: ADD / EDIT TEAM MEMBER (WITH PHOTO & BIRTHDAY)
+          ==================================================== */}
+      {userModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white max-w-md w-full rounded-3xl shadow-2xl p-6 border border-slate-100 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-base font-bold text-slate-900">
+                {editEmail ? "Edit Team Member" : "Add Team Member"}
+              </h3>
+              <button
+                onClick={() => setUserModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveUser} className="space-y-4">
+              {/* Profile Photo Uploader */}
+              <div className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                <div className="w-16 h-16 rounded-full bg-blue-600 text-white font-extrabold text-xl flex items-center justify-center overflow-hidden shrink-0 border-2 border-white shadow-sm">
+                  {formPhotoURL ? (
+                    <img src={formPhotoURL} alt="Avatar Preview" className="w-full h-full object-cover" />
+                  ) : (
+                    (formName || formEmail || "U").charAt(0).toUpperCase()
+                  )}
+                </div>
+
+                <div className="space-y-1.5 flex-1">
+                  <div className="text-xs font-bold text-slate-800">Profile Photo</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => photoFileInputRef.current?.click()}
+                      disabled={uploadingPhoto}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center gap-1 shadow-2xs"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>{uploadingPhoto ? "Processing..." : "Upload Photo"}</span>
+                    </button>
+
+                    {formPhotoURL && (
+                      <button
+                        type="button"
+                        onClick={() => setFormPhotoURL("")}
+                        className="px-2.5 py-1.5 text-xs text-rose-600 hover:bg-rose-50 rounded-xl font-semibold"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    ref={photoFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handlePhotoUpload}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Work Email *
+                </label>
+                <input
+                  type="email"
+                  value={formEmail}
+                  disabled={!!editEmail}
+                  onChange={(e) => setFormEmail(e.target.value)}
+                  placeholder="name@piramalswasthya.org"
+                  required
+                  className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Full Name *
+                </label>
+                <input
+                  type="text"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  placeholder="e.g. Ankita Barichowa"
+                  required
+                  className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 font-bold"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                    Agent ID
+                  </label>
+                  <input
+                    type="text"
+                    value={formAgentId}
+                    onChange={(e) => setFormAgentId(e.target.value)}
+                    className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono font-bold text-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                    System Role
+                  </label>
+                  <select
+                    value={formRole}
+                    onChange={(e) => setFormRole(e.target.value as UserRole)}
+                    className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-semibold text-slate-800"
+                  >
+                    <option value="Agent">Agent</option>
+                    <option value="Admin">Admin</option>
+                    {isMasterAdmin && <option value="Master Admin">Master Admin</option>}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Date of Birth / Birthday
+                </label>
+                <input
+                  type="date"
+                  value={formBirthday}
+                  onChange={(e) => setFormBirthday(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 font-semibold"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setUserModalOpen(false)}
+                  className="px-4 py-2 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingUser}
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs"
+                >
+                  {savingUser ? "Saving..." : "Save Member"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- ADD / EDIT TIER CATEGORY MODAL --- */}
+      {catModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white max-w-xs w-full rounded-3xl shadow-2xl p-6 border border-slate-100 space-y-4">
+            <h3 className="text-base font-bold text-slate-900">
+              {editTierId ? "Rename Tier Category" : "Add Category Tier"}
+            </h3>
+
+            <form onSubmit={handleSaveTier} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Tier Name
+                </label>
+                <input
+                  type="text"
+                  value={tierName}
+                  onChange={(e) => setTierName(e.target.value)}
+                  placeholder="e.g. Regional Coordinators"
+                  required
+                  className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 font-semibold"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setCatModalOpen(false)}
+                  className="px-3.5 py-1.5 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs"
+                >
+                  Save Tier
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
