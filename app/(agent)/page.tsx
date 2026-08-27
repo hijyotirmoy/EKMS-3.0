@@ -196,9 +196,9 @@ export default function HomePage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-2.5 sm:space-y-6">
       {/* Category Filter Chips */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none select-none">
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-2 scrollbar-none select-none">
         {categories.map((cat) => {
           const isActive = selectedCategory === cat && !searchQuery;
           return (

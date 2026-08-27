@@ -40,7 +40,7 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
             isSidebarOpen ? "lg:pl-64" : "lg:pl-[72px]"
           }`}
         >
-          <div className="flex-1 w-full px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex-1 w-full px-3.5 sm:px-6 lg:px-8 py-2.5 sm:py-6">
             {isPublicPage ? (
               children
             ) : loading ? (
