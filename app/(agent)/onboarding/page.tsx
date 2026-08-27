@@ -1204,7 +1204,7 @@ export default function OnboardingPage() {
         <div className="space-y-8">
           {/* Header */}
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Agent Training Curriculum</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Assigned Courses</h1>
           </div>
 
           {/* 4 KPI Metrics */}

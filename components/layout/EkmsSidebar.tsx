@@ -58,12 +58,16 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const [unresolvedDoubtsCount, setUnresolvedDoubtsCount] = useState(0);
   const [pendingReportsCount, setPendingReportsCount] = useState(0);
   const [missingContentCount, setMissingContentCount] = useState(0);
+  const [courses, setCourses] = useState<any[]>([]);
+  const [quizzes, setQuizzes] = useState<any[]>([]);
 
   useEffect(() => {
     if (!isLoggedIn) {
       setUnresolvedDoubtsCount(0);
       setPendingReportsCount(0);
       setMissingContentCount(0);
+      setCourses([]);
+      setQuizzes([]);
       return;
     }
 
@@ -73,7 +77,21 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       setUnresolvedDoubtsCount(snap.size);
     });
 
-    // 2. Reports & Missing badges only if Admin
+    // 2. Active Courses listener for agent pending courses count
+    const unsubCourses = onSnapshot(collection(db, "onboardings"), (snap) => {
+      const list: any[] = [];
+      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+      setCourses(list);
+    });
+
+    // 3. Active Quizzes listener for agent pending quizzes count
+    const unsubQuizzes = onSnapshot(collection(db, "quizzes"), (snap) => {
+      const list: any[] = [];
+      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+      setQuizzes(list);
+    });
+
+    // 4. Reports & Missing badges only if Admin
     let unsubscribeReports = () => {};
     let unsubscribeMissing = () => {};
 
@@ -90,10 +108,35 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
     return () => {
       unsubscribeDoubts();
+      unsubCourses();
+      unsubQuizzes();
       unsubscribeReports();
       unsubscribeMissing();
     };
   }, [isLoggedIn, isAdmin]);
+
+  // Compute agent-specific pending courses
+  const pendingCoursesCount = React.useMemo(() => {
+    if (!isLoggedIn) return 0;
+    const progressMap = userProfile?.courseProgress || {};
+    return courses.filter((c) => c.active !== false && progressMap[c.id]?.status !== "completed").length;
+  }, [courses, userProfile, isLoggedIn]);
+
+  // Compute agent-specific pending quizzes
+  const pendingQuizzesCount = React.useMemo(() => {
+    if (!isLoggedIn) return 0;
+    const completedList = userProfile?.quizCompleted || [];
+    const scoreMap = userProfile?.quizScores || {};
+    return quizzes.filter((q) => {
+      if (!q.active) return false;
+      const isDone =
+        completedList.includes(q.id) ||
+        scoreMap[q.id] !== undefined ||
+        scoreMap["Q" + q.id] !== undefined ||
+        scoreMap[q.id.replace(/\D/g, "")] !== undefined;
+      return !isDone;
+    }).length;
+  }, [quizzes, userProfile, isLoggedIn]);
 
   const totalAdminActionCount = pendingReportsCount + missingContentCount + unresolvedDoubtsCount;
 
@@ -112,8 +155,20 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   ];
 
   const quickLinks = [
-    { href: "/onboarding", label: "Onboarding", icon: GraduationCap, color: "text-blue-600" },
-    { href: "/quiz", label: "Quizzes", icon: Gamepad2, color: "text-purple-600" },
+    {
+      href: "/onboarding",
+      label: "Onboarding",
+      icon: GraduationCap,
+      color: "text-blue-600",
+      badge: pendingCoursesCount,
+    },
+    {
+      href: "/quiz",
+      label: "Quizzes",
+      icon: Gamepad2,
+      color: "text-purple-600",
+      badge: pendingQuizzesCount,
+    },
     { href: "/team", label: "Team", icon: Users, color: "text-blue-600" },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500" },
   ];
@@ -153,8 +208,8 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   // Mini sidebar items
   const miniLinks = [
     { href: "/", label: "Home", icon: Home, color: "text-rose-500", isExternal: false },
-    { href: "/onboarding", label: "Onboarding", icon: GraduationCap, color: "text-blue-600", isExternal: false },
-    { href: "/quiz", label: "Quizzes", icon: Gamepad2, color: "text-purple-600", isExternal: false },
+    { href: "/onboarding", label: "Onboarding", icon: GraduationCap, color: "text-blue-600", isExternal: false, badge: pendingCoursesCount },
+    { href: "/quiz", label: "Quizzes", icon: Gamepad2, color: "text-purple-600", isExternal: false, badge: pendingQuizzesCount },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500", isExternal: false },
     { href: "https://facility.ekms.in/", label: "Facility Map", icon: MapPin, color: "text-emerald-600", isExternal: true },
   ];
@@ -204,16 +259,23 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                 href={item.href}
                 prefetch={true}
                 onClick={(e) => handleMiniNavClick(e, item.href)}
-                className={`flex flex-col items-center justify-center w-16 py-3 px-1 rounded-xl text-center transition-all group ${
+                className={`flex flex-col items-center justify-center w-16 py-3 px-1 rounded-xl text-center transition-all group relative ${
                   isActive
                     ? "bg-slate-100 text-slate-900 font-bold shadow-xs"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                 }`}
                 title={item.label}
               >
-                <Icon
-                  className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
-                />
+                <div className="relative">
+                  <Icon
+                    className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
+                  />
+                  {item.badge !== undefined && item.badge > 0 && (
+                    <span className="absolute -top-1 -right-2 bg-rose-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full ring-2 ring-white">
+                      {item.badge > 99 ? "99+" : item.badge}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px] font-semibold leading-tight truncate w-full">
                   {item.label}
                 </span>
@@ -279,9 +341,9 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                   href={item.href}
                   prefetch={true}
                   onClick={(e) => handleNavClick(e, item.href)}
-                  className={`flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-medium transition-all group ${
+                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
                     isActive
-                      ? "bg-slate-100 text-slate-900 font-semibold"
+                      ? "bg-slate-100 text-slate-900 font-semibold shadow-xs"
                       : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
                   }`}
                 >
@@ -291,6 +353,11 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     />
                     <span>{item.label}</span>
                   </div>
+                  {item.badge !== undefined && item.badge > 0 && (
+                    <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      {item.badge > 99 ? "99+" : item.badge}
+                    </span>
+                  )}
                 </Link>
               );
             })}
