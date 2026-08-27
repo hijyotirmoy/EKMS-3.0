@@ -555,15 +555,15 @@ export default function AgentBookingPage() {
 
   return (
     <div className="space-y-8">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* Top Header with date in parallel on mobile & desktop */}
+      <div className="flex items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
             Bookings
           </h1>
         </div>
-        <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white border border-slate-200 px-3.5 py-2 rounded-xl shadow-xs self-start">
-          <Clock className="w-4 h-4 text-blue-600" />
+        <div className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-slate-600 bg-white border border-slate-200 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl shadow-xs shrink-0">
+          <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-600" />
           <span>
             Today:{" "}
             {new Date().toLocaleDateString("en-US", {
@@ -576,39 +576,39 @@ export default function AgentBookingPage() {
         </div>
       </div>
 
-      {/* 8 Metric KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Total (Mine)</div>
-          <div className="text-xl font-extrabold text-amber-900 mt-1">{metrics.totalMy}</div>
+      {/* 8 Metric KPI Cards (2 in a row on mobile) */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 sm:gap-3">
+        <div className="bg-amber-50/70 border border-amber-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Total (Mine)</div>
+          <div className="text-lg sm:text-xl font-extrabold text-amber-900 mt-1">{metrics.totalMy}</div>
         </div>
-        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider truncate">This Month</div>
-          <div className="text-xl font-extrabold text-blue-900 mt-1">{metrics.monthMy}</div>
+        <div className="bg-blue-50/70 border border-blue-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-blue-800 uppercase tracking-wider truncate">This Month</div>
+          <div className="text-lg sm:text-xl font-extrabold text-blue-900 mt-1">{metrics.monthMy}</div>
         </div>
-        <div className="bg-teal-50/70 border border-teal-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider truncate">This Week</div>
-          <div className="text-xl font-extrabold text-teal-900 mt-1">{metrics.weekMy}</div>
+        <div className="bg-teal-50/70 border border-teal-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-teal-800 uppercase tracking-wider truncate">This Week</div>
+          <div className="text-lg sm:text-xl font-extrabold text-teal-900 mt-1">{metrics.weekMy}</div>
         </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Today&apos;s Bookings</div>
-          <div className="text-xl font-extrabold text-emerald-900 mt-1">{metrics.todayMy}</div>
+        <div className="bg-emerald-50/70 border border-emerald-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Today&apos;s Bookings</div>
+          <div className="text-lg sm:text-xl font-extrabold text-emerald-900 mt-1">{metrics.todayMy}</div>
         </div>
-        <div className="bg-indigo-50/70 border border-indigo-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider truncate">Next Month</div>
-          <div className="text-xl font-extrabold text-indigo-900 mt-1">{metrics.nextMonthMy}</div>
+        <div className="bg-indigo-50/70 border border-indigo-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-indigo-800 uppercase tracking-wider truncate">Next Month</div>
+          <div className="text-lg sm:text-xl font-extrabold text-indigo-900 mt-1">{metrics.nextMonthMy}</div>
         </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Visited</div>
-          <div className="text-xl font-extrabold text-emerald-900 mt-1">{metrics.visitedMy}</div>
+        <div className="bg-emerald-50/70 border border-emerald-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Visited</div>
+          <div className="text-lg sm:text-xl font-extrabold text-emerald-900 mt-1">{metrics.visitedMy}</div>
         </div>
-        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Total Follow-ups</div>
-          <div className="text-xl font-extrabold text-amber-900 mt-1">{metrics.delayedMy}</div>
+        <div className="bg-amber-50/70 border border-amber-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Follow-ups</div>
+          <div className="text-lg sm:text-xl font-extrabold text-amber-900 mt-1">{metrics.delayedMy}</div>
         </div>
-        <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider truncate">Rescheduled</div>
-          <div className="text-xl font-extrabold text-purple-900 mt-1">{metrics.rescheduledByMeCount}</div>
+        <div className="bg-purple-50/70 border border-purple-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[9px] sm:text-[10px] font-bold text-purple-800 uppercase tracking-wider truncate">Rescheduled</div>
+          <div className="text-lg sm:text-xl font-extrabold text-purple-900 mt-1">{metrics.rescheduledByMeCount}</div>
         </div>
       </div>
 

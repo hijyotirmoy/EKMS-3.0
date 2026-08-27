@@ -206,8 +206,8 @@ export default function DoubtsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* Header with button in parallel on mobile & desktop */}
+      <div className="flex items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Doubts</h1>
         </div>
@@ -220,73 +220,73 @@ export default function DoubtsPage() {
             setAskContent("");
             setAskModalOpen(true);
           }}
-          className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-sm transition-colors self-start"
+          className="flex items-center gap-1.5 px-3 sm:px-4 py-2 sm:py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors shrink-0"
         >
           <Plus className="w-4 h-4" />
           <span>Post a Doubt</span>
         </button>
       </div>
 
-      {/* 4 Clickable Metric Filter Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 select-none">
+      {/* 4 Clickable Metric Filter Cards (2 in a row on mobile) */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3 select-none">
         <button
           onClick={() => setActiveFilter("all")}
-          className={`p-4 rounded-xl border text-left transition-all ${
+          className={`p-3 sm:p-4 rounded-xl border text-left transition-all ${
             activeFilter === "all"
               ? "bg-blue-600 border-blue-600 text-white shadow-md scale-[1.02]"
               : "bg-white border-slate-200 text-slate-700 hover:border-blue-300 hover:bg-blue-50/40"
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider">Total Doubts</span>
-            <HelpCircle className={`w-5 h-5 ${activeFilter === "all" ? "text-blue-200" : "text-blue-600"}`} />
+            <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">Total Doubts</span>
+            <HelpCircle className={`w-4 h-4 sm:w-5 sm:h-5 ${activeFilter === "all" ? "text-blue-200" : "text-blue-600"}`} />
           </div>
-          <div className="text-2xl font-extrabold mt-2">{metrics.total}</div>
+          <div className="text-xl sm:text-2xl font-extrabold mt-1 sm:mt-2">{metrics.total}</div>
         </button>
 
         <button
           onClick={() => setActiveFilter("pending")}
-          className={`p-4 rounded-xl border text-left transition-all ${
+          className={`p-3 sm:p-4 rounded-xl border text-left transition-all ${
             activeFilter === "pending"
               ? "bg-rose-600 border-rose-600 text-white shadow-md scale-[1.02]"
               : "bg-white border-slate-200 text-slate-700 hover:border-rose-300 hover:bg-rose-50/40"
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider">Pending</span>
-            <Clock className={`w-5 h-5 ${activeFilter === "pending" ? "text-rose-200" : "text-rose-600"}`} />
+            <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">Pending</span>
+            <Clock className={`w-4 h-4 sm:w-5 sm:h-5 ${activeFilter === "pending" ? "text-rose-200" : "text-rose-600"}`} />
           </div>
-          <div className="text-2xl font-extrabold mt-2">{metrics.pending}</div>
+          <div className="text-xl sm:text-2xl font-extrabold mt-1 sm:mt-2">{metrics.pending}</div>
         </button>
 
         <button
           onClick={() => setActiveFilter("waiting")}
-          className={`p-4 rounded-xl border text-left transition-all ${
+          className={`p-3 sm:p-4 rounded-xl border text-left transition-all ${
             activeFilter === "waiting"
-              ? "bg-amber-600 border-amber-600 text-white shadow-md scale-[1.02]"
+              ? "bg-amber-500 border-amber-500 text-white shadow-md scale-[1.02]"
               : "bg-white border-slate-200 text-slate-700 hover:border-amber-300 hover:bg-amber-50/40"
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider truncate">Waiting Verification</span>
-            <ShieldAlert className={`w-5 h-5 ${activeFilter === "waiting" ? "text-amber-200" : "text-amber-600"}`} />
+            <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider truncate">Waiting Verif.</span>
+            <AlertCircle className={`w-4 h-4 sm:w-5 sm:h-5 ${activeFilter === "waiting" ? "text-amber-200" : "text-amber-500"}`} />
           </div>
-          <div className="text-2xl font-extrabold mt-2">{metrics.waiting}</div>
+          <div className="text-xl sm:text-2xl font-extrabold mt-1 sm:mt-2">{metrics.waiting}</div>
         </button>
 
         <button
           onClick={() => setActiveFilter("resolved")}
-          className={`p-4 rounded-xl border text-left transition-all ${
+          className={`p-3 sm:p-4 rounded-xl border text-left transition-all ${
             activeFilter === "resolved"
-              ? "bg-emerald-700 border-emerald-700 text-white shadow-md scale-[1.02]"
+              ? "bg-emerald-600 border-emerald-600 text-white shadow-md scale-[1.02]"
               : "bg-white border-slate-200 text-slate-700 hover:border-emerald-300 hover:bg-emerald-50/40"
           }`}
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider">Resolved</span>
-            <CheckCircle2 className={`w-5 h-5 ${activeFilter === "resolved" ? "text-emerald-200" : "text-emerald-600"}`} />
+            <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">Resolved</span>
+            <CheckCircle2 className={`w-4 h-4 sm:w-5 sm:h-5 ${activeFilter === "resolved" ? "text-emerald-200" : "text-emerald-600"}`} />
           </div>
-          <div className="text-2xl font-extrabold mt-2">{metrics.resolved}</div>
+          <div className="text-xl sm:text-2xl font-extrabold mt-1 sm:mt-2">{metrics.resolved}</div>
         </button>
       </div>
 

@@ -154,29 +154,29 @@ export default function AdminDoubtsPage() {
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Manage Doubts</h1>
       </div>
 
-      {/* 4 KPI Metrics */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-        <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs">
-          <div className="text-2xl font-black text-blue-600">{metrics.total}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+      {/* 4 KPI Metrics (2 in a row on mobile) */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 text-center">
+        <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs">
+          <div className="text-xl sm:text-2xl font-black text-blue-600">{metrics.total}</div>
+          <div className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
             Total Doubts
           </div>
         </div>
-        <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl shadow-xs">
-          <div className="text-2xl font-black text-rose-700">{metrics.pending}</div>
-          <div className="text-[10px] font-bold text-rose-600 uppercase tracking-wider mt-1">
+        <div className="bg-rose-50 border border-rose-200 p-3 sm:p-4 rounded-2xl shadow-xs">
+          <div className="text-xl sm:text-2xl font-black text-rose-700">{metrics.pending}</div>
+          <div className="text-[9px] sm:text-[10px] font-bold text-rose-600 uppercase tracking-wider mt-1">
             Pending
           </div>
         </div>
-        <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl shadow-xs">
-          <div className="text-2xl font-black text-amber-700">{metrics.waiting}</div>
-          <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mt-1">
-            Waiting Verification
+        <div className="bg-amber-50 border border-amber-200 p-3 sm:p-4 rounded-2xl shadow-xs">
+          <div className="text-xl sm:text-2xl font-black text-amber-700">{metrics.waiting}</div>
+          <div className="text-[9px] sm:text-[10px] font-bold text-amber-600 uppercase tracking-wider mt-1">
+            Waiting Verif.
           </div>
         </div>
-        <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl shadow-xs">
-          <div className="text-2xl font-black text-emerald-700">{metrics.resolved}</div>
-          <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mt-1">
+        <div className="bg-emerald-50 border border-emerald-200 p-3 sm:p-4 rounded-2xl shadow-xs">
+          <div className="text-xl sm:text-2xl font-black text-emerald-700">{metrics.resolved}</div>
+          <div className="text-[9px] sm:text-[10px] font-bold text-emerald-600 uppercase tracking-wider mt-1">
             Resolved
           </div>
         </div>

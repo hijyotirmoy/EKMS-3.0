@@ -137,10 +137,10 @@ export default function TeamPage() {
       </div>
 
       {/* 3 Tabs Navigation */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 select-none">
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 select-none overflow-x-auto scrollbar-none">
         <button
           onClick={() => setActiveTab("directory")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
             activeTab === "directory"
               ? "bg-blue-600 text-white shadow-xs"
               : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
@@ -152,7 +152,7 @@ export default function TeamPage() {
 
         <button
           onClick={() => setActiveTab("organogram")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
             activeTab === "organogram"
               ? "bg-blue-600 text-white shadow-xs"
               : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
@@ -164,7 +164,7 @@ export default function TeamPage() {
 
         <button
           onClick={() => setActiveTab("analytics")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
             activeTab === "analytics"
               ? "bg-blue-600 text-white shadow-xs"
               : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
@@ -176,10 +176,10 @@ export default function TeamPage() {
       </div>
 
       {/* ----------------------------------------------------
-          TAB 1: DIRECTORY CARDS
+          TAB 1: DIRECTORY CARDS (2-COL ON MOBILE)
           ---------------------------------------------------- */}
       {activeTab === "directory" && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 animate-in fade-in duration-150">
+        <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-4 animate-in fade-in duration-150">
           {loading ? (
             <div className="col-span-full text-center py-16 text-slate-400">
               Loading team directory...
@@ -193,26 +193,26 @@ export default function TeamPage() {
               return (
                 <div
                   key={member.email}
-                  className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs hover:shadow-md transition-all text-center flex flex-col items-center justify-between relative group"
+                  className="bg-white border border-slate-200 rounded-2xl p-3 sm:p-5 shadow-xs hover:shadow-md transition-all text-center flex flex-col items-center justify-between relative group"
                 >
                   {/* Streak & ID badges */}
-                  <div className="flex items-center justify-between w-full mb-3 text-xs">
+                  <div className="flex items-center justify-between w-full mb-2 sm:mb-3 text-[10px] sm:text-xs">
                     {streak > 0 ? (
-                      <span className="flex items-center gap-1 font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full text-[10px] border border-rose-100">
-                        <Flame className="w-3 h-3 fill-rose-500 text-rose-500" />
+                      <span className="flex items-center gap-1 font-bold text-rose-600 bg-rose-50 px-1.5 sm:px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border border-rose-100">
+                        <Flame className="w-2.5 h-2.5 sm:w-3 sm:h-3 fill-rose-500 text-rose-500" />
                         <span>{streak}d</span>
                       </span>
                     ) : (
                       <span />
                     )}
 
-                    <span className="text-[10px] font-bold text-slate-400">
+                    <span className="text-[9px] sm:text-[10px] font-bold text-slate-400">
                       {member.agentId || "#---"}
                     </span>
                   </div>
 
                   {/* Avatar */}
-                  <div className="w-20 h-20 rounded-full bg-blue-600 text-white font-extrabold text-2xl flex items-center justify-center overflow-hidden shadow-md mb-3 border-2 border-white">
+                  <div className="w-14 h-14 sm:w-20 sm:h-20 rounded-full bg-blue-600 text-white font-extrabold text-lg sm:text-2xl flex items-center justify-center overflow-hidden shadow-md mb-2 sm:mb-3 border-2 border-white">
                     {member.photoURL || (member as any).avatarUrl || (member as any).profilePhoto || (member as any).profileImage ? (
                       <img
                         src={member.photoURL || (member as any).avatarUrl || (member as any).profilePhoto || (member as any).profileImage}
@@ -225,10 +225,12 @@ export default function TeamPage() {
                   </div>
 
                   {/* Name & Role */}
-                  <div className="space-y-1 mb-4 flex-1">
-                    <h3 className="font-bold text-slate-900 text-sm">{member.displayName || member.name || "Agent"}</h3>
+                  <div className="space-y-1 mb-2 sm:mb-4 flex-1 w-full px-1">
+                    <h3 className="font-bold text-slate-900 text-xs sm:text-sm truncate">
+                      {member.displayName || member.name || "Agent"}
+                    </h3>
                     <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wider ${
                         isMaster
                           ? "bg-rose-50 text-rose-700 border border-rose-200"
                           : isAdmin
@@ -237,27 +239,27 @@ export default function TeamPage() {
                       }`}
                     >
                       {isMaster ? (
-                        <Crown className="w-3 h-3" />
+                        <Crown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                       ) : isAdmin ? (
-                        <Shield className="w-3 h-3" />
+                        <Shield className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                       ) : (
-                        <Headphones className="w-3 h-3" />
+                        <Headphones className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                       )}
-                      <span>{member.role || "Agent"}</span>
+                      <span className="truncate">{member.role || "Agent"}</span>
                     </span>
                   </div>
 
                   {/* Contact details */}
-                  <div className="w-full pt-3 border-t border-slate-100 space-y-1 text-xs text-slate-500">
-                    <div className="flex items-center justify-center gap-1.5 truncate px-1">
-                      <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="truncate text-[11px] text-slate-600 font-medium" title={member.email || (member as any).id || ""}>
+                  <div className="w-full pt-2 sm:pt-3 border-t border-slate-100 space-y-1 text-slate-500">
+                    <div className="flex items-center justify-center gap-1 truncate px-1">
+                      <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+                      <span className="truncate text-[10px] sm:text-[11px] text-slate-600 font-medium" title={member.email || (member as any).id || ""}>
                         {member.email || (member as any).id || "No email"}
                       </span>
                     </div>
                     {(member.birthday || (member as any).dob) && (
-                      <div className="flex items-center justify-center gap-1.5 text-amber-600 font-medium text-[11px]">
-                        <Cake className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+                      <div className="flex items-center justify-center gap-1 text-amber-600 font-medium text-[10px] sm:text-[11px]">
+                        <Cake className="w-3 h-3 shrink-0 text-amber-500" />
                         <span>
                           {(() => {
                             const b = member.birthday || (member as any).dob;

@@ -330,26 +330,26 @@ export default function AdminOverviewPage() {
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h1>
           </div>
 
-          {/* 12 Metric Counter Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          {/* 12 Metric Counter Cards (2-col on mobile) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-4">
             {statCards.map((card) => {
               const Icon = card.icon;
               return (
                 <Link
                   key={card.label}
                   href={card.href}
-                  className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs hover:shadow-md hover:scale-[1.02] transition-all flex flex-col justify-between group"
+                  className="bg-white border border-slate-200 rounded-2xl p-3 sm:p-4 shadow-xs hover:shadow-md hover:scale-[1.02] transition-all flex flex-col justify-between group"
                 >
                   <div className="flex items-center justify-between">
                     <div
-                      className={`w-10 h-10 rounded-xl ${card.bg} ${card.color} flex items-center justify-center`}
+                      className={`w-8 h-8 sm:w-10 sm:h-10 rounded-xl ${card.bg} ${card.color} flex items-center justify-center`}
                     >
-                      <Icon className="w-5 h-5" />
+                      <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
                     </div>
                   </div>
-                  <div className="mt-4">
-                    <div className="text-2xl font-black text-slate-900 leading-none">{card.value}</div>
-                    <div className="text-[11px] font-semibold text-slate-500 mt-1 truncate">
+                  <div className="mt-3 sm:mt-4">
+                    <div className="text-xl sm:text-2xl font-black text-slate-900 leading-none">{card.value}</div>
+                    <div className="text-[10px] sm:text-[11px] font-semibold text-slate-500 mt-1 truncate">
                       {card.label}
                     </div>
                   </div>

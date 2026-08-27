@@ -446,8 +446,8 @@ export default function QuizPage() {
             MAIN ASSESSMENTS FEED & ANALYTICS
             ---------------------------------------------------- */
         <div className="space-y-8">
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          {/* Header with button in parallel on mobile & desktop */}
+          <div className="flex items-center justify-between gap-2">
             <div>
               <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
                 Quizzes
@@ -455,37 +455,37 @@ export default function QuizPage() {
             </div>
             <button
               onClick={() => setAnalyticsOpen(true)}
-              className="flex items-center gap-2 px-4 py-2.5 bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 font-semibold text-xs rounded-xl shadow-xs transition-colors self-start"
+              className="flex items-center gap-1.5 px-3 sm:px-4 py-2 sm:py-2.5 bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 font-semibold text-xs rounded-xl shadow-xs transition-colors shrink-0"
             >
               <PieChart className="w-4 h-4" />
-              <span>My Performance Analytics</span>
+              <span>My Analytics</span>
             </button>
           </div>
 
-          {/* 4 Performance Metric Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-2xl font-extrabold text-slate-900">{personalMetrics.total}</div>
+          {/* 4 Performance Metric Cards (2 in a row on mobile) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
+            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
+              <div className="text-xl sm:text-2xl font-extrabold text-slate-900">{personalMetrics.total}</div>
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                 Total Quizzes
               </div>
             </div>
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-2xl font-extrabold text-emerald-600">
+            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
+              <div className="text-xl sm:text-2xl font-extrabold text-emerald-600">
                 {personalMetrics.taken} / {personalMetrics.pending}
               </div>
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                 Completed / Left
               </div>
             </div>
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-2xl font-extrabold text-amber-500">{personalMetrics.avgScore}%</div>
+            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
+              <div className="text-xl sm:text-2xl font-extrabold text-amber-500">{personalMetrics.avgScore}%</div>
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                 Average Score
               </div>
             </div>
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-2xl font-extrabold text-purple-600">{personalMetrics.passRate}%</div>
+            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
+              <div className="text-xl sm:text-2xl font-extrabold text-purple-600">{personalMetrics.passRate}%</div>
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                 Pass Rate
               </div>
