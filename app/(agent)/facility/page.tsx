@@ -279,7 +279,7 @@ export default function FacilityPage() {
           )}
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3 items-center">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3 items-end">
           <div>
             <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
               Category
@@ -290,7 +290,7 @@ export default function FacilityPage() {
                 setSelectedCategory(e.target.value);
                 setCurrentPage(1);
               }}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 outline-none"
+              className="w-full h-[38px] px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 outline-none"
             >
               <option value="all">ALL CATEGORIES</option>
               {categories.map((c) => (
@@ -311,7 +311,7 @@ export default function FacilityPage() {
                 setSelectedType(e.target.value);
                 setCurrentPage(1);
               }}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 outline-none"
+              className="w-full h-[38px] px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 outline-none"
             >
               <option value="all">ALL TYPES</option>
               {types.map((t) => (
@@ -332,7 +332,7 @@ export default function FacilityPage() {
                 setSelectedDistrict(e.target.value);
                 setCurrentPage(1);
               }}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 outline-none"
+              className="w-full h-[38px] px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 outline-none"
             >
               <option value="all">ALL DISTRICTS</option>
               {districts.map((d) => (
@@ -353,7 +353,7 @@ export default function FacilityPage() {
                 setSelectedBlock(e.target.value);
                 setCurrentPage(1);
               }}
-              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 outline-none"
+              className="w-full h-[38px] px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 outline-none"
             >
               <option value="all">ALL BLOCKS</option>
               {blocks.map((b) => (
@@ -364,10 +364,10 @@ export default function FacilityPage() {
             </select>
           </div>
 
-          <div className="col-span-2 sm:col-span-4 lg:col-span-1 pt-4 lg:pt-0">
+          <div className="col-span-2 sm:col-span-4 lg:col-span-1">
             <button
               onClick={handleResetFilters}
-              className="w-full py-1.5 px-3 border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+              className="w-full h-[38px] px-3 border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>Reset</span>
