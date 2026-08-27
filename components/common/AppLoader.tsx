@@ -49,7 +49,7 @@ export default function AppLoader() {
         {/* Title without logo */}
         <div className="space-y-1.5">
           <h1 className="text-3xl font-black text-white tracking-tight">
-            ESIC KMS
+            ESIC KMS 3.0
           </h1>
           <p className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
             Knowledge Management System
