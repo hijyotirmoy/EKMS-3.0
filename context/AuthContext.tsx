@@ -225,12 +225,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (e) {}
     };
 
-    // 1. Check if user account is currently locked (Firestore + localStorage)
+    // 1. Check if user account is currently locked (Firestore + API + localStorage)
     let userData: any = null;
     try {
-      const userSnap = await getDoc(userDocRef);
-      if (userSnap.exists()) {
-        userData = userSnap.data();
+      const lockSnap = await getDoc(doc(db, "security_locks", cleanEmail));
+      if (lockSnap.exists()) {
+        userData = lockSnap.data();
+      } else {
+        const userSnap = await getDoc(userDocRef);
+        if (userSnap.exists()) {
+          userData = userSnap.data();
+        }
       }
     } catch (e) {
       console.warn("Firestore pre-login check:", e);
@@ -246,7 +251,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Determine current lock status
     const isLocked =
       (userData?.isLocked && (!userData?.lockedUntil || now < userData.lockedUntil)) ||
-      (localData?.isLocked && (!localData?.lockedUntil || now < localData.lockedUntil && !userData));
+      (localData?.isLocked && (!localData?.lockedUntil || (now < localData.lockedUntil && !userData)));
 
     const lockedUntil = userData?.lockedUntil || localData?.lockedUntil || 0;
 
@@ -281,8 +286,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
 
         setLocalLock(lockPayload);
+
+        // Server API sync + client Firestore sync
         try {
-          await setDoc(userDocRef, lockPayload, { merge: true });
+          fetch("/api/auth/security-lock", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(lockPayload),
+          }).catch(() => {});
+
+          await Promise.allSettled([
+            setDoc(doc(db, "security_locks", cleanEmail), lockPayload, { merge: true }),
+            setDoc(userDocRef, lockPayload, { merge: true }),
+          ]);
         } catch (e) {
           console.warn("Could not write lock state to Firestore:", e);
         }
@@ -299,8 +315,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
 
         setLocalLock(attemptPayload);
+
         try {
-          await setDoc(userDocRef, attemptPayload, { merge: true });
+          fetch("/api/auth/security-lock", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(attemptPayload),
+          }).catch(() => {});
+
+          await Promise.allSettled([
+            setDoc(doc(db, "security_locks", cleanEmail), attemptPayload, { merge: true }),
+            setDoc(userDocRef, attemptPayload, { merge: true }),
+          ]);
         } catch (e) {
           console.warn("Could not write attempt count to Firestore:", e);
         }
@@ -311,8 +337,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // Clear local lock record on successful sign-in
+    // Clear local & server lock record on successful sign-in
     setLocalLock({ isLocked: false, failedAttempts: 0, lockedUntil: 0 });
+    try {
+      fetch("/api/auth/security-lock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: cleanEmail, action: "unlock" }),
+      }).catch(() => {});
+
+      await Promise.allSettled([
+        setDoc(doc(db, "security_locks", cleanEmail), { isLocked: false, failedAttempts: 0, lockedUntil: null }, { merge: true }),
+        setDoc(userDocRef, { isLocked: false, failedAttempts: 0, lockedUntil: null }, { merge: true }),
+      ]);
+    } catch (e) {}
 
     const currentUser = userCredential.user;
     const profile = await fetchUserProfile(currentUser);

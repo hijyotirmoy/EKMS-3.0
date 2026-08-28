@@ -152,10 +152,44 @@ export default function AdminOverviewPage() {
     fetchCounts();
   }, []);
 
-  // 2. Real-time Users Lock Map Subscription
+  // 2. Real-time Security Locks & Users Subscription
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "users"), (snap) => {
+    const unsubLocks = onSnapshot(collection(db, "security_locks"), (snap) => {
       const lockMap: Record<
+        string,
+        {
+          isLocked: boolean;
+          failedAttempts: number;
+          lockedUntil?: number;
+          lockReason?: string;
+          name?: string;
+        }
+      > = {};
+
+      snap.forEach((dDoc) => {
+        const d = dDoc.data();
+        const email = (d.email || dDoc.id || "").toLowerCase();
+        if (email) {
+          const now = Date.now();
+          const isActuallyLocked = !!d.isLocked && (!d.lockedUntil || now < d.lockedUntil);
+          lockMap[email] = {
+            isLocked: isActuallyLocked,
+            failedAttempts: d.failedAttempts || 0,
+            lockedUntil: d.lockedUntil,
+            lockReason: d.lockReason,
+            name: d.name || email.split("@")[0],
+          };
+        }
+      });
+
+      setUserLockMap((prev) => ({
+        ...prev,
+        ...lockMap,
+      }));
+    });
+
+    const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
+      const userLocks: Record<
         string,
         {
           isLocked: boolean;
@@ -170,9 +204,9 @@ export default function AdminOverviewPage() {
         const u = uDoc.data();
         const email = (u.email || uDoc.id || "").toLowerCase();
         if (email) {
-          const isActuallyLocked =
-            !!u.isLocked && (!u.lockedUntil || Date.now() < u.lockedUntil);
-          lockMap[email] = {
+          const now = Date.now();
+          const isActuallyLocked = !!u.isLocked && (!u.lockedUntil || now < u.lockedUntil);
+          userLocks[email] = {
             isLocked: isActuallyLocked,
             failedAttempts: u.failedAttempts || 0,
             lockedUntil: u.lockedUntil,
@@ -181,10 +215,27 @@ export default function AdminOverviewPage() {
           };
         }
       });
-      setUserLockMap(lockMap);
+
+      setUserLockMap((prev) => {
+        const merged = { ...prev };
+        Object.entries(userLocks).forEach(([email, data]) => {
+          if (!merged[email] || data.isLocked) {
+            merged[email] = data;
+          } else {
+            merged[email] = {
+              ...merged[email],
+              name: data.name || merged[email].name,
+            };
+          }
+        });
+        return merged;
+      });
     });
 
-    return () => unsub();
+    return () => {
+      unsubLocks();
+      unsubUsers();
+    };
   }, []);
 
   // 3. Instant Admin Unlock Account Action
@@ -198,16 +249,25 @@ export default function AdminOverviewPage() {
     if (!confirmed) return;
 
     try {
-      await setDoc(
-        doc(db, "users", cleanEmail),
-        {
-          isLocked: false,
-          failedAttempts: 0,
-          lockedUntil: null,
-          lockReason: null,
-        },
-        { merge: true }
-      );
+      // 1. Call server API to unlock
+      fetch("/api/auth/security-lock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: cleanEmail, action: "unlock" }),
+      }).catch(() => {});
+
+      // 2. Direct Firestore unlock
+      const unlockPayload = {
+        isLocked: false,
+        failedAttempts: 0,
+        lockedUntil: null,
+        lockReason: null,
+      };
+
+      await Promise.allSettled([
+        setDoc(doc(db, "security_locks", cleanEmail), unlockPayload, { merge: true }),
+        setDoc(doc(db, "users", cleanEmail), unlockPayload, { merge: true }),
+      ]);
 
       if (typeof window !== "undefined") {
         localStorage.removeItem(`ekms_lock_${cleanEmail}`);
@@ -305,14 +365,46 @@ export default function AdminOverviewPage() {
     }).length;
   }, [activityLogs]);
 
-  // Displayed Logs with Online filter
+  // Displayed Logs with Online filter & Locked accounts included
   const displayedLogs = useMemo(() => {
-    if (!filterOnlineOnly) return activityLogs;
-    return activityLogs.filter((log) => {
-      const isLoggedOut = !!log.logoutTime && (!log.lastActive || log.logoutTime >= log.lastActive);
-      return !isLoggedOut && log.lastActive && Date.now() - log.lastActive < 3 * 60 * 1000;
+    let list = [...activityLogs];
+    const presentEmails = new Set(list.map((item) => item.email.toLowerCase()));
+
+    // Merge any locked account from userLockMap that isn't in activityLogs yet
+    Object.entries(userLockMap).forEach(([email, lockInfo]) => {
+      if (lockInfo.isLocked && !presentEmails.has(email)) {
+        list.push({
+          id: `${email}_${dateFilter}`,
+          email,
+          name: lockInfo.name || email.split("@")[0],
+          date: dateFilter,
+          loginTime: undefined,
+          firstLogin: undefined,
+          lastActive: undefined,
+          totalSeconds: 0,
+        });
+        presentEmails.add(email);
+      }
     });
-  }, [activityLogs, filterOnlineOnly]);
+
+    if (filterOnlineOnly) {
+      list = list.filter((log) => {
+        const isLoggedOut = !!log.logoutTime && (!log.lastActive || log.logoutTime >= log.lastActive);
+        return !isLoggedOut && log.lastActive && Date.now() - log.lastActive < 3 * 60 * 1000;
+      });
+    }
+
+    // Sort locked accounts first, then by last active / login time
+    list.sort((a, b) => {
+      const aLocked = !!userLockMap[a.email.toLowerCase()]?.isLocked;
+      const bLocked = !!userLockMap[b.email.toLowerCase()]?.isLocked;
+      if (aLocked && !bLocked) return -1;
+      if (!aLocked && bLocked) return 1;
+      return (b.lastActive || b.loginTime || 0) - (a.lastActive || a.loginTime || 0);
+    });
+
+    return list;
+  }, [activityLogs, userLockMap, filterOnlineOnly, dateFilter]);
 
   // Format active duration
   const formatDuration = (seconds: number) => {

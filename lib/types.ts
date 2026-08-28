@@ -219,7 +219,7 @@ export interface DailyActivityLog {
   email: string;
   name: string;
   date: string; // YYYY-MM-DD
-  loginTime: number;
+  loginTime?: number;
   firstLogin?: number;
   logoutTime?: number;
   loginCount?: number;
