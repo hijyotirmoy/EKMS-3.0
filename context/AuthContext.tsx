@@ -241,17 +241,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.warn("Firestore pre-login check:", e);
     }
 
+    // Also check server API in case client Firestore was stale
+    try {
+      const res = await fetch(`/api/auth/security-lock?email=${encodeURIComponent(cleanEmail)}`);
+      if (res.ok) {
+        const apiData = await res.json();
+        if (apiData.isLocked === false && (apiData.failedAttempts === 0 || !apiData.failedAttempts)) {
+          userData = { isLocked: false, failedAttempts: 0 };
+        } else if (apiData.isLocked) {
+          userData = apiData;
+        }
+      }
+    } catch (e) {}
+
     const localData = getLocalLock();
 
-    // If admin has unlocked in Firestore, clear local lock
-    if (userData && userData.isLocked === false && userData.failedAttempts === 0) {
+    // If admin has unlocked in Firestore or API, clear local lock
+    if (userData && userData.isLocked === false && (userData.failedAttempts === 0 || !userData.failedAttempts)) {
       setLocalLock({ isLocked: false, failedAttempts: 0, lockedUntil: 0 });
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(`ekms_lock_${cleanEmail}`);
+      }
     }
 
     // Determine current lock status
     const isLocked =
-      (userData?.isLocked && (!userData?.lockedUntil || now < userData.lockedUntil)) ||
-      (localData?.isLocked && (!localData?.lockedUntil || (now < localData.lockedUntil && !userData)));
+      userData?.isLocked && (!userData?.lockedUntil || now < userData.lockedUntil)
+        ? true
+        : userData && userData.isLocked === false
+        ? false
+        : localData?.isLocked && (!localData?.lockedUntil || now < localData.lockedUntil);
 
     const lockedUntil = userData?.lockedUntil || localData?.lockedUntil || 0;
 
