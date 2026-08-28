@@ -122,19 +122,87 @@ export default function AdminOverviewPage() {
     fetchCounts();
   }, []);
 
-  // 2. Fetch Daily Activity for Date
+  // 2. Fetch Daily Activity for Date & merge with Users collection
   useEffect(() => {
     setLoadingLogs(true);
     const q = query(collection(db, "daily_activity"), where("date", "==", dateFilter));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
       const list: DailyActivityLog[] = [];
-      snapshot.forEach((d) => list.push({ id: d.id, ...(d.data() as Omit<DailyActivityLog, "id">) }));
+      const loggedEmails = new Set<string>();
+
+      snapshot.forEach((d) => {
+        const data = d.data() as Omit<DailyActivityLog, "id">;
+        list.push({ id: d.id, ...data });
+        if (data.email) loggedEmails.add(data.email.toLowerCase());
+      });
+
+      try {
+        // Also check users collection for any user who logged in on dateFilter
+        const usersSnap = await getDocs(collection(db, "users"));
+        usersSnap.forEach((uDoc) => {
+          const u = uDoc.data();
+          const email = (u.email || uDoc.id || "").toLowerCase();
+          if (!email) return;
+
+          if (!loggedEmails.has(email) && u.lastLogin) {
+            const loginDate = new Date(u.lastLogin);
+            const localDateStr = `${loginDate.getFullYear()}-${String(loginDate.getMonth() + 1).padStart(2, "0")}-${String(loginDate.getDate()).padStart(2, "0")}`;
+            const isoDateStr = loginDate.toISOString().split("T")[0];
+
+            if (localDateStr === dateFilter || isoDateStr === dateFilter) {
+              const totalSec = Math.max(0, Math.floor(((u.lastActive || u.lastLogin) - u.lastLogin) / 1000));
+              list.push({
+                id: `${email}_${dateFilter}`,
+                email,
+                name: u.displayName || u.name || email.split("@")[0],
+                date: dateFilter,
+                loginTime: u.lastLogin,
+                firstLogin: u.lastLogin,
+                lastActive: u.lastActive || u.lastLogin,
+                logoutTime: u.lastLogout,
+                totalSeconds: totalSec,
+              });
+              loggedEmails.add(email);
+            }
+          }
+        });
+      } catch (err) {
+        console.error("Error reading users for overview activity:", err);
+      }
+
+      list.sort((a, b) => (b.lastActive || b.loginTime || 0) - (a.lastActive || a.loginTime || 0));
       setActivityLogs(list);
       setLoadingLogs(false);
     });
 
     return () => unsubscribe();
   }, [dateFilter]);
+
+  // Format active duration
+  const formatDuration = (seconds: number) => {
+    if (!seconds || seconds <= 0) return "0s";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+
+  // Format time of day
+  const formatTimeOnly = (timestamp?: number) => {
+    if (!timestamp) return "-";
+    try {
+      return new Date(timestamp).toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return "-";
+    }
+  };
 
   // 3. Drilldown report fetch
   const handleOpenDrilldown = async (email: string) => {
@@ -224,11 +292,11 @@ export default function AdminOverviewPage() {
                 <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs">
                   <div className="text-xl font-extrabold text-blue-600">
                     {(() => {
-                      let sec = 0;
-                      if (drilldownData.activity?.pageVisits) {
+                      let sec = drilldownData.activity?.totalSeconds || 0;
+                      if (!sec && drilldownData.activity?.pageVisits) {
                         Object.values(drilldownData.activity.pageVisits).forEach((s) => (sec += s));
                       }
-                      return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m`;
+                      return formatDuration(sec);
                     })()}
                   </div>
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
@@ -277,8 +345,8 @@ export default function AdminOverviewPage() {
                       Object.entries(drilldownData.activity.pageVisits).map(([page, sec]) => (
                         <div key={page} className="space-y-1 text-xs">
                           <div className="flex justify-between font-semibold text-slate-700">
-                            <span>{page.replace(".html", "").toUpperCase()}</span>
-                            <span>{Math.ceil(sec / 60)} mins</span>
+                            <span>{page.replace(/[/._]/g, " ").trim().toUpperCase() || "HOME"}</span>
+                            <span>{formatDuration(sec)}</span>
                           </div>
                           <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                             <div
@@ -366,9 +434,6 @@ export default function AdminOverviewPage() {
                   <Clock className="w-5 h-5 text-blue-600" />
                   <span>Daily Agent Engagement Log</span>
                 </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Inspect login sessions, active terminal times, and drill down into individual activity.
-                </p>
               </div>
 
               <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-700">
@@ -389,8 +454,8 @@ export default function AdminOverviewPage() {
                   <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
                     <th className="p-4">Agent Name</th>
                     <th className="p-4">First Login</th>
-                    <th className="p-4">Last Active</th>
-                    <th className="p-4 text-center">Total Time Active</th>
+                    <th className="p-4">Last Status / Logout</th>
+                    <th className="p-4 text-center">Time Spent in App</th>
                     <th className="p-4 text-right">Actions</th>
                   </tr>
                 </thead>
@@ -398,57 +463,73 @@ export default function AdminOverviewPage() {
                   {loadingLogs ? (
                     <tr>
                       <td colSpan={5} className="text-center py-12 text-slate-400">
+                        <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                         Loading daily logs...
                       </td>
                     </tr>
                   ) : activityLogs.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="text-center py-12 text-slate-400">
-                        No activity recorded for {dateFilter}.
+                        No agent activity recorded for {dateFilter}.
                       </td>
                     </tr>
                   ) : (
                     activityLogs.map((log) => {
-                      let totalSeconds = 0;
-                      if (log.pageVisits) {
+                      let totalSeconds = log.totalSeconds || 0;
+                      if (!totalSeconds && log.pageVisits) {
                         Object.values(log.pageVisits).forEach((s) => (totalSeconds += s));
                       }
-                      const timeStr =
-                        totalSeconds < 60
-                          ? `${totalSeconds}s`
-                          : `${Math.floor(totalSeconds / 60)}m`;
+                      if (!totalSeconds && log.lastActive && log.loginTime) {
+                        totalSeconds = Math.max(0, Math.floor((log.lastActive - log.loginTime) / 1000));
+                      }
 
-                      const loginStr = log.loginTime
-                        ? new Date(log.loginTime).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "-";
+                      const timeStr = formatDuration(totalSeconds);
+                      const loginStr = formatTimeOnly(log.firstLogin || log.loginTime);
 
-                      const lastActiveStr = log.lastActive
-                        ? new Date(log.lastActive).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "-";
+                      const isLoggedOut = !!log.logoutTime && (!log.lastActive || log.logoutTime >= log.lastActive);
+                      const isRecentlyActive = !isLoggedOut && log.lastActive && (Date.now() - log.lastActive < 3 * 60 * 1000);
 
                       return (
                         <tr key={log.email} className="hover:bg-slate-50/70 transition-colors">
                           <td className="p-4">
-                            <div className="font-bold text-slate-900">{log.name}</div>
-                            <div className="text-[11px] text-slate-400">{log.email}</div>
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                                {(log.name || log.email).charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <div className="font-bold text-slate-900">{log.name || "Agent"}</div>
+                                <div className="text-[11px] text-slate-400">{log.email}</div>
+                              </div>
+                            </div>
                           </td>
-                          <td className="p-4 text-slate-600">{loginStr}</td>
-                          <td className="p-4 text-slate-600">{lastActiveStr}</td>
+                          <td className="p-4 text-slate-700 font-semibold">{loginStr}</td>
+                          <td className="p-4">
+                            {isRecentlyActive ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                Active Now
+                              </span>
+                            ) : isLoggedOut ? (
+                              <span className="text-slate-600 text-xs font-medium">
+                                Logged out at {formatTimeOnly(log.logoutTime)}
+                              </span>
+                            ) : log.lastActive ? (
+                              <span className="text-slate-600 text-xs font-medium">
+                                Last active at {formatTimeOnly(log.lastActive)}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 text-xs">-</span>
+                            )}
+                          </td>
                           <td className="p-4 text-center">
-                            <span className="bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full text-xs">
+                            <span className="bg-blue-50 border border-blue-100 text-blue-700 font-bold px-3 py-1 rounded-full text-xs shadow-2xs">
                               {timeStr}
                             </span>
                           </td>
                           <td className="p-4 text-right">
                             <button
                               onClick={() => handleOpenDrilldown(log.email)}
-                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors"
+                              className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
                             >
                               View Report
                             </button>

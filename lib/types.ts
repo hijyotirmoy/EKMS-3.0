@@ -214,9 +214,11 @@ export interface DailyActivityLog {
   name: string;
   date: string; // YYYY-MM-DD
   loginTime: number;
+  firstLogin?: number;
   logoutTime?: number;
   loginCount?: number;
   lastActive?: number;
+  totalSeconds?: number;
   filesDownloaded?: number;
   searches?: string[];
   pageVisits?: Record<string, number>; // page -> seconds

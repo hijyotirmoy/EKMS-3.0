@@ -6,6 +6,7 @@ import { PopupProvider } from "@/context/PopupContext";
 import LoginModal from "@/components/auth/LoginModal";
 import MaintenanceModal from "@/components/common/MaintenanceModal";
 import AppLoader from "@/components/common/AppLoader";
+import ActivityTracker from "@/components/common/ActivityTracker";
 
 const roboto = Roboto({
   weight: ["300", "400", "500", "700", "900"],
@@ -33,6 +34,7 @@ export default function RootLayout({
         <PopupProvider>
           <AuthProvider>
             <AppLoader />
+            <ActivityTracker />
             {children}
             <LoginModal />
             <MaintenanceModal />

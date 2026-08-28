@@ -231,6 +231,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    try {
+      if (user?.email) {
+        const email = user.email.toLowerCase();
+        const now = Date.now();
+        const d = new Date();
+        const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const docId = `${email}_${today}`;
+        
+        await setDoc(
+          doc(db, "daily_activity", docId),
+          {
+            logoutTime: now,
+            lastActive: now,
+          },
+          { merge: true }
+        );
+        await setDoc(
+          doc(db, "users", email),
+          {
+            lastLogout: now,
+            isOnline: false,
+          },
+          { merge: true }
+        );
+      }
+    } catch (e) {
+      console.error("Logout recording error:", e);
+    }
     await fbSignOut(auth);
     setUser(null);
     setUserProfile(null);
