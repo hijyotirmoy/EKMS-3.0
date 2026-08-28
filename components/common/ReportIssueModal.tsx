@@ -5,6 +5,7 @@ import { collection, addDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
+import { logUserActivity } from "@/lib/activityLogger";
 import { Flag, X, AlertCircle } from "lucide-react";
 
 interface ReportIssueModalProps {
@@ -60,6 +61,13 @@ export default function ReportIssueModal({
       };
 
       await addDoc(collection(db, "reports"), payload);
+
+      const targetLabel = targetCodeOrName || targetId || selectedType;
+      logUserActivity(user.email, {
+        desc: `Submitted report on ${selectedType} [${targetLabel}]: "${message.trim().substring(0, 45)}..."`,
+        type: "report",
+      });
+
       setMessage("");
       onClose();
       toast.success("Your report has been submitted to the administration team. Thank you!");
