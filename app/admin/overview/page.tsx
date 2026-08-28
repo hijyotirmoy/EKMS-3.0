@@ -10,6 +10,7 @@ import {
   getDocs,
   doc,
   getDoc,
+  setDoc,
   updateDoc,
   onSnapshot,
 } from "firebase/firestore";
@@ -197,12 +198,20 @@ export default function AdminOverviewPage() {
     if (!confirmed) return;
 
     try {
-      await updateDoc(doc(db, "users", cleanEmail), {
-        isLocked: false,
-        failedAttempts: 0,
-        lockedUntil: null,
-        lockReason: null,
-      });
+      await setDoc(
+        doc(db, "users", cleanEmail),
+        {
+          isLocked: false,
+          failedAttempts: 0,
+          lockedUntil: null,
+          lockReason: null,
+        },
+        { merge: true }
+      );
+
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(`ekms_lock_${cleanEmail}`);
+      }
 
       setUserLockMap((prev) => ({
         ...prev,

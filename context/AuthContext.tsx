@@ -208,31 +208,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const userDocRef = doc(db, "users", cleanEmail);
     const now = Date.now();
 
-    // 1. Check if user account is currently locked
+    // Helper to get local lock record
+    const getLocalLock = () => {
+      try {
+        const raw = typeof window !== "undefined" ? localStorage.getItem(`ekms_lock_${cleanEmail}`) : null;
+        if (raw) return JSON.parse(raw);
+      } catch (e) {}
+      return null;
+    };
+
+    const setLocalLock = (data: any) => {
+      try {
+        if (typeof window !== "undefined") {
+          localStorage.setItem(`ekms_lock_${cleanEmail}`, JSON.stringify(data));
+        }
+      } catch (e) {}
+    };
+
+    // 1. Check if user account is currently locked (Firestore + localStorage)
     let userData: any = null;
     try {
       const userSnap = await getDoc(userDocRef);
       if (userSnap.exists()) {
         userData = userSnap.data();
-        if (userData.isLocked) {
-          const lockedUntil = userData.lockedUntil || (userData.lockedAt ? userData.lockedAt + 24 * 3600 * 1000 : 0);
-          if (now < lockedUntil) {
-            const hoursRemaining = Math.max(1, Math.ceil((lockedUntil - now) / (3600 * 1000)));
-            throw new Error(
-              `Account Locked: 5 failed attempts exceeded. Your account is locked for ${hoursRemaining} more hours. Please contact an Administrator to unlock your account.`
-            );
-          } else {
-            // Auto-unlock after 24 hours
-            await setDoc(userDocRef, { isLocked: false, failedAttempts: 0, lockedUntil: null, lockReason: null }, { merge: true });
-            userData.isLocked = false;
-            userData.failedAttempts = 0;
-          }
-        }
       }
-    } catch (lockErr: any) {
-      if (lockErr.message?.includes("Account Locked:")) {
-        throw lockErr;
-      }
+    } catch (e) {
+      console.warn("Firestore pre-login check:", e);
+    }
+
+    const localData = getLocalLock();
+
+    // If admin has unlocked in Firestore, clear local lock
+    if (userData && userData.isLocked === false && userData.failedAttempts === 0) {
+      setLocalLock({ isLocked: false, failedAttempts: 0, lockedUntil: 0 });
+    }
+
+    // Determine current lock status
+    const isLocked =
+      (userData?.isLocked && (!userData?.lockedUntil || now < userData.lockedUntil)) ||
+      (localData?.isLocked && (!localData?.lockedUntil || now < localData.lockedUntil && !userData));
+
+    const lockedUntil = userData?.lockedUntil || localData?.lockedUntil || 0;
+
+    if (isLocked) {
+      const hoursRemaining = Math.max(1, Math.ceil((lockedUntil - now) / (3600 * 1000)));
+      throw new Error(
+        `Account Locked: 5 failed attempts exceeded. Your account is locked for ${hoursRemaining} more hours. Please contact an Administrator to unlock your account.`
+      );
     }
 
     let userCredential;
@@ -240,48 +262,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       userCredential = await signInWithEmailAndPassword(auth, cleanEmail, pass);
     } catch (authErr: any) {
       // Failed login attempt tracking
-      const lastFailedTime = userData?.lastFailedAttempt || 0;
+      const lastFailedTime = userData?.lastFailedAttempt || localData?.lastFailedAttempt || 0;
       const isOlderThan24h = (now - lastFailedTime) > 24 * 3600 * 1000;
-      const currentFailed = isOlderThan24h ? 0 : (userData?.failedAttempts || 0);
+      const currentFailed = isOlderThan24h ? 0 : Math.max(userData?.failedAttempts || 0, localData?.failedAttempts || 0);
       const newFailed = currentFailed + 1;
       const remainingAttempts = Math.max(0, 5 - newFailed);
 
       if (newFailed >= 5) {
         const lockExpiry = now + 24 * 3600 * 1000;
-        await setDoc(
-          userDocRef,
-          {
-            email: cleanEmail,
-            failedAttempts: 5,
-            lastFailedAttempt: now,
-            isLocked: true,
-            lockedAt: now,
-            lockedUntil: lockExpiry,
-            lockReason: "5 consecutive failed login attempts",
-          },
-          { merge: true }
-        );
+        const lockPayload = {
+          email: cleanEmail,
+          failedAttempts: 5,
+          lastFailedAttempt: now,
+          isLocked: true,
+          lockedAt: now,
+          lockedUntil: lockExpiry,
+          lockReason: "5 consecutive failed login attempts",
+        };
+
+        setLocalLock(lockPayload);
+        try {
+          await setDoc(userDocRef, lockPayload, { merge: true });
+        } catch (e) {
+          console.warn("Could not write lock state to Firestore:", e);
+        }
 
         throw new Error(
           "Account Locked: 5 failed attempts exceeded. Your account is locked for 24 hours. Please contact an Administrator to unlock your account."
         );
       } else {
-        await setDoc(
-          userDocRef,
-          {
-            email: cleanEmail,
-            failedAttempts: newFailed,
-            lastFailedAttempt: now,
-            isLocked: false,
-          },
-          { merge: true }
-        );
+        const attemptPayload = {
+          email: cleanEmail,
+          failedAttempts: newFailed,
+          lastFailedAttempt: now,
+          isLocked: false,
+        };
+
+        setLocalLock(attemptPayload);
+        try {
+          await setDoc(userDocRef, attemptPayload, { merge: true });
+        } catch (e) {
+          console.warn("Could not write attempt count to Firestore:", e);
+        }
 
         throw new Error(
           `ID or Password is incorrect. (${remainingAttempts} attempt${remainingAttempts === 1 ? "" : "s"} remaining)`
         );
       }
     }
+
+    // Clear local lock record on successful sign-in
+    setLocalLock({ isLocked: false, failedAttempts: 0, lockedUntil: 0 });
 
     const currentUser = userCredential.user;
     const profile = await fetchUserProfile(currentUser);
