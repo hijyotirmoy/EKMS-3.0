@@ -550,6 +550,10 @@ export default function AdminOnboardingPage() {
       await updateDoc(userRef, {
         ["courseProgress." + courseId]: deleteField(),
       });
+      logUserActivity(user?.email, {
+        desc: `Reset/Deleted course progress for agent: ${email} on Course #${courseId}`,
+        type: "delete",
+      });
       toast.success("Agent progress deleted successfully!");
     } catch (e: any) {
       toast.error("Failed to delete progress: " + e.message);

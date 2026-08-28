@@ -383,6 +383,11 @@ export default function AgentBookingPage() {
         });
       });
 
+      logUserActivity(user.email, {
+        desc: `Rescheduled booking for IP: ${rescheduleData.record.ipName || "Beneficiary"} from ${rescheduleData.oldDateKey} to ${rsSelectedDate}`,
+        type: "booking",
+      });
+
       setRescheduleData(null);
       setRsSelectedDate(null);
       toast.success("Booking successfully rescheduled!");
@@ -419,6 +424,11 @@ export default function AgentBookingPage() {
             bookedRecords: arrayRemove(target),
           });
         }
+      });
+
+      logUserActivity(user.email, {
+        desc: `Deleted / Cancelled booking for IP: ${cancelData.record.ipName || "Beneficiary"} on ${cancelData.dateKey}`,
+        type: "delete",
       });
 
       setCancelData(null);

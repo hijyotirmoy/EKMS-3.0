@@ -16,6 +16,7 @@ import {
   recalculateCourseProgress,
   createSlug,
 } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   GraduationCap,
   Award,
@@ -198,6 +199,8 @@ export default function OnboardingPage() {
 
   // Save Progress to Firestore
   const saveProgressToDb = async (courseId: string, newProg: CourseUserProgress) => {
+    const wasCompleted = localProgress[courseId]?.status === "completed";
+
     // 1. Instantly update local state in React (0 Firebase reads)
     setLocalProgress((prev) => ({
       ...prev,
@@ -206,7 +209,16 @@ export default function OnboardingPage() {
 
     if (!user || !user.email) return;
 
-    // 2. Persist to Firestore asynchronously
+    // 2. Log course completion if just finished
+    if (newProg.status === "completed" && !wasCompleted) {
+      const courseTitle = activeCourse?.title || courses.find((c) => c.id === courseId)?.title || "Onboarding Course";
+      logUserActivity(user.email, {
+        desc: `Completed onboarding course: "${courseTitle}"`,
+        type: "course",
+      });
+    }
+
+    // 3. Persist to Firestore asynchronously
     try {
       const userDocRef = doc(db, "users", user.email.toLowerCase());
       await setDoc(
@@ -385,6 +397,12 @@ export default function OnboardingPage() {
 
       setIsEditingRating(false);
       setFeedbackText("");
+
+      logUserActivity(userEmail, {
+        desc: `Submitted ${ratingVal}★ review & feedback on course: "${activeCourse.title}"`,
+        type: "feedback",
+      });
+
       toast.success(isEditingRating ? "Your feedback has been updated!" : "Thank you for your rating & feedback!");
     } catch (e: any) {
       console.error("Rating submit error:", e);
@@ -423,6 +441,11 @@ export default function OnboardingPage() {
       setCourses((prev) =>
         prev.map((c) => (c.id === activeCourse.id ? { ...c, ratings: updatedRatings } : c))
       );
+
+      logUserActivity(userEmail, {
+        desc: `Deleted review / rating for course: "${activeCourse.title}"`,
+        type: "delete",
+      });
 
       setIsEditingRating(false);
       setRatingVal(5);

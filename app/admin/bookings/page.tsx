@@ -406,6 +406,10 @@ export default function AdminBookingsPage() {
           });
         }
       });
+      logUserActivity(user?.email, {
+        desc: `Deleted verification booking for IP: ${b.ipName || "Beneficiary"} (${b.dateKey})`,
+        type: "delete",
+      });
       toast.success("Booking successfully removed and seat released.");
     } catch (e: any) {
       toast.error("Failed to remove booking: " + e.message);
@@ -428,6 +432,10 @@ export default function AdminBookingsPage() {
           updated[index] = { ...updated[index], visited: !b.visited };
           tx.update(docRef, { bookedRecords: updated });
         }
+      });
+      logUserActivity(user?.email, {
+        desc: `${!b.visited ? "Marked as Visited" : "Unmarked Visited"} for IP: ${b.ipName || "Beneficiary"} (${b.dateKey})`,
+        type: "booking",
       });
       toast.success(b.visited ? "Booking marked as active." : "Booking marked as visited.");
     } catch (e: any) {
@@ -583,6 +591,11 @@ export default function AdminBookingsPage() {
         });
       }
 
+      logUserActivity(user?.email, {
+        desc: `Bulk deleted ${selectedBookingKeys.size} verification bookings`,
+        type: "delete",
+      });
+
       setSelectedBookingKeys(new Set());
       toast.success("Selected bookings removed and seats released.");
     } catch (e: any) {
@@ -645,6 +658,11 @@ export default function AdminBookingsPage() {
           actionBy: user.email?.toLowerCase(),
           timestamp: Date.now(),
         });
+      });
+
+      logUserActivity(user?.email, {
+        desc: `Rescheduled booking for IP: ${rescheduleItem.ipName || "Beneficiary"} from ${rescheduleItem.dateKey} to ${rsSelectedDate}`,
+        type: "booking",
       });
 
       setRescheduleItem(null);
