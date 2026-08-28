@@ -190,8 +190,18 @@ export default function LoginModal() {
               </div>
 
               {errorMsg && (
-                <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 text-xs p-3 rounded-lg">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <div
+                  className={`flex items-start gap-2.5 p-3.5 rounded-xl text-xs leading-relaxed ${
+                    errorMsg.includes("Account Locked")
+                      ? "bg-rose-100/90 border border-rose-300 text-rose-900 font-medium shadow-xs"
+                      : "bg-rose-50 border border-rose-200 text-rose-700 font-medium"
+                  }`}
+                >
+                  {errorMsg.includes("Account Locked") ? (
+                    <Lock className="w-4 h-4 text-rose-700 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                  )}
                   <span>{errorMsg}</span>
                 </div>
               )}

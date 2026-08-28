@@ -10,11 +10,15 @@ import {
   getDocs,
   doc,
   getDoc,
+  updateDoc,
   onSnapshot,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getOrFetchCollection } from "@/lib/cache";
 import { DailyActivityLog } from "@/lib/types";
+import { useAuth } from "@/context/AuthContext";
+import { usePopup } from "@/context/PopupContext";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   HelpCircle,
   Folder,
@@ -38,13 +42,33 @@ import {
   Download,
   CalendarCheck,
   Search,
+  Lock,
+  Unlock,
+  ShieldCheck,
+  AlertTriangle,
 } from "lucide-react";
 
 export default function AdminOverviewPage() {
+  const { user } = useAuth();
+  const { toast, showConfirm } = usePopup();
   const [dateFilter, setDateFilter] = useState(new Date().toISOString().split("T")[0]);
   const [activityLogs, setActivityLogs] = useState<DailyActivityLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(true);
   const [filterOnlineOnly, setFilterOnlineOnly] = useState(false);
+
+  // Real-time security lock status map
+  const [userLockMap, setUserLockMap] = useState<
+    Record<
+      string,
+      {
+        isLocked: boolean;
+        failedAttempts: number;
+        lockedUntil?: number;
+        lockReason?: string;
+        name?: string;
+      }
+    >
+  >({});
 
   // Counters
   const [counts, setCounts] = useState({
@@ -127,7 +151,81 @@ export default function AdminOverviewPage() {
     fetchCounts();
   }, []);
 
-  // 2. Fetch Daily Activity for Date & merge with Users collection
+  // 2. Real-time Users Lock Map Subscription
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "users"), (snap) => {
+      const lockMap: Record<
+        string,
+        {
+          isLocked: boolean;
+          failedAttempts: number;
+          lockedUntil?: number;
+          lockReason?: string;
+          name?: string;
+        }
+      > = {};
+
+      snap.forEach((uDoc) => {
+        const u = uDoc.data();
+        const email = (u.email || uDoc.id || "").toLowerCase();
+        if (email) {
+          const isActuallyLocked =
+            !!u.isLocked && (!u.lockedUntil || Date.now() < u.lockedUntil);
+          lockMap[email] = {
+            isLocked: isActuallyLocked,
+            failedAttempts: u.failedAttempts || 0,
+            lockedUntil: u.lockedUntil,
+            lockReason: u.lockReason,
+            name: u.displayName || u.name || email.split("@")[0],
+          };
+        }
+      });
+      setUserLockMap(lockMap);
+    });
+
+    return () => unsub();
+  }, []);
+
+  // 3. Instant Admin Unlock Account Action
+  const handleUnlockAccount = async (targetEmail: string) => {
+    const cleanEmail = targetEmail.toLowerCase();
+    const confirmed = await showConfirm({
+      title: "Unlock Agent Account?",
+      message: `Are you sure you want to unlock the account for ${cleanEmail}? This will immediately reset failed attempts to 0 and allow the agent to log in.`,
+      confirmText: "Unlock Account",
+    });
+    if (!confirmed) return;
+
+    try {
+      await updateDoc(doc(db, "users", cleanEmail), {
+        isLocked: false,
+        failedAttempts: 0,
+        lockedUntil: null,
+        lockReason: null,
+      });
+
+      setUserLockMap((prev) => ({
+        ...prev,
+        [cleanEmail]: {
+          ...prev[cleanEmail],
+          isLocked: false,
+          failedAttempts: 0,
+          lockedUntil: undefined,
+        },
+      }));
+
+      logUserActivity(user?.email || "admin", {
+        desc: `Admin unlocked login access for agent: ${cleanEmail}`,
+        type: "settings",
+      });
+
+      toast.success(`Account for ${cleanEmail} was unlocked successfully!`);
+    } catch (e: any) {
+      toast.error("Failed to unlock account: " + e.message);
+    }
+  };
+
+  // 4. Fetch Daily Activity for Date & merge with Users collection
   useEffect(() => {
     setLoadingLogs(true);
     const q = query(collection(db, "daily_activity"), where("date", "==", dateFilter));
@@ -149,13 +247,20 @@ export default function AdminOverviewPage() {
           const email = (u.email || uDoc.id || "").toLowerCase();
           if (!email) return;
 
-          if (!loggedEmails.has(email) && u.lastLogin) {
-            const loginDate = new Date(u.lastLogin);
-            const localDateStr = `${loginDate.getFullYear()}-${String(loginDate.getMonth() + 1).padStart(2, "0")}-${String(loginDate.getDate()).padStart(2, "0")}`;
-            const isoDateStr = loginDate.toISOString().split("T")[0];
+          const isActuallyLocked =
+            !!u.isLocked && (!u.lockedUntil || Date.now() < u.lockedUntil);
 
-            if (localDateStr === dateFilter || isoDateStr === dateFilter) {
-              const totalSec = Math.max(0, Math.floor(((u.lastActive || u.lastLogin) - u.lastLogin) / 1000));
+          if (!loggedEmails.has(email) && (u.lastLogin || isActuallyLocked)) {
+            const loginDate = u.lastLogin ? new Date(u.lastLogin) : null;
+            const localDateStr = loginDate
+              ? `${loginDate.getFullYear()}-${String(loginDate.getMonth() + 1).padStart(2, "0")}-${String(loginDate.getDate()).padStart(2, "0")}`
+              : null;
+            const isoDateStr = loginDate ? loginDate.toISOString().split("T")[0] : null;
+
+            if (localDateStr === dateFilter || isoDateStr === dateFilter || isActuallyLocked) {
+              const totalSec = u.lastLogin
+                ? Math.max(0, Math.floor(((u.lastActive || u.lastLogin) - u.lastLogin) / 1000))
+                : 0;
               list.push({
                 id: `${email}_${dateFilter}`,
                 email,
@@ -674,6 +779,7 @@ export default function AdminOverviewPage() {
                     <th className="p-4">Agent Name</th>
                     <th className="p-4">First Login</th>
                     <th className="p-4">Last Status / Logout</th>
+                    <th className="p-4">Account / Lock Status</th>
                     <th className="p-4 text-center">Time Spent in App</th>
                     <th className="p-4 text-right">Actions</th>
                   </tr>
@@ -681,14 +787,14 @@ export default function AdminOverviewPage() {
                 <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
                   {loadingLogs ? (
                     <tr>
-                      <td colSpan={5} className="text-center py-12 text-slate-400">
+                      <td colSpan={6} className="text-center py-12 text-slate-400">
                         <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                         Loading daily logs...
                       </td>
                     </tr>
                   ) : displayedLogs.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="text-center py-12 text-slate-400">
+                      <td colSpan={6} className="text-center py-12 text-slate-400">
                         {filterOnlineOnly
                           ? "No agents are currently active online right now."
                           : `No agent activity recorded for ${dateFilter}.`}
@@ -710,15 +816,26 @@ export default function AdminOverviewPage() {
                       const isLoggedOut = !!log.logoutTime && (!log.lastActive || log.logoutTime >= log.lastActive);
                       const isRecentlyActive = !isLoggedOut && log.lastActive && Date.now() - log.lastActive < 3 * 60 * 1000;
 
+                      const lockInfo = userLockMap[log.email.toLowerCase()];
+                      const isAccountLocked = !!lockInfo?.isLocked;
+                      const failedCount = lockInfo?.failedAttempts || 0;
+
                       return (
-                        <tr key={log.email} className="hover:bg-slate-50/70 transition-colors">
+                        <tr key={log.email} className={`hover:bg-slate-50/70 transition-colors ${isAccountLocked ? "bg-rose-50/30" : ""}`}>
                           <td className="p-4">
                             <div className="flex items-center gap-2.5">
-                              <div className="w-8 h-8 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                              <div className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center shrink-0 ${isAccountLocked ? "bg-rose-600 text-white" : "bg-blue-600 text-white"}`}>
                                 {(log.name || log.email).charAt(0).toUpperCase()}
                               </div>
                               <div>
-                                <div className="font-bold text-slate-900">{log.name || "Agent"}</div>
+                                <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                                  <span>{log.name || "Agent"}</span>
+                                  {isAccountLocked && (
+                                    <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-rose-100 text-rose-700">
+                                      Locked
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="text-[11px] text-slate-400">{log.email}</div>
                               </div>
                             </div>
@@ -742,6 +859,37 @@ export default function AdminOverviewPage() {
                               <span className="text-slate-400 text-xs">-</span>
                             )}
                           </td>
+
+                          {/* Account Security & Lock Status Column */}
+                          <td className="p-4">
+                            {isAccountLocked ? (
+                              <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-300 shadow-2xs">
+                                  <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                                  <span>Locked (5 Failed Attempts)</span>
+                                </span>
+                                <button
+                                  onClick={() => handleUnlockAccount(log.email)}
+                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold shadow-xs transition-all flex items-center gap-1 hover:scale-105 active:scale-95 shrink-0"
+                                  title="Instantly Unlock Account"
+                                >
+                                  <Unlock className="w-3 h-3" />
+                                  <span>Unlock</span>
+                                </button>
+                              </div>
+                            ) : failedCount > 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                <span>{failedCount}/5 Failed Attempts</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-medium bg-slate-50 text-slate-600 border border-slate-200">
+                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                <span>Normal</span>
+                              </span>
+                            )}
+                          </td>
+
                           <td className="p-4 text-center">
                             <span className="bg-blue-50 border border-blue-100 text-blue-700 font-bold px-3 py-1 rounded-full text-xs shadow-2xs">
                               {timeStr}

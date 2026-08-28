@@ -22,6 +22,12 @@ export interface UserProfile {
   quizzesPassed?: number;
   avgScore?: number;
   courseProgress?: Record<string, CourseUserProgress>;
+  isLocked?: boolean;
+  lockedAt?: number;
+  lockedUntil?: number;
+  failedAttempts?: number;
+  lastFailedAttempt?: number;
+  lockReason?: string;
 }
 
 export interface BookingRecord {

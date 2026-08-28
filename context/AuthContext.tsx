@@ -202,11 +202,88 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [isLoggedIn, systemStatus]);
 
-  // 5. Login function with Tier Validation
+  // 5. Login function with Tier Validation & 5-Attempt Security Lock
   const loginWithRole = async (requestedRole: UserRole, email: string, pass: string) => {
-    const userCredential = await signInWithEmailAndPassword(auth, email, pass);
-    const currentUser = userCredential.user;
+    const cleanEmail = email.trim().toLowerCase();
+    const userDocRef = doc(db, "users", cleanEmail);
+    const now = Date.now();
 
+    // 1. Check if user account is currently locked
+    let userData: any = null;
+    try {
+      const userSnap = await getDoc(userDocRef);
+      if (userSnap.exists()) {
+        userData = userSnap.data();
+        if (userData.isLocked) {
+          const lockedUntil = userData.lockedUntil || (userData.lockedAt ? userData.lockedAt + 24 * 3600 * 1000 : 0);
+          if (now < lockedUntil) {
+            const hoursRemaining = Math.max(1, Math.ceil((lockedUntil - now) / (3600 * 1000)));
+            throw new Error(
+              `Account Locked: 5 failed attempts exceeded. Your account is locked for ${hoursRemaining} more hours. Please contact an Administrator to unlock your account.`
+            );
+          } else {
+            // Auto-unlock after 24 hours
+            await setDoc(userDocRef, { isLocked: false, failedAttempts: 0, lockedUntil: null, lockReason: null }, { merge: true });
+            userData.isLocked = false;
+            userData.failedAttempts = 0;
+          }
+        }
+      }
+    } catch (lockErr: any) {
+      if (lockErr.message?.includes("Account Locked:")) {
+        throw lockErr;
+      }
+    }
+
+    let userCredential;
+    try {
+      userCredential = await signInWithEmailAndPassword(auth, cleanEmail, pass);
+    } catch (authErr: any) {
+      // Failed login attempt tracking
+      const lastFailedTime = userData?.lastFailedAttempt || 0;
+      const isOlderThan24h = (now - lastFailedTime) > 24 * 3600 * 1000;
+      const currentFailed = isOlderThan24h ? 0 : (userData?.failedAttempts || 0);
+      const newFailed = currentFailed + 1;
+      const remainingAttempts = Math.max(0, 5 - newFailed);
+
+      if (newFailed >= 5) {
+        const lockExpiry = now + 24 * 3600 * 1000;
+        await setDoc(
+          userDocRef,
+          {
+            email: cleanEmail,
+            failedAttempts: 5,
+            lastFailedAttempt: now,
+            isLocked: true,
+            lockedAt: now,
+            lockedUntil: lockExpiry,
+            lockReason: "5 consecutive failed login attempts",
+          },
+          { merge: true }
+        );
+
+        throw new Error(
+          "Account Locked: 5 failed attempts exceeded. Your account is locked for 24 hours. Please contact an Administrator to unlock your account."
+        );
+      } else {
+        await setDoc(
+          userDocRef,
+          {
+            email: cleanEmail,
+            failedAttempts: newFailed,
+            lastFailedAttempt: now,
+            isLocked: false,
+          },
+          { merge: true }
+        );
+
+        throw new Error(
+          `ID or Password is incorrect. (${remainingAttempts} attempt${remainingAttempts === 1 ? "" : "s"} remaining)`
+        );
+      }
+    }
+
+    const currentUser = userCredential.user;
     const profile = await fetchUserProfile(currentUser);
     const actualRole: UserRole = profile?.role || "Agent";
 
@@ -229,18 +306,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error("Access Denied: You do not have Admin permissions.");
     }
 
-    // Record login session ONLY when user logs in via the login window/form
+    // Record login session ONLY when user logs in via the login window/form & reset failed counter
     try {
-      const now = Date.now();
       const d = new Date();
       const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      const docId = `${email.toLowerCase()}_${today}`;
-      const userName = profile?.displayName || profile?.name || currentUser.displayName || email.split("@")[0];
+      const docId = `${cleanEmail}_${today}`;
+      const userName = profile?.displayName || profile?.name || currentUser.displayName || cleanEmail.split("@")[0];
 
       const snap = await getDoc(doc(db, "daily_activity", docId));
       if (!snap.exists()) {
         await setDoc(doc(db, "daily_activity", docId), {
-          email: email.toLowerCase(),
+          email: cleanEmail,
           name: userName,
           date: today,
           loginTime: now,
@@ -277,8 +353,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       await setDoc(
-        doc(db, "users", email.toLowerCase()),
+        userDocRef,
         {
+          failedAttempts: 0,
+          isLocked: false,
+          lockedUntil: null,
+          lockReason: null,
           lastLogin: now,
           lastActive: now,
           isOnline: true,
