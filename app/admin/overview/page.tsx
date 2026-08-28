@@ -114,50 +114,74 @@ export default function AdminOverviewPage() {
     const fetchCounts = async () => {
       try {
         const [
-          qaSnap,
-          fileSnap,
-          facSnap,
-          userSnap,
-          quizSnap,
-          doubtSnap,
-          missSnap,
-          repSnap,
-          courseSnap,
+          qnaList,
+          filesList,
+          facilitiesList,
+          quizzesList,
+          coursesList,
         ] = await Promise.all([
-          getCountFromServer(collection(db, "qas")),
-          getCountFromServer(collection(db, "files")),
-          getCountFromServer(collection(db, "facilities")),
-          getDocs(collection(db, "users")),
-          getCountFromServer(collection(db, "quizzes")),
-          getCountFromServer(collection(db, "doubts")),
-          getCountFromServer(collection(db, "missing_searches")),
-          getCountFromServer(collection(db, "reports")),
-          getCountFromServer(collection(db, "onboardings")),
+          getOrFetchCollection("qna").catch(() => []),
+          getOrFetchCollection("files").catch(() => []),
+          getOrFetchCollection("facilities").catch(() => []),
+          getOrFetchCollection("quizzes").catch(() => []),
+          getOrFetchCollection("onboardings").catch(() => []),
         ]);
 
+        let doubtsCount = 0;
+        let missingCount = 0;
+        let reportsCount = 0;
         let agCount = 0;
         let adCount = 0;
         let maCount = 0;
 
-        userSnap.forEach((d) => {
-          const role = d.data().role;
-          if (role === "Master Admin") maCount++;
-          else if (role === "Admin") adCount++;
-          else agCount++;
-        });
+        try {
+          const userSnap = await getDocs(collection(db, "users"));
+          userSnap.forEach((d) => {
+            const role = d.data().role;
+            if (role === "Master Admin") maCount++;
+            else if (role === "Admin") adCount++;
+            else agCount++;
+          });
+        } catch (e) {
+          console.warn("User counts error:", e);
+        }
+
+        try {
+          const doubtsSnap = await getDocs(collection(db, "doubts"));
+          doubtsCount = doubtsSnap.size;
+        } catch (e) {
+          console.warn("Doubts count error:", e);
+        }
+
+        try {
+          const missSnap = await getDocs(collection(db, "missing_searches"));
+          missingCount = missSnap.size;
+        } catch (e) {
+          console.warn("Missing searches count error:", e);
+        }
+
+        try {
+          const repSnap = await getDocs(query(collection(db, "reports"), where("status", "!=", "solved")));
+          reportsCount = repSnap.size;
+        } catch (e) {
+          try {
+            const allRepSnap = await getDocs(collection(db, "reports"));
+            reportsCount = allRepSnap.size;
+          } catch (err) {}
+        }
 
         setCounts({
-          qa: qaSnap.data().count,
-          files: fileSnap.data().count,
-          facilities: facSnap.data().count,
+          qa: qnaList.length,
+          files: filesList.length,
+          facilities: facilitiesList.length,
           agents: agCount,
           admins: adCount,
           masters: maCount,
-          quizzes: quizSnap.data().count,
-          doubts: doubtSnap.data().count,
-          missing: missSnap.data().count,
-          reports: repSnap.data().count,
-          courses: courseSnap.data().count,
+          quizzes: quizzesList.length,
+          doubts: doubtsCount,
+          missing: missingCount,
+          reports: reportsCount,
+          courses: coursesList.length,
         });
       } catch (err) {
         console.error("Failed to load overview counts:", err);
