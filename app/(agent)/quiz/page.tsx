@@ -7,6 +7,7 @@ import { getOrFetchCollection } from "@/lib/cache";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Quiz } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Gamepad2,
   Clock,
@@ -258,6 +259,10 @@ export default function QuizPage() {
       // Increment quiz attempts count
       const quizDocRef = doc(db, "quizzes", activeQuiz.id);
       await updateDoc(quizDocRef, { attempts: increment(1) });
+      logUserActivity(user.email, {
+        desc: `Completed quiz: "${activeQuiz.title}" (Score: ${score}/${activeQuiz.questions})`,
+        type: "quiz",
+      });
       await refreshProfile();
     } catch (e) {
       console.error("Failed to sync score to database:", e);

@@ -18,6 +18,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord } from "@/lib/types";
 import { getISTMidnight } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -305,6 +306,11 @@ export default function AgentBookingPage() {
             timestamp: Date.now(),
           }),
         });
+      });
+
+      logUserActivity(user.email, {
+        desc: `Booked verification appointment for ${ipName.trim()} on ${bookModalDate}`,
+        type: "booking",
       });
 
       setBookModalDate(null);

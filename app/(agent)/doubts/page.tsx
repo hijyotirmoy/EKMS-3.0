@@ -6,6 +6,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Doubt } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   HelpCircle,
   Clock,
@@ -128,6 +129,10 @@ export default function DoubtsPage() {
       };
 
       await addDoc(collection(db, "doubts"), newDoubt);
+      logUserActivity(user.email, {
+        desc: `Posted doubt: "${askContent.trim().substring(0, 45)}..."`,
+        type: "doubt",
+      });
       setAskContent("");
       setAskModalOpen(false);
       toast.success("Your doubt has been posted to the board!");
@@ -157,6 +162,11 @@ export default function DoubtsPage() {
         resolvedByPhoto: userProfile?.photoURL || null,
         resolvedAt: Date.now(),
         updatedAt: Date.now(),
+      });
+
+      logUserActivity(user.email, {
+        desc: `Submitted answer to doubt: "${(resolveModalDoubt.question || "Doubt").substring(0, 40)}..."`,
+        type: "doubt",
       });
 
       setResolveModalDoubt(null);

@@ -34,12 +34,17 @@ import {
   CheckCircle2,
   Eye,
   FileDown,
+  Activity,
+  Download,
+  CalendarCheck,
+  Search,
 } from "lucide-react";
 
 export default function AdminOverviewPage() {
   const [dateFilter, setDateFilter] = useState(new Date().toISOString().split("T")[0]);
   const [activityLogs, setActivityLogs] = useState<DailyActivityLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(true);
+  const [filterOnlineOnly, setFilterOnlineOnly] = useState(false);
 
   // Counters
   const [counts, setCounts] = useState({
@@ -58,64 +63,62 @@ export default function AdminOverviewPage() {
 
   // Selected agent for drilldown report
   const [drilldownEmail, setDrilldownEmail] = useState<string | null>(null);
+  const [drilldownLoading, setDrilldownLoading] = useState(false);
   const [drilldownData, setDrilldownData] = useState<{
     profile: any;
     activity: DailyActivityLog | null;
   } | null>(null);
-  const [drilldownLoading, setDrilldownLoading] = useState(false);
+  const [agentExtraStats, setAgentExtraStats] = useState({
+    totalBookings: 0,
+    doubtsCount: 0,
+    coursesCompleted: 0,
+    quizzesCompleted: 0,
+    reportsCount: 0,
+  });
 
-  // 1. Optimized Aggregate Counters (Uses Firestore Count Aggregation for 99% Read Reduction)
+  // 1. Fetch Global Counts (Single Batch on Mount)
   useEffect(() => {
     const fetchCounts = async () => {
       try {
-        const [
-          qaCount,
-          filesCount,
-          facCount,
-          quizCount,
-          doubtsCount,
-          missingCount,
-          courseCount,
-          reportsCount,
-          usersList,
-        ] = await Promise.all([
-          getCountFromServer(collection(db, "qna")),
-          getCountFromServer(collection(db, "files")),
-          getCountFromServer(collection(db, "facilities")),
-          getCountFromServer(collection(db, "quizzes")),
-          getCountFromServer(collection(db, "doubts")),
-          getCountFromServer(collection(db, "missing_searches")),
-          getCountFromServer(collection(db, "onboardings")),
-          getCountFromServer(query(collection(db, "reports"), where("status", "==", "pending"))),
-          getOrFetchCollection<any>("users"),
-        ]);
+        const [qaSnap, filesSnap, facSnap, doubtSnap, missSnap, repSnap, courseSnap, quizSnap, usersSnap] =
+          await Promise.all([
+            getCountFromServer(collection(db, "qas")),
+            getCountFromServer(collection(db, "files")),
+            getCountFromServer(collection(db, "facilities")),
+            getCountFromServer(collection(db, "doubts")),
+            getCountFromServer(collection(db, "missing_searches")),
+            getCountFromServer(query(collection(db, "reports"), where("status", "!=", "solved"))),
+            getCountFromServer(collection(db, "courses")),
+            getCountFromServer(collection(db, "quizzes")),
+            getDocs(collection(db, "users")),
+          ]);
 
         let agents = 0;
         let admins = 0;
         let masters = 0;
 
-        usersList.forEach((d: any) => {
-          const r = d.role;
-          if (r === "Master Admin") masters++;
-          else if (r === "Admin") admins++;
+        usersSnap.forEach((d) => {
+          const role = d.data().role;
+          if (role === "Master Admin") masters++;
+          else if (role === "Admin") admins++;
           else agents++;
         });
 
         setCounts({
-          qa: qaCount.data().count,
-          files: filesCount.data().count,
-          facilities: facCount.data().count,
-          quizzes: quizCount.data().count,
-          doubts: doubtsCount.data().count,
-          missing: missingCount.data().count,
-          courses: courseCount.data().count,
-          reports: reportsCount.data().count,
+          qa: qaSnap.data().count,
+          files: filesSnap.data().count,
+          facilities: facSnap.data().count,
           agents,
           admins,
           masters,
+          quizzes: quizSnap.data().count,
+          doubts: doubtSnap.data().count,
+          missing: missSnap.data().count,
+          reports: repSnap.data().count,
+          courses: courseSnap.data().count,
         });
       } catch (err) {
-        console.error("Overview counts load error:", err);
+        console.error("Failed to load overview counts:", err);
       }
     };
 
@@ -138,7 +141,6 @@ export default function AdminOverviewPage() {
       });
 
       try {
-        // Also check users collection for any user who logged in on dateFilter
         const usersSnap = await getDocs(collection(db, "users"));
         usersSnap.forEach((uDoc) => {
           const u = uDoc.data();
@@ -179,6 +181,23 @@ export default function AdminOverviewPage() {
     return () => unsubscribe();
   }, [dateFilter]);
 
+  // Online agents count
+  const onlineAgentsCount = useMemo(() => {
+    return activityLogs.filter((log) => {
+      const isLoggedOut = !!log.logoutTime && (!log.lastActive || log.logoutTime >= log.lastActive);
+      return !isLoggedOut && log.lastActive && Date.now() - log.lastActive < 3 * 60 * 1000;
+    }).length;
+  }, [activityLogs]);
+
+  // Displayed Logs with Online filter
+  const displayedLogs = useMemo(() => {
+    if (!filterOnlineOnly) return activityLogs;
+    return activityLogs.filter((log) => {
+      const isLoggedOut = !!log.logoutTime && (!log.lastActive || log.logoutTime >= log.lastActive);
+      return !isLoggedOut && log.lastActive && Date.now() - log.lastActive < 3 * 60 * 1000;
+    });
+  }, [activityLogs, filterOnlineOnly]);
+
   // Format active duration
   const formatDuration = (seconds: number) => {
     if (!seconds || seconds <= 0) return "0s";
@@ -204,21 +223,42 @@ export default function AdminOverviewPage() {
     }
   };
 
-  // 3. Drilldown report fetch
+  // 3. Drilldown report fetch with low Firestore reads (using getCountFromServer)
   const handleOpenDrilldown = async (email: string) => {
     setDrilldownEmail(email);
     setDrilldownLoading(true);
 
     try {
-      const userSnap = await getDoc(doc(db, "users", email));
-      const activitySnap = await getDoc(doc(db, "daily_activity", `${email}_${dateFilter}`));
+      const cleanEmail = email.toLowerCase().trim();
+      const [userSnap, activitySnap, doubtsCountSnap, reportsCountSnap] = await Promise.all([
+        getDoc(doc(db, "users", cleanEmail)),
+        getDoc(doc(db, "daily_activity", `${cleanEmail}_${dateFilter}`)),
+        getCountFromServer(query(collection(db, "doubts"), where("authorEmail", "==", cleanEmail))),
+        getCountFromServer(query(collection(db, "reports"), where("reporterEmail", "==", cleanEmail))),
+      ]);
+
+      const profile = userSnap.exists() ? userSnap.data() : null;
+      const quizDone = profile?.quizCompleted?.length || 0;
+      const courseDone =
+        profile?.coursesCompleted?.length ||
+        (profile?.courseProgress
+          ? Object.values(profile.courseProgress).filter((c: any) => c.status === "completed").length
+          : 0);
+
+      setAgentExtraStats({
+        totalBookings: profile?.bookingsCount || 0,
+        doubtsCount: doubtsCountSnap.data().count,
+        reportsCount: reportsCountSnap.data().count,
+        coursesCompleted: courseDone,
+        quizzesCompleted: quizDone,
+      });
 
       setDrilldownData({
-        profile: userSnap.exists() ? userSnap.data() : null,
+        profile: profile,
         activity: activitySnap.exists() ? (activitySnap.data() as DailyActivityLog) : null,
       });
     } catch (e) {
-      console.error(e);
+      console.error("Drilldown fetch error:", e);
     } finally {
       setDrilldownLoading(false);
     }
@@ -240,9 +280,6 @@ export default function AdminOverviewPage() {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
-      {/* ----------------------------------------------------
-          DRILLDOWN AGENT DAILY ACTIVITY REPORT
-          ---------------------------------------------------- */}
       {drilldownEmail ? (
         <div className="space-y-6">
           <button
@@ -263,7 +300,6 @@ export default function AdminOverviewPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              {/* Header card */}
               <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-6">
                 <div className="flex items-center gap-4">
                   <div className="w-16 h-16 rounded-full bg-blue-600 text-white font-extrabold text-2xl flex items-center justify-center overflow-hidden shadow-md">
@@ -287,10 +323,11 @@ export default function AdminOverviewPage() {
                 </div>
               </div>
 
-              {/* Stats row */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs">
-                  <div className="text-xl font-extrabold text-blue-600">
+              {/* 8 Major Activity Metrics Boxes */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 sm:gap-4">
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <Clock className="w-5 h-5 text-blue-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
                     {(() => {
                       let sec = drilldownData.activity?.totalSeconds || 0;
                       if (!sec && drilldownData.activity?.pageVisits) {
@@ -299,34 +336,77 @@ export default function AdminOverviewPage() {
                       return formatDuration(sec);
                     })()}
                   </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                     Screen Time Active
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs">
-                  <div className="text-xl font-extrabold text-purple-600">
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <User className="w-5 h-5 text-purple-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
                     {drilldownData.activity?.loginCount || 1}
                   </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                     Sessions Today
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs">
-                  <div className="text-xl font-extrabold text-emerald-600">
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <Gamepad2 className="w-5 h-5 text-indigo-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
+                    {agentExtraStats.quizzesCompleted}
+                  </div>
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                    Quizzes Completed
+                  </div>
+                </div>
+
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <GraduationCap className="w-5 h-5 text-emerald-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
+                    {agentExtraStats.coursesCompleted}
+                  </div>
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                    Courses Completed
+                  </div>
+                </div>
+
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <MessageSquare className="w-5 h-5 text-amber-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
+                    {agentExtraStats.doubtsCount}
+                  </div>
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                    Doubts Posted
+                  </div>
+                </div>
+
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <Flag className="w-5 h-5 text-rose-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
+                    {agentExtraStats.reportsCount}
+                  </div>
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                    Reports Submitted
+                  </div>
+                </div>
+
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <Download className="w-5 h-5 text-teal-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
                     {drilldownData.activity?.filesDownloaded || 0}
                   </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                     Files Downloaded
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs">
-                  <div className="text-xl font-extrabold text-amber-600">
+                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
+                  <Search className="w-5 h-5 text-slate-600 mx-auto mb-1.5" />
+                  <div className="text-lg font-black text-slate-900">
                     {drilldownData.activity?.searches?.length || 0}
                   </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                     Searches Executed
                   </div>
                 </div>
@@ -386,19 +466,81 @@ export default function AdminOverviewPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Agent Activity & Audit Trail (Last 20 Activities with Internal Scroll) */}
+              <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-blue-600" />
+                    <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                      Agent Activity & Audit Trail
+                    </h3>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                      Last {Math.min(20, (drilldownData.activity?.timelineEvents || []).length)} Actions
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-slate-400 font-medium">Auto-recorded live</span>
+                </div>
+
+                <div className="max-h-72 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
+                  {(!drilldownData.activity?.timelineEvents || drilldownData.activity.timelineEvents.length === 0) ? (
+                    <div className="text-center py-10 text-slate-400 text-xs italic">
+                      No interaction events recorded for this agent on this date.
+                    </div>
+                  ) : (
+                    [...(drilldownData.activity.timelineEvents)]
+                      .reverse()
+                      .slice(0, 20)
+                      .map((evt, idx) => {
+                        const timeStr = formatTimeOnly(evt.time);
+                        const colorStyles =
+                          evt.color === "rose"
+                            ? "bg-rose-50 text-rose-700 border-rose-200"
+                            : evt.color === "emerald"
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : evt.color === "amber"
+                            ? "bg-amber-50 text-amber-700 border-amber-200"
+                            : evt.color === "purple"
+                            ? "bg-purple-50 text-purple-700 border-purple-200"
+                            : evt.color === "teal"
+                            ? "bg-teal-50 text-teal-700 border-teal-200"
+                            : evt.color === "slate"
+                            ? "bg-slate-50 text-slate-700 border-slate-200"
+                            : "bg-blue-50 text-blue-700 border-blue-200";
+
+                        return (
+                          <div
+                            key={idx}
+                            className="flex items-start justify-between gap-3 p-3 bg-slate-50/70 border border-slate-200 rounded-xl text-xs hover:bg-slate-50 transition-colors"
+                          >
+                            <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
+                              >
+                                {evt.icon === "Trash2" ? "DELETED" : evt.color === "rose" ? "REPORT" : evt.color === "amber" ? "DOUBT" : evt.color === "purple" ? "QUIZ" : evt.color === "emerald" ? "COURSE" : "ACTIVITY"}
+                              </span>
+                              <p className="text-slate-800 font-medium break-words leading-relaxed flex-1">
+                                {evt.desc}
+                              </p>
+                            </div>
+                            <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-0.5">
+                              {timeStr}
+                            </div>
+                          </div>
+                        );
+                      })
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>
       ) : (
-        /* ----------------------------------------------------
-            MAIN OVERVIEW DASHBOARD & 12 KPI CARDS
-            ---------------------------------------------------- */
         <div className="space-y-8">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h1>
           </div>
 
-          {/* 12 Metric Counter Cards (2-col on mobile) */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-4">
             {statCards.map((card) => {
               const Icon = card.icon;
@@ -426,14 +568,37 @@ export default function AdminOverviewPage() {
             })}
           </div>
 
-          {/* Daily Agent Activity Monitoring Table */}
           <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-              <div>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                   <Clock className="w-5 h-5 text-blue-600" />
                   <span>Daily Agent Engagement Log</span>
                 </h2>
+
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+                  <button
+                    onClick={() => setFilterOnlineOnly(false)}
+                    className={`px-3 py-1 rounded-lg transition-all ${
+                      !filterOnlineOnly
+                        ? "bg-white text-slate-900 shadow-2xs font-bold"
+                        : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    All ({activityLogs.length})
+                  </button>
+                  <button
+                    onClick={() => setFilterOnlineOnly(true)}
+                    className={`px-3 py-1 rounded-lg flex items-center gap-1.5 transition-all ${
+                      filterOnlineOnly
+                        ? "bg-emerald-600 text-white shadow-2xs font-bold"
+                        : "text-emerald-700 hover:text-emerald-800"
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${filterOnlineOnly ? "bg-white" : "bg-emerald-500"} animate-pulse`} />
+                    Active Online ({onlineAgentsCount})
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-700">
@@ -447,7 +612,6 @@ export default function AdminOverviewPage() {
               </div>
             </div>
 
-            {/* Table */}
             <div className="overflow-x-auto rounded-2xl border border-slate-100">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
@@ -467,14 +631,16 @@ export default function AdminOverviewPage() {
                         Loading daily logs...
                       </td>
                     </tr>
-                  ) : activityLogs.length === 0 ? (
+                  ) : displayedLogs.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="text-center py-12 text-slate-400">
-                        No agent activity recorded for {dateFilter}.
+                        {filterOnlineOnly
+                          ? "No agents are currently active online right now."
+                          : `No agent activity recorded for ${dateFilter}.`}
                       </td>
                     </tr>
                   ) : (
-                    activityLogs.map((log) => {
+                    displayedLogs.map((log) => {
                       let totalSeconds = log.totalSeconds || 0;
                       if (!totalSeconds && log.pageVisits) {
                         Object.values(log.pageVisits).forEach((s) => (totalSeconds += s));
@@ -487,7 +653,7 @@ export default function AdminOverviewPage() {
                       const loginStr = formatTimeOnly(log.firstLogin || log.loginTime);
 
                       const isLoggedOut = !!log.logoutTime && (!log.lastActive || log.logoutTime >= log.lastActive);
-                      const isRecentlyActive = !isLoggedOut && log.lastActive && (Date.now() - log.lastActive < 3 * 60 * 1000);
+                      const isRecentlyActive = !isLoggedOut && log.lastActive && Date.now() - log.lastActive < 3 * 60 * 1000;
 
                       return (
                         <tr key={log.email} className="hover:bg-slate-50/70 transition-colors">

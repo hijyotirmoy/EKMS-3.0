@@ -6,6 +6,8 @@ import { db } from "@/lib/firebase";
 import { getOrFetchCollection } from "@/lib/cache";
 import { AppFile } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
+import { useAuth } from "@/context/AuthContext";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Folder,
   Search,
@@ -18,6 +20,7 @@ import {
 import ReportIssueModal from "@/components/common/ReportIssueModal";
 
 export default function FilesPage() {
+  const { user } = useAuth();
   const [files, setFiles] = useState<AppFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -88,6 +91,12 @@ export default function FilesPage() {
     try {
       const docRef = doc(db, "files", file.id);
       await updateDoc(docRef, { downloadCount: increment(1) });
+      if (user?.email) {
+        logUserActivity(user.email, {
+          desc: `Downloaded file: "${file.name}"`,
+          type: "download",
+        });
+      }
     } catch (e) {
       console.log("Download tracking sync delayed.", e);
     }

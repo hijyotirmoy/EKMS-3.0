@@ -6,6 +6,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { AppReport } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Flag,
   Search,
@@ -169,6 +170,10 @@ export default function ReportsPage() {
       };
 
       await addDoc(collection(db, "reports"), payload);
+      logUserActivity(user.email, {
+        desc: `Submitted ${addType} report: "${addMessage.trim().substring(0, 45)}..."`,
+        type: "report",
+      });
       setAddMessage("");
       setAddModalOpen(false);
       toast.success("Report submitted successfully!");

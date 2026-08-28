@@ -14,7 +14,14 @@ import {
   HelpCircle,
   Search,
   CheckCircle2,
+  GraduationCap,
+  MessageSquare,
+  Flag,
+  User,
+  Activity,
+  SearchX,
 } from "lucide-react";
+import { getCountFromServer, query, collection, where } from "firebase/firestore";
 
 export default function IndividualAgentReportPage() {
   const params = useParams();
@@ -29,6 +36,12 @@ export default function IndividualAgentReportPage() {
   const [profile, setProfile] = useState<any>(null);
   const [activity, setActivity] = useState<DailyActivityLog | null>(null);
   const [loading, setLoading] = useState(true);
+  const [extraStats, setExtraStats] = useState({
+    doubtsCount: 0,
+    reportsCount: 0,
+    coursesCompleted: 0,
+    quizzesCompleted: 0,
+  });
 
   useEffect(() => {
     if (!email) return;
@@ -36,10 +49,30 @@ export default function IndividualAgentReportPage() {
     const fetchReport = async () => {
       setLoading(true);
       try {
-        const userSnap = await getDoc(doc(db, "users", email.toLowerCase()));
-        const actSnap = await getDoc(doc(db, "daily_activity", `${email.toLowerCase()}_${date}`));
+        const cleanEmail = email.toLowerCase().trim();
+        const [userSnap, actSnap, doubtsSnap, reportsSnap] = await Promise.all([
+          getDoc(doc(db, "users", cleanEmail)),
+          getDoc(doc(db, "daily_activity", `${cleanEmail}_${date}`)),
+          getCountFromServer(query(collection(db, "doubts"), where("authorEmail", "==", cleanEmail))),
+          getCountFromServer(query(collection(db, "reports"), where("reporterEmail", "==", cleanEmail))),
+        ]);
 
-        setProfile(userSnap.exists() ? userSnap.data() : null);
+        const prof = userSnap.exists() ? userSnap.data() : null;
+        const quizDone = prof?.quizCompleted?.length || 0;
+        const courseDone =
+          prof?.coursesCompleted?.length ||
+          (prof?.courseProgress
+            ? Object.values(prof.courseProgress).filter((c: any) => c.status === "completed").length
+            : 0);
+
+        setExtraStats({
+          doubtsCount: doubtsSnap.data().count,
+          reportsCount: reportsSnap.data().count,
+          coursesCompleted: courseDone,
+          quizzesCompleted: quizDone,
+        });
+
+        setProfile(prof);
         setActivity(actSnap.exists() ? (actSnap.data() as DailyActivityLog) : null);
       } catch (e) {
         console.error(e);
@@ -51,9 +84,32 @@ export default function IndividualAgentReportPage() {
     fetchReport();
   }, [email, date]);
 
+  const formatDuration = (seconds: number) => {
+    if (!seconds || seconds <= 0) return "0s";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+
+  const formatTimeOnly = (timestamp?: number) => {
+    if (!timestamp) return "-";
+    try {
+      return new Date(timestamp).toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return "-";
+    }
+  };
+
   const totalSeconds = (() => {
-    let sec = 0;
-    if (activity?.pageVisits) {
+    let sec = activity?.totalSeconds || 0;
+    if (!sec && activity?.pageVisits) {
       Object.values(activity.pageVisits).forEach((s) => (sec += s));
     }
     return sec;
@@ -70,7 +126,7 @@ export default function IndividualAgentReportPage() {
           className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-full shadow-xs transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
-          <span>Back to Overview</span>
+          <span>Back to System Overview</span>
         </button>
 
         <div className="flex items-center gap-2 bg-white border border-slate-200 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-700">
@@ -92,7 +148,7 @@ export default function IndividualAgentReportPage() {
       ) : (
         <div className="space-y-6">
           {/* Header Card */}
-          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs flex items-center justify-between">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <div className="w-16 h-16 rounded-full bg-blue-600 text-white font-extrabold text-2xl flex items-center justify-center overflow-hidden shadow-md">
                 {profile?.photoURL ? (
@@ -114,33 +170,69 @@ export default function IndividualAgentReportPage() {
             </div>
           </div>
 
-          {/* 3 KPI Metrics */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-              <Download className="w-6 h-6 text-blue-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">
-                {activity?.filesDownloaded || 0}
-              </div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Files Downloaded
+          {/* 8 KPI Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 sm:gap-4">
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <Clock className="w-5 h-5 text-blue-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{formatDuration(totalSeconds)}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                Screen Time Active
               </div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-              <Gamepad2 className="w-6 h-6 text-emerald-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">{quizzesCompleted.length}</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <User className="w-5 h-5 text-purple-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{activity?.loginCount || 1}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                Sessions Today
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <Gamepad2 className="w-5 h-5 text-indigo-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{extraStats.quizzesCompleted}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
                 Quizzes Completed
               </div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-              <Clock className="w-6 h-6 text-purple-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">
-                {totalSeconds < 60 ? `${totalSeconds}s` : `${Math.floor(totalSeconds / 60)}m`}
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <GraduationCap className="w-5 h-5 text-emerald-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{extraStats.coursesCompleted}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                Courses Completed
               </div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Time Active Today
+            </div>
+
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <MessageSquare className="w-5 h-5 text-amber-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{extraStats.doubtsCount}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                Doubts Posted
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <Flag className="w-5 h-5 text-rose-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{extraStats.reportsCount}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                Reports Submitted
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <Download className="w-5 h-5 text-teal-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{activity?.filesDownloaded || 0}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                Files Downloaded
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
+              <Search className="w-5 h-5 text-slate-600 mx-auto mb-1.5" />
+              <div className="text-lg font-black text-slate-900">{activity?.searches?.length || 0}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                Searches Executed
               </div>
             </div>
           </div>
@@ -152,20 +244,20 @@ export default function IndividualAgentReportPage() {
               <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
                 <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                   <Search className="w-4 h-4 text-blue-600" />
-                  <span>Search History</span>
+                  <span>Search History Today</span>
                 </h3>
-                <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
                   {activity?.searches && activity.searches.length > 0 ? (
                     activity.searches.map((s, i) => (
-                      <div
+                      <span
                         key={i}
-                        className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-200 font-medium"
+                        className="bg-blue-50 text-blue-700 border border-blue-200 px-3 py-1 rounded-full text-xs font-semibold"
                       >
                         &quot;{s}&quot;
-                      </div>
+                      </span>
                     ))
                   ) : (
-                    <div className="text-xs text-slate-400 py-4 text-center">No searches recorded today.</div>
+                    <div className="text-xs text-slate-400 py-4 text-center w-full">No searches recorded today.</div>
                   )}
                 </div>
               </div>
@@ -180,8 +272,8 @@ export default function IndividualAgentReportPage() {
                     Object.entries(activity.pageVisits).map(([p, sec]) => (
                       <div key={p} className="space-y-1 text-xs">
                         <div className="flex justify-between font-semibold text-slate-700">
-                          <span>{p.replace(".html", "").toUpperCase()}</span>
-                          <span>{Math.ceil(sec / 60)} mins</span>
+                          <span>{p.replace(/[/._]/g, " ").trim().toUpperCase() || "HOME"}</span>
+                          <span>{formatDuration(sec)}</span>
                         </div>
                         <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                           <div
@@ -225,6 +317,72 @@ export default function IndividualAgentReportPage() {
                   })
                 )}
               </div>
+            </div>
+          </div>
+
+          {/* Agent Activity & Audit Trail (Last 20 Activities with Internal Scroll) */}
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Activity className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                  Agent Activity & Audit Trail
+                </h3>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                  Last {Math.min(20, (activity?.timelineEvents || []).length)} Actions
+                </span>
+              </div>
+              <span className="text-[11px] text-slate-400 font-medium">Auto-recorded live</span>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
+              {(!activity?.timelineEvents || activity.timelineEvents.length === 0) ? (
+                <div className="text-center py-10 text-slate-400 text-xs italic">
+                  No interaction events recorded for this agent on this date.
+                </div>
+              ) : (
+                [...(activity.timelineEvents)]
+                  .reverse()
+                  .slice(0, 20)
+                  .map((evt, idx) => {
+                    const timeStr = formatTimeOnly(evt.time);
+                    const colorStyles =
+                      evt.color === "rose"
+                        ? "bg-rose-50 text-rose-700 border-rose-200"
+                        : evt.color === "emerald"
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : evt.color === "amber"
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : evt.color === "purple"
+                        ? "bg-purple-50 text-purple-700 border-purple-200"
+                        : evt.color === "teal"
+                        ? "bg-teal-50 text-teal-700 border-teal-200"
+                        : evt.color === "slate"
+                        ? "bg-slate-50 text-slate-700 border-slate-200"
+                        : "bg-blue-50 text-blue-700 border-blue-200";
+
+                    return (
+                      <div
+                        key={idx}
+                        className="flex items-start justify-between gap-3 p-3 bg-slate-50/70 border border-slate-200 rounded-xl text-xs hover:bg-slate-50 transition-colors"
+                      >
+                        <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
+                          >
+                            {evt.icon === "Trash2" ? "DELETED" : evt.color === "rose" ? "REPORT" : evt.color === "amber" ? "DOUBT" : evt.color === "purple" ? "QUIZ" : evt.color === "emerald" ? "COURSE" : "ACTIVITY"}
+                          </span>
+                          <p className="text-slate-800 font-medium break-words leading-relaxed flex-1">
+                            {evt.desc}
+                          </p>
+                        </div>
+                        <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-0.5">
+                          {timeStr}
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
             </div>
           </div>
         </div>
