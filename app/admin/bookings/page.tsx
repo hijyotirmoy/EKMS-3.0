@@ -138,7 +138,7 @@ export default function AdminBookingsPage() {
   }, []);
 
   // 2. Flatten Bookings & Compute 13 Metrics
-  const { allBookings, metrics } = useMemo(() => {
+  const { allBookings, activeRescheduleLogs, metrics } = useMemo(() => {
     const list: AdminBookingRecord[] = [];
     const todayObj = new Date();
     const currentYear = todayObj.getFullYear();
@@ -229,8 +229,35 @@ export default function AdminBookingsPage() {
 
     list.sort((a, b) => b.timestamp - a.timestamp);
 
+    // Active bookings lookup for reschedule logs validity
+    const activeBookingSet = new Set<string>();
+    list.forEach((b) => {
+      if (b.agentEmail) {
+        activeBookingSet.add(`${b.agentEmail.toLowerCase()}_${(b.ipName || "").toLowerCase().trim()}`);
+        activeBookingSet.add(`${b.agentEmail.toLowerCase()}_${b.dateKey}`);
+      }
+    });
+
+    const activeLogs: RescheduleLog[] = [];
+    rescheduleLogs.forEach((l) => {
+      const owner = (l.seatOwner || "").toLowerCase().trim();
+      const ip = (l.ipName || "").toLowerCase().trim();
+      const key1 = `${owner}_${ip}`;
+      const key2 = `${owner}_${l.newDate}`;
+      const key3 = `${owner}_${l.originalDate}`;
+
+      if (activeBookingSet.has(key1) || activeBookingSet.has(key2) || activeBookingSet.has(key3)) {
+        activeLogs.push(l);
+      } else if (l.id) {
+        deleteDoc(doc(db, "rescheduleLogs", l.id)).catch(() => {});
+      }
+    });
+
+    const rescheduledCount = list.filter((b) => b.rescheduled).length || activeLogs.length;
+
     return {
       allBookings: list,
+      activeRescheduleLogs: activeLogs,
       metrics: {
         total,
         month,
@@ -244,7 +271,7 @@ export default function AdminBookingsPage() {
         nonVisited,
         upcoming,
         delayed,
-        rescheduled: rescheduleLogs.length,
+        rescheduled: rescheduledCount,
       },
     };
   }, [liveBookings, userProfiles, rescheduleLogs]);
@@ -406,6 +433,27 @@ export default function AdminBookingsPage() {
           });
         }
       });
+
+      // Automatically delete related reschedule logs for this deleted booking
+      try {
+        const ownerEmail = b.agentEmail?.toLowerCase();
+        const ip = (b.ipName || "").toLowerCase().trim();
+        if (ownerEmail) {
+          const logsSnap = await getDocs(
+            query(collection(db, "rescheduleLogs"), where("seatOwner", "==", ownerEmail))
+          );
+          logsSnap.forEach((lDoc) => {
+            const l = lDoc.data();
+            const logIp = (l.ipName || "").toLowerCase().trim();
+            if ((ip && logIp === ip) || l.newDate === b.dateKey || l.originalDate === b.dateKey) {
+              deleteDoc(doc(db, "rescheduleLogs", lDoc.id)).catch(() => {});
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("Could not delete rescheduleLogs:", e);
+      }
+
       logUserActivity(user?.email, {
         desc: `Deleted verification booking for IP: ${b.ipName || "Beneficiary"} (${b.dateKey})`,
         type: "delete",
@@ -545,7 +593,7 @@ export default function AdminBookingsPage() {
 
     // Sheet 3: Reschedule Logs
     const wsLogs = XLSX.utils.json_to_sheet(
-      rescheduleLogs.map((l) => ({
+      activeRescheduleLogs.map((l) => ({
         "IP / IW Name": l.ipName,
         "Seat Owner": l.seatOwner,
         "Original Date": l.originalDate,
@@ -589,6 +637,21 @@ export default function AdminBookingsPage() {
             });
           }
         });
+
+        // Cleanup related rescheduleLogs for each bulk deleted key
+        try {
+          if (email) {
+            const logsSnap = await getDocs(
+              query(collection(db, "rescheduleLogs"), where("seatOwner", "==", email.toLowerCase()))
+            );
+            logsSnap.forEach((lDoc) => {
+              const l = lDoc.data();
+              if (l.newDate === dateKey || l.originalDate === dateKey) {
+                deleteDoc(doc(db, "rescheduleLogs", lDoc.id)).catch(() => {});
+              }
+            });
+          }
+        } catch (e) {}
       }
 
       logUserActivity(user?.email, {
@@ -1403,14 +1466,14 @@ export default function AdminBookingsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                {rescheduleLogs.length === 0 ? (
+                {activeRescheduleLogs.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="text-center py-12 text-slate-400">
                       No reschedule events recorded.
                     </td>
                   </tr>
                 ) : (
-                  rescheduleLogs.map((log) => (
+                  activeRescheduleLogs.map((log) => (
                     <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
                       <td className="p-4 font-bold text-slate-900">{log.ipName}</td>
                       <td className="p-4 text-blue-600 font-semibold">{log.seatOwner}</td>

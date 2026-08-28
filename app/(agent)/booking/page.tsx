@@ -9,6 +9,7 @@ import {
   arrayUnion,
   arrayRemove,
   setDoc,
+  deleteDoc,
   query,
   where,
   getDocs,
@@ -216,6 +217,8 @@ export default function AgentBookingPage() {
     all.sort((a, b) => b.timestamp - a.timestamp);
     my.sort((a, b) => b.timestamp - a.timestamp);
 
+    const rescheduledCount = my.filter((b) => b.rescheduled).length;
+
     return {
       allBookings: all,
       myBookings: my,
@@ -227,10 +230,10 @@ export default function AgentBookingPage() {
         todayMy,
         visitedMy,
         delayedMy,
-        rescheduledByMeCount,
+        rescheduledByMeCount: rescheduledCount,
       },
     };
-  }, [liveBookings, user, rescheduledByMeCount]);
+  }, [liveBookings, user]);
 
   // 4. Filtered Table Data
   const displayedBookings = useMemo(() => {
@@ -425,6 +428,30 @@ export default function AgentBookingPage() {
           });
         }
       });
+
+      // Automatically delete related reschedule logs for this cancelled booking
+      try {
+        const ownerEmail = cancelData.record.agentEmail?.toLowerCase();
+        const ip = cancelData.record.ipName?.toLowerCase()?.trim();
+        if (ownerEmail) {
+          const logsSnap = await getDocs(
+            query(collection(db, "rescheduleLogs"), where("seatOwner", "==", ownerEmail))
+          );
+          logsSnap.forEach((lDoc) => {
+            const l = lDoc.data();
+            const logIp = (l.ipName || "").toLowerCase().trim();
+            if (
+              (ip && logIp === ip) ||
+              l.newDate === cancelData.dateKey ||
+              l.originalDate === cancelData.dateKey
+            ) {
+              deleteDoc(doc(db, "rescheduleLogs", lDoc.id)).catch(() => {});
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("Could not cleanup rescheduleLogs:", e);
+      }
 
       logUserActivity(user.email, {
         desc: `Deleted / Cancelled booking for IP: ${cancelData.record.ipName || "Beneficiary"} on ${cancelData.dateKey}`,
