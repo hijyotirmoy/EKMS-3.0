@@ -72,22 +72,28 @@ export default function ActivityTracker() {
             timelineEvents: [
               {
                 time: now,
-                desc: "Logged in to EKMS Portal",
+                desc: "Logged in to EKMS Portal (Session #1)",
+                type: "auth",
                 icon: "LogIn",
                 color: "emerald",
               },
             ],
           });
         } else {
-          // If returning today, update lastActive and add a timeline event if not done in this browser mount
-          if (initializedTodayRef.current !== today) {
+          const actData = snap.data();
+          const isReturningAfterLogout = !!actData.logoutTime && actData.logoutTime >= (actData.loginTime || 0);
+
+          if (initializedTodayRef.current !== today || isReturningAfterLogout) {
+            const nextSessionNum = (actData.loginCount || 1) + (isReturningAfterLogout ? 1 : 0);
             await updateDoc(activityDocRef, {
               name: userName,
               lastActive: now,
-              loginCount: increment(1),
+              loginTime: now,
+              ...(isReturningAfterLogout ? { loginCount: increment(1) } : {}),
               timelineEvents: arrayUnion({
                 time: now,
-                desc: "Session started / resumed",
+                desc: `Logged in to EKMS Portal (Session #${nextSessionNum})`,
+                type: "auth",
                 icon: "LogIn",
                 color: "blue",
               }),

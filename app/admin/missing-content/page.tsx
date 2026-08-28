@@ -12,8 +12,10 @@ import {
   orderBy,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { MissingSearchLog } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   SearchX,
   Sparkles,
@@ -24,6 +26,7 @@ import {
 
 export default function AdminMissingContentPage() {
   const router = useRouter();
+  const { user } = useAuth();
   const { toast, showConfirm } = usePopup();
   const [logs, setLogs] = useState<MissingSearchLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,6 +54,10 @@ export default function AdminMissingContentPage() {
     if (log.id) {
       try {
         await deleteDoc(doc(db, "missing_searches", log.id));
+        logUserActivity(user?.email, {
+          desc: `Resolved missing query: "${log.term}"`,
+          type: "edit",
+        });
       } catch (e) {}
     }
     router.push(`/admin/qa?draft=${encodeURIComponent(log.term)}`);

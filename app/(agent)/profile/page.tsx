@@ -8,6 +8,7 @@ import { sendPasswordResetEmail } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { usePopup } from "@/context/PopupContext";
 import { getBase64Image, timeAgo } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   User,
   Camera,
@@ -166,6 +167,11 @@ export default function ProfilePage() {
       const dataUri = await getBase64Image(file, 600, 0.75);
       await updateProfileData({ photoURL: dataUri });
 
+      logUserActivity(user?.email, {
+        desc: "Updated profile photo / avatar",
+        type: "profile",
+      });
+
       // Silent backup to Drive script if endpoint exists
       const scriptUrl = process.env.NEXT_PUBLIC_GOOGLE_SCRIPT_URL;
       if (scriptUrl) {
@@ -195,6 +201,10 @@ export default function ProfilePage() {
     setNameSaving(true);
     try {
       await updateProfileData({ displayName: newName.trim(), name: newName.trim() });
+      logUserActivity(user?.email, {
+        desc: `Changed profile name to: "${newName.trim()}"`,
+        type: "profile",
+      });
       setNameModalOpen(false);
       toast.success("Name updated successfully!");
     } catch (err) {
@@ -210,6 +220,10 @@ export default function ProfilePage() {
     setDobSaving(true);
     try {
       await updateProfileData({ dob: newDob });
+      logUserActivity(user?.email, {
+        desc: `Updated Date of Birth to: ${newDob}`,
+        type: "profile",
+      });
       setDobModalOpen(false);
       toast.success("Date of birth updated successfully!");
     } catch (err) {

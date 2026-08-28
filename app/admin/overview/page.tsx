@@ -450,21 +450,24 @@ export default function AdminOverviewPage() {
                 </div>
               </div>
 
-              {/* Page Time Distribution & Searches Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* 2-Column Grid: Left: Time Spent per Page | Right: Agent Daily Activity & Audit Trail */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
                 {/* Time Spent per Page */}
-                <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-                  <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                    <Clock className="w-4 h-4 text-amber-500" />
-                    <span>Time Spent per Page ({dateFilter})</span>
-                  </h3>
-                  <div className="space-y-3">
+                <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h3 className="font-bold text-slate-900 text-sm sm:text-base flex items-center gap-2">
+                      <Clock className="w-5 h-5 text-amber-500" />
+                      <span>Time Spent per Page</span>
+                    </h3>
+                    <span className="text-[11px] font-semibold text-slate-400">{dateFilter}</span>
+                  </div>
+                  <div className="space-y-3 max-h-96 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-200">
                     {drilldownData.activity?.pageVisits && Object.keys(drilldownData.activity.pageVisits).length > 0 ? (
                       Object.entries(drilldownData.activity.pageVisits).map(([page, sec]) => (
-                        <div key={page} className="space-y-1 text-xs">
+                        <div key={page} className="space-y-1.5 text-xs">
                           <div className="flex justify-between font-semibold text-slate-700">
                             <span>{page.replace(/[/._]/g, " ").trim().toUpperCase() || "HOME"}</span>
-                            <span>{formatDuration(sec)}</span>
+                            <span className="text-slate-500 font-bold">{formatDuration(sec)}</span>
                           </div>
                           <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                             <div
@@ -475,133 +478,113 @@ export default function AdminOverviewPage() {
                         </div>
                       ))
                     ) : (
-                      <div className="text-xs text-slate-400 py-6 text-center">No page time logged for {dateFilter}.</div>
+                      <div className="text-xs text-slate-400 py-12 text-center">No page time logged for {dateFilter}.</div>
                     )}
                   </div>
                 </div>
 
-                {/* Search Queries */}
-                <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-                  <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                    <SearchX className="w-4 h-4 text-blue-600" />
-                    <span>Search History ({dateFilter})</span>
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {drilldownData.activity?.searches && drilldownData.activity.searches.length > 0 ? (
-                      drilldownData.activity.searches.map((s, i) => (
-                        <span
-                          key={i}
-                          className="bg-blue-50 text-blue-700 border border-blue-200 px-3 py-1 rounded-full text-xs font-semibold"
-                        >
-                          &quot;{s}&quot;
-                        </span>
-                      ))
-                    ) : (
-                      <div className="text-xs text-slate-400 py-6 text-center w-full">
-                        No searches logged on {dateFilter}.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Full-Width Agent Activity & Audit Trail */}
-              <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                  <div className="flex items-center gap-2">
-                    <Activity className="w-5 h-5 text-blue-600" />
-                    <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                      Agent Daily Activity & Audit Trail
-                    </h3>
-                    <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
-                      {(drilldownData.activity?.timelineEvents || []).length} Actions on {dateFilter}
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-slate-400 font-medium">All edits, deletions, additions & submissions auto-tracked</span>
-                </div>
-
-                <div className="max-h-96 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
-                  {(!drilldownData.activity?.timelineEvents || drilldownData.activity.timelineEvents.length === 0) ? (
-                    <div className="text-center py-12 text-slate-400 text-xs italic">
-                      No activity events recorded for {dateFilter}.
+                {/* Right: Agent Daily Activity & Audit Trail */}
+                <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Activity className="w-5 h-5 text-blue-600" />
+                      <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                        Daily Activity & Audit Trail
+                      </h3>
+                      <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                        {(drilldownData.activity?.timelineEvents || []).length} Actions
+                      </span>
                     </div>
-                  ) : (
-                    [...(drilldownData.activity.timelineEvents)]
-                      .reverse()
-                      .map((evt, idx) => {
-                        const timeStr = formatTimeOnly(evt.time);
-                        const typeTag =
-                          evt.type === "delete" || evt.icon === "Trash2"
-                            ? "DELETED"
-                            : evt.type === "add" || evt.icon === "PlusCircle"
-                            ? "ADDED"
-                            : evt.type === "edit" || evt.icon === "Edit"
-                            ? "EDITED"
-                            : evt.type === "report" || evt.color === "rose"
-                            ? "REPORT"
-                            : evt.type === "doubt" || evt.color === "amber"
-                            ? "DOUBT"
-                            : evt.type === "quiz" || evt.color === "purple"
-                            ? "QUIZ"
-                            : evt.type === "course" || evt.color === "emerald"
-                            ? "COURSE"
-                            : evt.type === "booking" || evt.color === "teal"
-                            ? "BOOKING"
-                            : evt.type === "facility"
-                            ? "FACILITY"
-                            : evt.type === "download"
-                            ? "DOWNLOAD"
-                            : evt.type === "profile"
-                            ? "PROFILE"
-                            : "ACTIVITY";
+                    <span className="text-[11px] text-slate-400 font-medium">{dateFilter}</span>
+                  </div>
 
-                        const colorStyles =
-                          typeTag === "DELETED"
-                            ? "bg-rose-50 text-rose-700 border-rose-200"
-                            : typeTag === "ADDED"
-                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                            : typeTag === "EDITED"
-                            ? "bg-blue-50 text-blue-700 border-blue-200"
-                            : typeTag === "REPORT"
-                            ? "bg-rose-50 text-rose-700 border-rose-200"
-                            : typeTag === "DOUBT"
-                            ? "bg-amber-50 text-amber-700 border-amber-200"
-                            : typeTag === "QUIZ"
-                            ? "bg-purple-50 text-purple-700 border-purple-200"
-                            : typeTag === "COURSE"
-                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                            : typeTag === "BOOKING"
-                            ? "bg-teal-50 text-teal-700 border-teal-200"
-                            : typeTag === "FACILITY"
-                            ? "bg-amber-50 text-amber-700 border-amber-200"
-                            : typeTag === "DOWNLOAD"
-                            ? "bg-teal-50 text-teal-700 border-teal-200"
-                            : typeTag === "PROFILE"
-                            ? "bg-indigo-50 text-indigo-700 border-indigo-200"
-                            : "bg-slate-50 text-slate-700 border-slate-200";
+                  <div className="max-h-96 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
+                    {(!drilldownData.activity?.timelineEvents || drilldownData.activity.timelineEvents.length === 0) ? (
+                      <div className="text-center py-12 text-slate-400 text-xs italic">
+                        No activity events recorded for {dateFilter}.
+                      </div>
+                    ) : (
+                      [...(drilldownData.activity.timelineEvents)]
+                        .reverse()
+                        .map((evt, idx) => {
+                          const timeStr = formatTimeOnly(evt.time);
+                          const typeTag =
+                            evt.type === "delete" || evt.icon === "Trash2"
+                              ? "DELETED"
+                              : evt.type === "add" || evt.icon === "PlusCircle"
+                              ? "ADDED"
+                              : evt.type === "edit" || evt.icon === "Edit"
+                              ? "EDITED"
+                              : evt.type === "report" || evt.color === "rose"
+                              ? "REPORT"
+                              : evt.type === "doubt" || evt.color === "amber"
+                              ? "DOUBT"
+                              : evt.type === "quiz" || evt.color === "purple"
+                              ? "QUIZ"
+                              : evt.type === "course" || evt.color === "emerald"
+                              ? "COURSE"
+                              : evt.type === "booking" || evt.color === "teal"
+                              ? "BOOKING"
+                              : evt.type === "facility"
+                              ? "FACILITY"
+                              : evt.type === "download"
+                              ? "DOWNLOAD"
+                              : evt.type === "profile"
+                              ? "PROFILE"
+                              : evt.type === "settings"
+                              ? "SETTINGS"
+                              : "ACTIVITY";
 
-                        return (
-                          <div
-                            key={idx}
-                            className="flex items-start justify-between gap-3 p-3.5 bg-slate-50/70 border border-slate-200 rounded-2xl text-xs hover:bg-slate-50 transition-colors"
-                          >
-                            <div className="flex items-start gap-3 flex-1 min-w-0">
-                              <span
-                                className={`px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
-                              >
-                                {typeTag}
-                              </span>
-                              <p className="text-slate-800 font-medium break-words leading-relaxed flex-1 pt-0.5">
-                                {evt.desc}
-                              </p>
+                          const colorStyles =
+                            typeTag === "DELETED"
+                              ? "bg-rose-50 text-rose-700 border-rose-200"
+                              : typeTag === "ADDED"
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : typeTag === "EDITED"
+                              ? "bg-blue-50 text-blue-700 border-blue-200"
+                              : typeTag === "REPORT"
+                              ? "bg-rose-50 text-rose-700 border-rose-200"
+                              : typeTag === "DOUBT"
+                              ? "bg-amber-50 text-amber-700 border-amber-200"
+                              : typeTag === "QUIZ"
+                              ? "bg-purple-50 text-purple-700 border-purple-200"
+                              : typeTag === "COURSE"
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : typeTag === "BOOKING"
+                              ? "bg-teal-50 text-teal-700 border-teal-200"
+                              : typeTag === "FACILITY"
+                              ? "bg-amber-50 text-amber-700 border-amber-200"
+                              : typeTag === "DOWNLOAD"
+                              ? "bg-teal-50 text-teal-700 border-teal-200"
+                              : typeTag === "PROFILE"
+                              ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                              : typeTag === "SETTINGS"
+                              ? "bg-slate-100 text-slate-700 border-slate-300"
+                              : "bg-slate-50 text-slate-700 border-slate-200";
+
+                          return (
+                            <div
+                              key={idx}
+                              className="flex items-start justify-between gap-3 p-3 bg-slate-50/70 border border-slate-200 rounded-2xl text-xs hover:bg-slate-50 transition-colors"
+                            >
+                              <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                                <span
+                                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
+                                >
+                                  {typeTag}
+                                </span>
+                                <p className="text-slate-800 font-medium break-words leading-relaxed flex-1 pt-0.5">
+                                  {evt.desc}
+                                </p>
+                              </div>
+                              <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-1">
+                                {timeStr}
+                              </div>
                             </div>
-                            <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-1">
-                              {timeStr}
-                            </div>
-                          </div>
-                        );
-                      })
-                  )}
+                          );
+                        })
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

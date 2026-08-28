@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut as fbSignOut } from "firebase/auth";
-import { doc, getDoc, setDoc, updateDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import { UserProfile, UserRole, SystemStatus } from "@/lib/types";
 
@@ -239,14 +239,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         const docId = `${email}_${today}`;
         
-        await setDoc(
-          doc(db, "daily_activity", docId),
-          {
+        try {
+          await updateDoc(doc(db, "daily_activity", docId), {
             logoutTime: now,
             lastActive: now,
-          },
-          { merge: true }
-        );
+            timelineEvents: arrayUnion({
+              time: now,
+              desc: "User logged out of session",
+              type: "auth",
+              color: "slate",
+              icon: "LogOut",
+            }),
+          });
+        } catch {
+          await setDoc(
+            doc(db, "daily_activity", docId),
+            {
+              logoutTime: now,
+              lastActive: now,
+            },
+            { merge: true }
+          );
+        }
+
         await setDoc(
           doc(db, "users", email),
           {

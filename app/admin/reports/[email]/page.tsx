@@ -249,43 +249,25 @@ export default function IndividualAgentReportPage() {
             </div>
           </div>
 
-          {/* Detailed Distribution & Scores */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Left: Searches & Page Times */}
+          {/* 2-Column Grid: Left: Time Spent per Page | Right: Agent Daily Activity & Audit Trail */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+            {/* Left: Time Spent per Page & Lifetime Quiz Scores */}
             <div className="space-y-6">
-              <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                  <Search className="w-4 h-4 text-blue-600" />
-                  <span>Search History Today</span>
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {activity?.searches && activity.searches.length > 0 ? (
-                    activity.searches.map((s, i) => (
-                      <span
-                        key={i}
-                        className="bg-blue-50 text-blue-700 border border-blue-200 px-3 py-1 rounded-full text-xs font-semibold"
-                      >
-                        &quot;{s}&quot;
-                      </span>
-                    ))
-                  ) : (
-                    <div className="text-xs text-slate-400 py-4 text-center w-full">No searches recorded today.</div>
-                  )}
+              <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h3 className="font-bold text-slate-900 text-sm sm:text-base flex items-center gap-2">
+                    <Clock className="w-5 h-5 text-amber-500" />
+                    <span>Time Spent per Page</span>
+                  </h3>
+                  <span className="text-[11px] font-semibold text-slate-400">{date}</span>
                 </div>
-              </div>
-
-              <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-amber-500" />
-                  <span>Time Spent per Page</span>
-                </h3>
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-64 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-200">
                   {activity?.pageVisits && Object.keys(activity.pageVisits).length > 0 ? (
                     Object.entries(activity.pageVisits).map(([p, sec]) => (
-                      <div key={p} className="space-y-1 text-xs">
+                      <div key={p} className="space-y-1.5 text-xs">
                         <div className="flex justify-between font-semibold text-slate-700">
                           <span>{p.replace(/[/._]/g, " ").trim().toUpperCase() || "HOME"}</span>
-                          <span>{formatDuration(sec)}</span>
+                          <span className="text-slate-500 font-bold">{formatDuration(sec)}</span>
                         </div>
                         <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                           <div
@@ -296,139 +278,143 @@ export default function IndividualAgentReportPage() {
                       </div>
                     ))
                   ) : (
-                    <div className="text-xs text-slate-400 py-4 text-center">No page time logged.</div>
+                    <div className="text-xs text-slate-400 py-10 text-center">No page time logged for {date}.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Lifetime Quiz Scores */}
+              <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
+                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <Gamepad2 className="w-4 h-4 text-emerald-600" />
+                  <span>Lifetime Assessment Scores</span>
+                </h3>
+
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {quizzesCompleted.length === 0 ? (
+                    <div className="text-xs text-slate-400 py-6 text-center">No quizzes completed yet.</div>
+                  ) : (
+                    quizzesCompleted.map((qId: string) => {
+                      const score = quizScores[qId] !== undefined ? quizScores[qId] : "N/A";
+                      return (
+                        <div
+                          key={qId}
+                          className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                        >
+                          <span className="font-bold text-slate-800">{qId.replace("Q", "Quiz ")}</span>
+                          <span className="bg-emerald-50 text-emerald-800 font-bold px-2.5 py-0.5 rounded-full text-xs">
+                            Score: {score}
+                          </span>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Right: Lifetime Quiz Scores */}
-            <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                <Gamepad2 className="w-4 h-4 text-emerald-600" />
-                <span>Lifetime Assessment Scores</span>
-              </h3>
+            {/* Right: Agent Daily Activity & Audit Trail */}
+            <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-blue-600" />
+                  <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                    Daily Activity & Audit Trail
+                  </h3>
+                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                    {(activity?.timelineEvents || []).length} Actions
+                  </span>
+                </div>
+                <span className="text-[11px] text-slate-400 font-medium">{date}</span>
+              </div>
 
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {quizzesCompleted.length === 0 ? (
-                  <div className="text-xs text-slate-400 py-8 text-center">No quizzes completed yet.</div>
+              <div className="max-h-[500px] overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
+                {(!activity?.timelineEvents || activity.timelineEvents.length === 0) ? (
+                  <div className="text-center py-16 text-slate-400 text-xs italic">
+                    No activity events recorded for this agent on {date}.
+                  </div>
                 ) : (
-                  quizzesCompleted.map((qId: string) => {
-                    const score = quizScores[qId] !== undefined ? quizScores[qId] : "N/A";
-                    return (
-                      <div
-                        key={qId}
-                        className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs"
-                      >
-                        <span className="font-bold text-slate-800">{qId.replace("Q", "Quiz ")}</span>
-                        <span className="bg-emerald-50 text-emerald-800 font-bold px-2.5 py-0.5 rounded-full text-xs">
-                          Score: {score}
-                        </span>
-                      </div>
-                    );
-                  })
+                  [...(activity.timelineEvents)]
+                    .reverse()
+                    .map((evt, idx) => {
+                      const timeStr = formatTimeOnly(evt.time);
+                      const typeTag =
+                        evt.type === "delete" || evt.icon === "Trash2"
+                          ? "DELETED"
+                          : evt.type === "add" || evt.icon === "PlusCircle"
+                          ? "ADDED"
+                          : evt.type === "edit" || evt.icon === "Edit"
+                          ? "EDITED"
+                          : evt.type === "report" || evt.color === "rose"
+                          ? "REPORT"
+                          : evt.type === "doubt" || evt.color === "amber"
+                          ? "DOUBT"
+                          : evt.type === "quiz" || evt.color === "purple"
+                          ? "QUIZ"
+                          : evt.type === "course" || evt.color === "emerald"
+                          ? "COURSE"
+                          : evt.type === "booking" || evt.color === "teal"
+                          ? "BOOKING"
+                          : evt.type === "facility"
+                          ? "FACILITY"
+                          : evt.type === "download"
+                          ? "DOWNLOAD"
+                          : evt.type === "profile"
+                          ? "PROFILE"
+                          : evt.type === "settings"
+                          ? "SETTINGS"
+                          : "ACTIVITY";
+
+                      const colorStyles =
+                        typeTag === "DELETED"
+                          ? "bg-rose-50 text-rose-700 border-rose-200"
+                          : typeTag === "ADDED"
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : typeTag === "EDITED"
+                          ? "bg-blue-50 text-blue-700 border-blue-200"
+                          : typeTag === "REPORT"
+                          ? "bg-rose-50 text-rose-700 border-rose-200"
+                          : typeTag === "DOUBT"
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          : typeTag === "QUIZ"
+                          ? "bg-purple-50 text-purple-700 border-purple-200"
+                          : typeTag === "COURSE"
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : typeTag === "BOOKING"
+                          ? "bg-teal-50 text-teal-700 border-teal-200"
+                          : typeTag === "FACILITY"
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          : typeTag === "DOWNLOAD"
+                          ? "bg-teal-50 text-teal-700 border-teal-200"
+                          : typeTag === "PROFILE"
+                          ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                          : typeTag === "SETTINGS"
+                          ? "bg-slate-100 text-slate-700 border-slate-300"
+                          : "bg-slate-50 text-slate-700 border-slate-200";
+
+                      return (
+                        <div
+                          key={idx}
+                          className="flex items-start justify-between gap-3 p-3 bg-slate-50/70 border border-slate-200 rounded-2xl text-xs hover:bg-slate-50 transition-colors"
+                        >
+                          <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                            <span
+                              className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
+                            >
+                              {typeTag}
+                            </span>
+                            <p className="text-slate-800 font-medium break-words leading-relaxed flex-1 pt-0.5">
+                              {evt.desc}
+                            </p>
+                          </div>
+                          <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-1">
+                            {timeStr}
+                          </div>
+                        </div>
+                      );
+                    })
                 )}
               </div>
-            </div>
-          </div>
-
-          {/* Full-Width Agent Activity & Audit Trail */}
-          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <Activity className="w-5 h-5 text-blue-600" />
-                <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                  Agent Daily Activity & Audit Trail
-                </h3>
-                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
-                  {(activity?.timelineEvents || []).length} Actions on {date}
-                </span>
-              </div>
-              <span className="text-[11px] text-slate-400 font-medium">All edits, deletions, additions & submissions auto-tracked</span>
-            </div>
-
-            <div className="max-h-96 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
-              {(!activity?.timelineEvents || activity.timelineEvents.length === 0) ? (
-                <div className="text-center py-12 text-slate-400 text-xs italic">
-                  No interaction events recorded for this agent on this date.
-                </div>
-              ) : (
-                [...(activity.timelineEvents)]
-                  .reverse()
-                  .map((evt, idx) => {
-                    const timeStr = formatTimeOnly(evt.time);
-                    const typeTag =
-                      evt.type === "delete" || evt.icon === "Trash2"
-                        ? "DELETED"
-                        : evt.type === "add" || evt.icon === "PlusCircle"
-                        ? "ADDED"
-                        : evt.type === "edit" || evt.icon === "Edit"
-                        ? "EDITED"
-                        : evt.type === "report" || evt.color === "rose"
-                        ? "REPORT"
-                        : evt.type === "doubt" || evt.color === "amber"
-                        ? "DOUBT"
-                        : evt.type === "quiz" || evt.color === "purple"
-                        ? "QUIZ"
-                        : evt.type === "course" || evt.color === "emerald"
-                        ? "COURSE"
-                        : evt.type === "booking" || evt.color === "teal"
-                        ? "BOOKING"
-                        : evt.type === "facility"
-                        ? "FACILITY"
-                        : evt.type === "download"
-                        ? "DOWNLOAD"
-                        : evt.type === "profile"
-                        ? "PROFILE"
-                        : "ACTIVITY";
-
-                    const colorStyles =
-                      typeTag === "DELETED"
-                        ? "bg-rose-50 text-rose-700 border-rose-200"
-                        : typeTag === "ADDED"
-                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                        : typeTag === "EDITED"
-                        ? "bg-blue-50 text-blue-700 border-blue-200"
-                        : typeTag === "REPORT"
-                        ? "bg-rose-50 text-rose-700 border-rose-200"
-                        : typeTag === "DOUBT"
-                        ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : typeTag === "QUIZ"
-                        ? "bg-purple-50 text-purple-700 border-purple-200"
-                        : typeTag === "COURSE"
-                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                        : typeTag === "BOOKING"
-                        ? "bg-teal-50 text-teal-700 border-teal-200"
-                        : typeTag === "FACILITY"
-                        ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : typeTag === "DOWNLOAD"
-                        ? "bg-teal-50 text-teal-700 border-teal-200"
-                        : typeTag === "PROFILE"
-                        ? "bg-indigo-50 text-indigo-700 border-indigo-200"
-                        : "bg-slate-50 text-slate-700 border-slate-200";
-
-                    return (
-                      <div
-                        key={idx}
-                        className="flex items-start justify-between gap-3 p-3.5 bg-slate-50/70 border border-slate-200 rounded-2xl text-xs hover:bg-slate-50 transition-colors"
-                      >
-                        <div className="flex items-start gap-3 flex-1 min-w-0">
-                          <span
-                            className={`px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
-                          >
-                            {typeTag}
-                          </span>
-                          <p className="text-slate-800 font-medium break-words leading-relaxed flex-1 pt-0.5">
-                            {evt.desc}
-                          </p>
-                        </div>
-                        <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-1">
-                          {timeStr}
-                        </div>
-                      </div>
-                    );
-                  })
-              )}
             </div>
           </div>
         </div>

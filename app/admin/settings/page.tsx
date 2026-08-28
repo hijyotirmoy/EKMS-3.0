@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Settings,
   Image as ImageIcon,
@@ -80,6 +81,10 @@ export default function AdminSettingsPage() {
         },
         { merge: true }
       );
+      logUserActivity(userProfile?.email, {
+        desc: `Updated session policy: timeout ${sessionTimeoutDuration} mins (${sessionTimeoutEnabled ? "Enabled" : "Disabled"})`,
+        type: "settings",
+      });
       toast.success("Session security policy updated across all terminals!");
     } catch (e: any) {
       toast.error("Save failed: " + e.message);
@@ -106,6 +111,10 @@ export default function AdminSettingsPage() {
         },
         { merge: true }
       );
+      logUserActivity(userProfile?.email, {
+        desc: `Toggled Global Maintenance Mode: ${maintenanceMode ? "ENABLED" : "DISABLED"}`,
+        type: "settings",
+      });
       if (maintenanceMode) {
         toast.warning("Global maintenance enabled! All standard agents have been signed out.");
       } else {
