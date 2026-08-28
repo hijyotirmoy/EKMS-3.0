@@ -20,6 +20,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord, RescheduleLog } from "@/lib/types";
 import { getISTMidnight } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import * as XLSX from "xlsx";
 import {
   Calendar as CalendarIcon,
@@ -455,6 +456,10 @@ export default function AdminBookingsPage() {
         },
         { merge: true }
       );
+      logUserActivity(user?.email, {
+        desc: `Updated verification booking capacity for ${singleEditDate} (${singleSeats} seats)`,
+        type: "booking",
+      });
       setSingleEditDate(null);
       toast.success(`Availability updated for ${singleEditDate}`);
     } catch (e: any) {

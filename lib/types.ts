@@ -220,11 +220,13 @@ export interface DailyActivityLog {
   lastActive?: number;
   totalSeconds?: number;
   filesDownloaded?: number;
+  quizzesCompletedCount?: number;
   searches?: string[];
   pageVisits?: Record<string, number>; // page -> seconds
   timelineEvents?: Array<{
     time: number;
     desc: string;
+    type?: string;
     icon?: string;
     color?: string;
   }>;

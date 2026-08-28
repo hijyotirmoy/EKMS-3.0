@@ -4,9 +4,11 @@ import React, { useState, useEffect, useMemo } from "react";
 import { collection } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getOrFetchCollection } from "@/lib/cache";
+import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Facility } from "@/lib/types";
 import { calculateDistance } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Building2,
   Search,
@@ -23,6 +25,7 @@ import {
 import ReportIssueModal from "@/components/common/ReportIssueModal";
 
 export default function FacilityPage() {
+  const { user } = useAuth();
   const { toast } = usePopup();
   const [facilities, setFacilities] = useState<Facility[]>([]);
   const [loading, setLoading] = useState(true);
@@ -434,6 +437,12 @@ export default function FacilityPage() {
                         href={fac.mapLink}
                         target="_blank"
                         rel="noopener noreferrer"
+                        onClick={() => {
+                          logUserActivity(user?.email, {
+                            desc: `Opened Google Maps directions for: "${fac.name}" (${fac.district || "Assam"})`,
+                            type: "facility",
+                          });
+                        }}
                         className="p-1 text-blue-600 hover:bg-blue-50 rounded transition-colors text-xs font-semibold flex items-center gap-1"
                         title="View on Google Maps"
                       >

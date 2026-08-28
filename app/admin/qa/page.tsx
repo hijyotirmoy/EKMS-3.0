@@ -14,6 +14,7 @@ import { touchMetadata } from "@/lib/cache";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { QnAItem } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import * as XLSX from "xlsx";
 import {
   HelpCircle,
@@ -188,6 +189,10 @@ export default function AdminQAPage() {
           },
           { merge: true }
         );
+        logUserActivity(user?.email, {
+          desc: `Edited Q&A: "${qaQuestion.trim().substring(0, 40)}..."`,
+          type: "edit",
+        });
         toast.success("Q&A article updated successfully!");
       } else {
         // Compute next sequence number
@@ -205,6 +210,10 @@ export default function AdminQAPage() {
           createdAt: Date.now(),
           updatedAt: Date.now(),
         });
+        logUserActivity(user?.email, {
+          desc: `Published new Q&A [${qaCode}]: "${qaQuestion.trim().substring(0, 40)}..."`,
+          type: "add",
+        });
         toast.success("New Q&A article published!");
       }
 
@@ -219,6 +228,7 @@ export default function AdminQAPage() {
 
   // Delete Single
   const handleDeleteSingle = async (id: string) => {
+    const target = qaList.find((q) => q.id === id);
     const confirmed = await showConfirm({
       title: "Delete Q&A Article?",
       message: "Are you sure you want to permanently delete this Q&A article?",
@@ -230,6 +240,10 @@ export default function AdminQAPage() {
     try {
       await deleteDoc(doc(db, "qna", id));
       await touchMetadata("qna");
+      logUserActivity(user?.email, {
+        desc: `Deleted Q&A [${target?.qaCode || "Article"}]: "${(target?.question || "").substring(0, 35)}..."`,
+        type: "delete",
+      });
       toast.success("Q&A article deleted.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);

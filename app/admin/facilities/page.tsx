@@ -14,6 +14,7 @@ import { touchMetadata } from "@/lib/cache";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Facility } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import * as XLSX from "xlsx";
 import {
   Building2,
@@ -352,9 +353,17 @@ export default function AdminFacilitiesPage() {
     try {
       if (editId) {
         await setDoc(doc(db, "facilities", editId), payload, { merge: true });
+        logUserActivity(user?.email, {
+          desc: `Updated health facility: "${facName.trim()}" (${finalType})`,
+          type: "edit",
+        });
         toast.success("Facility updated successfully!");
       } else {
         await setDoc(doc(collection(db, "facilities")), { ...payload, createdAt: Date.now() });
+        logUserActivity(user?.email, {
+          desc: `Added new health facility: "${facName.trim()}" (${finalType})`,
+          type: "add",
+        });
         toast.success("New facility added successfully!");
       }
       await touchMetadata("facilities");
@@ -368,6 +377,7 @@ export default function AdminFacilitiesPage() {
 
   // Single Delete
   const handleDeleteSingle = async (id: string) => {
+    const target = facilities.find((f) => f.id === id);
     const confirmed = await showConfirm({
       title: "Delete Health Facility?",
       message: "Are you sure you want to permanently delete this facility record?",
@@ -379,6 +389,10 @@ export default function AdminFacilitiesPage() {
     try {
       await deleteDoc(doc(db, "facilities", id));
       await touchMetadata("facilities");
+      logUserActivity(user?.email, {
+        desc: `Deleted health facility: "${target?.name || "Facility"}"`,
+        type: "delete",
+      });
       toast.success("Facility deleted successfully.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);

@@ -382,10 +382,20 @@ export default function AdminOverviewPage() {
                 <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
                   <Gamepad2 className="w-5 h-5 text-indigo-600 mx-auto mb-1.5" />
                   <div className="text-lg font-black text-slate-900">
-                    {agentExtraStats.quizzesCompleted}
+                    {(() => {
+                      const countFromEvents = (drilldownData.activity?.timelineEvents || []).filter(
+                        (e) => e.type === "quiz" || e.desc.toLowerCase().includes("completed quiz")
+                      ).length;
+                      const dailyQuiz = countFromEvents || drilldownData.activity?.quizzesCompletedCount || 0;
+                      return (
+                        <>
+                          {dailyQuiz} <span className="text-[10px] text-slate-400 font-normal">({agentExtraStats.quizzesCompleted})</span>
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Quizzes Completed
+                    Quizzes (Today)
                   </div>
                 </div>
 
@@ -495,123 +505,103 @@ export default function AdminOverviewPage() {
                 </div>
               </div>
 
-              {/* Dual Activity Sections: Reports Submitted by Agent & Live Activity Audit Trail */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Reports Submitted by Agent */}
-                <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <Flag className="w-5 h-5 text-rose-600" />
-                      <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                        Reports Submitted by Agent
-                      </h3>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-100">
-                        {agentReports.length} Total
-                      </span>
-                    </div>
+              {/* Full-Width Agent Activity & Audit Trail */}
+              <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-blue-600" />
+                    <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                      Agent Daily Activity & Audit Trail
+                    </h3>
+                    <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                      {(drilldownData.activity?.timelineEvents || []).length} Actions on {dateFilter}
+                    </span>
                   </div>
+                  <span className="text-[11px] text-slate-400 font-medium">All edits, deletions, additions & submissions auto-tracked</span>
+                </div>
 
-                  <div className="max-h-72 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
-                    {agentReports.length === 0 ? (
-                      <div className="text-center py-10 text-slate-400 text-xs italic">
-                        No reports submitted by this agent yet.
-                      </div>
-                    ) : (
-                      agentReports.map((rep) => {
-                        const repTime = rep.createdAt ? new Date(rep.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
-                        const isSolved = rep.status === "solved";
+                <div className="max-h-96 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
+                  {(!drilldownData.activity?.timelineEvents || drilldownData.activity.timelineEvents.length === 0) ? (
+                    <div className="text-center py-12 text-slate-400 text-xs italic">
+                      No activity events recorded for {dateFilter}.
+                    </div>
+                  ) : (
+                    [...(drilldownData.activity.timelineEvents)]
+                      .reverse()
+                      .map((evt, idx) => {
+                        const timeStr = formatTimeOnly(evt.time);
+                        const typeTag =
+                          evt.type === "delete" || evt.icon === "Trash2"
+                            ? "DELETED"
+                            : evt.type === "add" || evt.icon === "PlusCircle"
+                            ? "ADDED"
+                            : evt.type === "edit" || evt.icon === "Edit"
+                            ? "EDITED"
+                            : evt.type === "report" || evt.color === "rose"
+                            ? "REPORT"
+                            : evt.type === "doubt" || evt.color === "amber"
+                            ? "DOUBT"
+                            : evt.type === "quiz" || evt.color === "purple"
+                            ? "QUIZ"
+                            : evt.type === "course" || evt.color === "emerald"
+                            ? "COURSE"
+                            : evt.type === "booking" || evt.color === "teal"
+                            ? "BOOKING"
+                            : evt.type === "facility"
+                            ? "FACILITY"
+                            : evt.type === "download"
+                            ? "DOWNLOAD"
+                            : evt.type === "profile"
+                            ? "PROFILE"
+                            : "ACTIVITY";
+
+                        const colorStyles =
+                          typeTag === "DELETED"
+                            ? "bg-rose-50 text-rose-700 border-rose-200"
+                            : typeTag === "ADDED"
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : typeTag === "EDITED"
+                            ? "bg-blue-50 text-blue-700 border-blue-200"
+                            : typeTag === "REPORT"
+                            ? "bg-rose-50 text-rose-700 border-rose-200"
+                            : typeTag === "DOUBT"
+                            ? "bg-amber-50 text-amber-700 border-amber-200"
+                            : typeTag === "QUIZ"
+                            ? "bg-purple-50 text-purple-700 border-purple-200"
+                            : typeTag === "COURSE"
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : typeTag === "BOOKING"
+                            ? "bg-teal-50 text-teal-700 border-teal-200"
+                            : typeTag === "FACILITY"
+                            ? "bg-amber-50 text-amber-700 border-amber-200"
+                            : typeTag === "DOWNLOAD"
+                            ? "bg-teal-50 text-teal-700 border-teal-200"
+                            : typeTag === "PROFILE"
+                            ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                            : "bg-slate-50 text-slate-700 border-slate-200";
 
                         return (
                           <div
-                            key={rep.id}
-                            className="p-3 bg-slate-50/70 border border-slate-200 rounded-2xl text-xs space-y-1.5 hover:bg-slate-50 transition-colors"
+                            key={idx}
+                            className="flex items-start justify-between gap-3 p-3.5 bg-slate-50/70 border border-slate-200 rounded-2xl text-xs hover:bg-slate-50 transition-colors"
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200">
-                                {rep.type || "General Report"}
+                            <div className="flex items-start gap-3 flex-1 min-w-0">
+                              <span
+                                className={`px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
+                              >
+                                {typeTag}
                               </span>
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${isSolved ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"}`}>
-                                {isSolved ? "Solved" : "Pending"}
-                              </span>
+                              <p className="text-slate-800 font-medium break-words leading-relaxed flex-1 pt-0.5">
+                                {evt.desc}
+                              </p>
                             </div>
-                            <p className="text-slate-800 font-medium break-words leading-relaxed">
-                              {rep.message}
-                            </p>
-                            <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-200/50">
-                              <span>Target: {rep.targetCode || rep.targetSourceTitle || "System"}</span>
-                              <span>{repTime}</span>
+                            <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-1">
+                              {timeStr}
                             </div>
                           </div>
                         );
                       })
-                    )}
-                  </div>
-                </div>
-
-                {/* Agent Activity & Audit Trail (Last 20 Activities with Internal Scroll) */}
-                <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <Activity className="w-5 h-5 text-blue-600" />
-                      <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                        Daily Activity & Audit Trail
-                      </h3>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
-                        {Math.min(20, (drilldownData.activity?.timelineEvents || []).length)} on {dateFilter}
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-slate-400 font-medium">Auto-recorded</span>
-                  </div>
-
-                  <div className="max-h-72 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
-                    {(!drilldownData.activity?.timelineEvents || drilldownData.activity.timelineEvents.length === 0) ? (
-                      <div className="text-center py-10 text-slate-400 text-xs italic">
-                        No activity events recorded for {dateFilter}.
-                      </div>
-                    ) : (
-                      [...(drilldownData.activity.timelineEvents)]
-                        .reverse()
-                        .slice(0, 20)
-                        .map((evt, idx) => {
-                          const timeStr = formatTimeOnly(evt.time);
-                          const colorStyles =
-                            evt.color === "rose"
-                              ? "bg-rose-50 text-rose-700 border-rose-200"
-                              : evt.color === "emerald"
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : evt.color === "amber"
-                              ? "bg-amber-50 text-amber-700 border-amber-200"
-                              : evt.color === "purple"
-                              ? "bg-purple-50 text-purple-700 border-purple-200"
-                              : evt.color === "teal"
-                              ? "bg-teal-50 text-teal-700 border-teal-200"
-                              : evt.color === "slate"
-                              ? "bg-slate-50 text-slate-700 border-slate-200"
-                              : "bg-blue-50 text-blue-700 border-blue-200";
-
-                          return (
-                            <div
-                              key={idx}
-                              className="flex items-start justify-between gap-3 p-3 bg-slate-50/70 border border-slate-200 rounded-xl text-xs hover:bg-slate-50 transition-colors"
-                            >
-                              <div className="flex items-start gap-2.5 flex-1 min-w-0">
-                                <span
-                                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
-                                >
-                                  {evt.icon === "Trash2" ? "DELETED" : evt.color === "rose" ? "REPORT" : evt.color === "amber" ? "DOUBT" : evt.color === "purple" ? "QUIZ" : evt.color === "emerald" ? "COURSE" : "ACTIVITY"}
-                                </span>
-                                <p className="text-slate-800 font-medium break-words leading-relaxed flex-1">
-                                  {evt.desc}
-                                </p>
-                              </div>
-                              <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-0.5">
-                                {timeStr}
-                              </div>
-                            </div>
-                          );
-                        })
-                    )}
-                  </div>
+                  )}
                 </div>
               </div>
             </div>

@@ -17,6 +17,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { UserProfile, UserRole, OrganogramTier, Quiz, Doubt, Course } from "@/lib/types";
 import { getBase64Image } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Users,
   Plus,
@@ -245,6 +246,11 @@ export default function AdminTeamsPage() {
           orgTier: "unassigned",
         });
 
+        logUserActivity(currentAdminProfile?.email, {
+          desc: `Created team member profile for ${formName.trim()} (${emailKey}) as ${formRole}`,
+          type: "add",
+        });
+
         showAlert({
           title: "Team Member Added!",
           message: "Agent ID: " + formAgentId + "\nDefault Password: esic123",
@@ -267,6 +273,11 @@ export default function AdminTeamsPage() {
           },
           { merge: true }
         );
+
+        logUserActivity(currentAdminProfile?.email, {
+          desc: `Updated member profile & role for ${formName.trim()} (${emailKey})`,
+          type: "edit",
+        });
         toast.success("Profile updated successfully!");
       }
 
@@ -292,9 +303,13 @@ export default function AdminTeamsPage() {
     try {
       await deleteDoc(doc(db, "users", email.toLowerCase()));
       await touchMetadata("users");
-      toast.success("Profile deleted from database.");
+      logUserActivity(currentAdminProfile?.email, {
+        desc: `Deleted user profile for ${email}`,
+        type: "delete",
+      });
+      toast.success("Member profile deleted successfully.");
     } catch (e: any) {
-      toast.error("Delete failed: " + e.message);
+      toast.error("Delete error: " + e.message);
     }
   };
 

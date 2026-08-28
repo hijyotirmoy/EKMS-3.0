@@ -16,6 +16,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Course, Chapter, MCQQuestion, CourseRating, QnAItem, AppFile } from "@/lib/types";
 import { recalculateCourseProgress, getBase64Image } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import * as XLSX from "xlsx";
 import {
   GraduationCap,
@@ -479,6 +480,10 @@ export default function AdminOnboardingPage() {
     try {
       if (activeCourseId) {
         await setDoc(doc(db, "onboardings", activeCourseId), payload, { merge: true });
+        logUserActivity(user?.email, {
+          desc: `Updated course: "${editorCourse.title.trim()}"`,
+          type: "edit",
+        });
       } else {
         const nextNum =
           Math.max(0, ...courses.map((c) => Number(c.id.replace(/\D/g, "")) || 0)) + 1;
@@ -488,6 +493,10 @@ export default function AdminOnboardingPage() {
           ...payload,
           date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
           createdAt: Date.now(),
+        });
+        logUserActivity(user?.email, {
+          desc: `Published new course: "${editorCourse.title.trim()}"`,
+          type: "add",
         });
       }
 
@@ -503,6 +512,7 @@ export default function AdminOnboardingPage() {
 
   // Delete Course
   const handleDeleteCourse = async (id: string) => {
+    const target = courses.find((c) => c.id === id);
     const confirmed = await showConfirm({
       title: "Delete Course?",
       message: "Permanently delete Course #" + id + "?",
@@ -514,6 +524,10 @@ export default function AdminOnboardingPage() {
     try {
       await deleteDoc(doc(db, "onboardings", id));
       await touchMetadata("onboarding");
+      logUserActivity(user?.email, {
+        desc: `Deleted course: "${target?.title || `Course #${id}`}"`,
+        type: "delete",
+      });
       toast.success("Course #" + id + " deleted.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);

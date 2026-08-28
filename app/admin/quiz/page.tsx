@@ -15,6 +15,7 @@ import { touchMetadata } from "@/lib/cache";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Quiz, MCQQuestion } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import * as XLSX from "xlsx";
 import {
   Gamepad2,
@@ -404,6 +405,10 @@ export default function AdminQuizPage() {
     try {
       if (editingId) {
         await setDoc(doc(db, "quizzes", editingId), payload, { merge: true });
+        logUserActivity(user?.email, {
+          desc: `Updated assessment: "${quizTitle.trim()}"`,
+          type: "edit",
+        });
         toast.success("Assessment updated successfully!");
       } else {
         const nextNum = Math.max(0, ...quizzes.map((q) => Number(q.id) || 0)) + 1;
@@ -414,6 +419,10 @@ export default function AdminQuizPage() {
           date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
           attempts: 0,
           createdAt: Date.now(),
+        });
+        logUserActivity(user?.email, {
+          desc: `Created new assessment: "${quizTitle.trim()}"`,
+          type: "add",
         });
         toast.success("New assessment created successfully!");
       }
@@ -428,6 +437,7 @@ export default function AdminQuizPage() {
 
   // Single Delete
   const handleDeleteSingle = async (id: string) => {
+    const target = quizzes.find((q) => q.id === id);
     const confirmed = await showConfirm({
       title: "Delete Assessment?",
       message: "Are you sure you want to delete Quiz #" + id + "?",
@@ -439,6 +449,10 @@ export default function AdminQuizPage() {
     try {
       await deleteDoc(doc(db, "quizzes", id));
       await touchMetadata("quizzes");
+      logUserActivity(user?.email, {
+        desc: `Deleted assessment: "${target?.title || `Quiz #${id}`}"`,
+        type: "delete",
+      });
       toast.success("Assessment deleted successfully.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);

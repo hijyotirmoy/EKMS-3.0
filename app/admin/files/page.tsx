@@ -16,6 +16,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { AppFile } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Folder,
   Upload,
@@ -119,6 +120,7 @@ export default function AdminFilesPage() {
     });
     if (!confirmed) return;
 
+    const target = files.find((f) => f.id === id);
     try {
       await deleteDoc(doc(db, "files", id));
 
@@ -136,6 +138,10 @@ export default function AdminFilesPage() {
         }
       }
       await touchMetadata("files");
+      logUserActivity(user?.email, {
+        desc: `Deleted resource file: "${target?.name || "File"}"`,
+        type: "delete",
+      });
       toast.success("File record deleted successfully.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);
@@ -270,6 +276,11 @@ export default function AdminFilesPage() {
           downloadCount: 0,
           uploadedBy: user?.email?.split("@")[0] || "Admin",
           uploadedAt: Date.now(),
+        });
+
+        logUserActivity(user?.email, {
+          desc: `Uploaded new document: "${finalTitle}" (${finalCat})`,
+          type: "add",
         });
 
         successCount++;

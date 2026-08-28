@@ -137,6 +137,10 @@ export default function ReportsPage() {
         resolvedAt: Date.now(),
         resolvedBy: userProfile?.displayName || user?.email?.split("@")[0] || "Admin",
       });
+      logUserActivity(user?.email, {
+        desc: `Marked ${report.type || "System"} report as solved: "${(report.message || "").substring(0, 40)}..."`,
+        type: "report",
+      });
       setViewReport(null);
       toast.success("Report marked as solved and archived.");
     } catch (e: any) {

@@ -190,9 +190,21 @@ export default function IndividualAgentReportPage() {
 
             <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
               <Gamepad2 className="w-5 h-5 text-indigo-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{extraStats.quizzesCompleted}</div>
+              <div className="text-lg font-black text-slate-900">
+                {(() => {
+                  const countFromEvents = (activity?.timelineEvents || []).filter(
+                    (e) => e.type === "quiz" || e.desc.toLowerCase().includes("completed quiz")
+                  ).length;
+                  const dailyQuiz = countFromEvents || activity?.quizzesCompletedCount || 0;
+                  return (
+                    <>
+                      {dailyQuiz} <span className="text-[10px] text-slate-400 font-normal">({extraStats.quizzesCompleted})</span>
+                    </>
+                  );
+                })()}
+              </div>
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Quizzes Completed
+                Quizzes (Today)
               </div>
             </div>
 
@@ -320,63 +332,97 @@ export default function IndividualAgentReportPage() {
             </div>
           </div>
 
-          {/* Agent Activity & Audit Trail (Last 20 Activities with Internal Scroll) */}
+          {/* Full-Width Agent Activity & Audit Trail */}
           <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <Activity className="w-5 h-5 text-blue-600" />
                 <h3 className="font-bold text-slate-900 text-sm sm:text-base">
-                  Agent Activity & Audit Trail
+                  Agent Daily Activity & Audit Trail
                 </h3>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
-                  Last {Math.min(20, (activity?.timelineEvents || []).length)} Actions
+                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                  {(activity?.timelineEvents || []).length} Actions on {date}
                 </span>
               </div>
-              <span className="text-[11px] text-slate-400 font-medium">Auto-recorded live</span>
+              <span className="text-[11px] text-slate-400 font-medium">All edits, deletions, additions & submissions auto-tracked</span>
             </div>
 
-            <div className="max-h-72 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
+            <div className="max-h-96 overflow-y-auto space-y-2.5 pr-2 scrollbar-thin scrollbar-thumb-slate-200">
               {(!activity?.timelineEvents || activity.timelineEvents.length === 0) ? (
-                <div className="text-center py-10 text-slate-400 text-xs italic">
+                <div className="text-center py-12 text-slate-400 text-xs italic">
                   No interaction events recorded for this agent on this date.
                 </div>
               ) : (
                 [...(activity.timelineEvents)]
                   .reverse()
-                  .slice(0, 20)
                   .map((evt, idx) => {
                     const timeStr = formatTimeOnly(evt.time);
+                    const typeTag =
+                      evt.type === "delete" || evt.icon === "Trash2"
+                        ? "DELETED"
+                        : evt.type === "add" || evt.icon === "PlusCircle"
+                        ? "ADDED"
+                        : evt.type === "edit" || evt.icon === "Edit"
+                        ? "EDITED"
+                        : evt.type === "report" || evt.color === "rose"
+                        ? "REPORT"
+                        : evt.type === "doubt" || evt.color === "amber"
+                        ? "DOUBT"
+                        : evt.type === "quiz" || evt.color === "purple"
+                        ? "QUIZ"
+                        : evt.type === "course" || evt.color === "emerald"
+                        ? "COURSE"
+                        : evt.type === "booking" || evt.color === "teal"
+                        ? "BOOKING"
+                        : evt.type === "facility"
+                        ? "FACILITY"
+                        : evt.type === "download"
+                        ? "DOWNLOAD"
+                        : evt.type === "profile"
+                        ? "PROFILE"
+                        : "ACTIVITY";
+
                     const colorStyles =
-                      evt.color === "rose"
+                      typeTag === "DELETED"
                         ? "bg-rose-50 text-rose-700 border-rose-200"
-                        : evt.color === "emerald"
+                        : typeTag === "ADDED"
                         ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                        : evt.color === "amber"
+                        : typeTag === "EDITED"
+                        ? "bg-blue-50 text-blue-700 border-blue-200"
+                        : typeTag === "REPORT"
+                        ? "bg-rose-50 text-rose-700 border-rose-200"
+                        : typeTag === "DOUBT"
                         ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : evt.color === "purple"
+                        : typeTag === "QUIZ"
                         ? "bg-purple-50 text-purple-700 border-purple-200"
-                        : evt.color === "teal"
+                        : typeTag === "COURSE"
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : typeTag === "BOOKING"
                         ? "bg-teal-50 text-teal-700 border-teal-200"
-                        : evt.color === "slate"
-                        ? "bg-slate-50 text-slate-700 border-slate-200"
-                        : "bg-blue-50 text-blue-700 border-blue-200";
+                        : typeTag === "FACILITY"
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : typeTag === "DOWNLOAD"
+                        ? "bg-teal-50 text-teal-700 border-teal-200"
+                        : typeTag === "PROFILE"
+                        ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                        : "bg-slate-50 text-slate-700 border-slate-200";
 
                     return (
                       <div
                         key={idx}
-                        className="flex items-start justify-between gap-3 p-3 bg-slate-50/70 border border-slate-200 rounded-xl text-xs hover:bg-slate-50 transition-colors"
+                        className="flex items-start justify-between gap-3 p-3.5 bg-slate-50/70 border border-slate-200 rounded-2xl text-xs hover:bg-slate-50 transition-colors"
                       >
-                        <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                        <div className="flex items-start gap-3 flex-1 min-w-0">
                           <span
-                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
+                            className={`px-2.5 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border shrink-0 ${colorStyles}`}
                           >
-                            {evt.icon === "Trash2" ? "DELETED" : evt.color === "rose" ? "REPORT" : evt.color === "amber" ? "DOUBT" : evt.color === "purple" ? "QUIZ" : evt.color === "emerald" ? "COURSE" : "ACTIVITY"}
+                            {typeTag}
                           </span>
-                          <p className="text-slate-800 font-medium break-words leading-relaxed flex-1">
+                          <p className="text-slate-800 font-medium break-words leading-relaxed flex-1 pt-0.5">
                             {evt.desc}
                           </p>
                         </div>
-                        <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-0.5">
+                        <div className="text-[10px] font-semibold text-slate-400 shrink-0 whitespace-nowrap pt-1">
                           {timeStr}
                         </div>
                       </div>

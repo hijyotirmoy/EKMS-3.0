@@ -12,8 +12,24 @@ export function getTodayDateString(): string {
 export interface ActivityEvent {
   time: number;
   desc: string;
-  type?: "auth" | "doubt" | "report" | "quiz" | "course" | "booking" | "download" | "delete" | "search" | "general";
-  color?: "blue" | "emerald" | "rose" | "amber" | "purple" | "teal" | "slate";
+  type?:
+    | "auth"
+    | "doubt"
+    | "report"
+    | "quiz"
+    | "course"
+    | "booking"
+    | "download"
+    | "delete"
+    | "search"
+    | "add"
+    | "edit"
+    | "feedback"
+    | "facility"
+    | "settings"
+    | "profile"
+    | "general";
+  color?: "blue" | "emerald" | "rose" | "amber" | "purple" | "teal" | "slate" | "indigo";
   icon?: string;
 }
 
@@ -35,14 +51,20 @@ export async function logUserActivity(
 
   const colorMap: Record<string, ActivityEvent["color"]> = {
     auth: "blue",
-    doubt: "amber",
+    add: "emerald",
+    edit: "blue",
+    delete: "rose",
     report: "rose",
+    feedback: "purple",
+    doubt: "amber",
     quiz: "purple",
     course: "emerald",
     booking: "teal",
-    download: "blue",
-    delete: "rose",
+    facility: "amber",
+    download: "teal",
     search: "slate",
+    settings: "slate",
+    profile: "indigo",
     general: "blue",
   };
 
@@ -51,7 +73,7 @@ export async function logUserActivity(
     desc: event.desc,
     type: event.type || "general",
     color: event.color || colorMap[event.type || "general"] || "blue",
-    icon: event.icon || (event.type === "delete" ? "Trash2" : "Activity"),
+    icon: event.icon || (event.type === "delete" ? "Trash2" : event.type === "add" ? "PlusCircle" : event.type === "edit" ? "Edit" : "Activity"),
   };
 
   try {
@@ -60,10 +82,10 @@ export async function logUserActivity(
       lastActive: now,
       timelineEvents: arrayUnion(payloadEvent),
       ...(event.type === "download" ? { filesDownloaded: increment(1) } : {}),
+      ...(event.type === "quiz" ? { quizzesCompletedCount: increment(1) } : {}),
       ...(event.extraData || {}),
     });
   } catch (err) {
-    // If doc doesn't exist yet, create it with merge
     try {
       const activityDocRef = doc(db, "daily_activity", docId);
       await setDoc(
@@ -76,6 +98,7 @@ export async function logUserActivity(
           lastActive: now,
           timelineEvents: [payloadEvent],
           ...(event.type === "download" ? { filesDownloaded: 1 } : {}),
+          ...(event.type === "quiz" ? { quizzesCompletedCount: 1 } : {}),
           ...(event.extraData || {}),
         },
         { merge: true }

@@ -16,6 +16,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Announcement } from "@/lib/types";
 import { parseMarkdownLinks } from "@/lib/utils";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   Megaphone,
   Plus,
@@ -85,11 +86,19 @@ export default function AdminAnnouncementsPage() {
     try {
       if (editId) {
         await setDoc(doc(db, "announcements", editId), payload, { merge: true });
+        logUserActivity(user?.email, {
+          desc: `Updated announcement: "${message.trim().substring(0, 40)}..."`,
+          type: "edit",
+        });
         toast.success("Announcement updated successfully!");
       } else {
         await addDoc(collection(db, "announcements"), {
           ...payload,
           createdAt: Date.now(),
+        });
+        logUserActivity(user?.email, {
+          desc: `Published new announcement: "${message.trim().substring(0, 40)}..."`,
+          type: "add",
         });
         toast.success("New announcement published!");
       }
@@ -104,6 +113,7 @@ export default function AdminAnnouncementsPage() {
 
   // 4. Delete
   const handleDeleteAnnouncement = async (id: string) => {
+    const target = announcements.find((a) => a.id === id);
     const confirmed = await showConfirm({
       title: "Delete Announcement?",
       message: "Are you sure you want to permanently delete this announcement?",
@@ -115,6 +125,10 @@ export default function AdminAnnouncementsPage() {
     try {
       await deleteDoc(doc(db, "announcements", id));
       await touchMetadata("announcements");
+      logUserActivity(user?.email, {
+        desc: `Deleted announcement: "${(target?.message || "Announcement").substring(0, 40)}..."`,
+        type: "delete",
+      });
       toast.success("Announcement deleted.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);

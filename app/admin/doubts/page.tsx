@@ -14,6 +14,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Doubt } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 import {
   HelpCircle,
   Clock,
@@ -120,6 +121,11 @@ export default function AdminDoubtsPage() {
         } catch (e) {}
       }
 
+      logUserActivity(user?.email, {
+        desc: `Verified and resolved doubt: "${(resolveDoubt.question || "Doubt").substring(0, 40)}..."`,
+        type: "doubt",
+      });
+
       setResolveDoubt(null);
       setResolveText("");
       toast.success("Doubt marked as resolved!");
@@ -132,6 +138,7 @@ export default function AdminDoubtsPage() {
 
   // Delete Doubt
   const handleDeleteDoubt = async (id: string) => {
+    const target = doubts.find((d) => d.id === id);
     const confirmed = await showConfirm({
       title: "Delete Community Doubt?",
       message: "Are you sure you want to permanently delete this doubt query?",
@@ -142,6 +149,10 @@ export default function AdminDoubtsPage() {
 
     try {
       await deleteDoc(doc(db, "doubts", id));
+      logUserActivity(user?.email, {
+        desc: `Deleted community doubt: "${(target?.question || "Doubt").substring(0, 40)}..."`,
+        type: "delete",
+      });
       toast.success("Doubt deleted successfully.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);
