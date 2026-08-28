@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { doc, getDoc, setDoc, updateDoc, increment, arrayUnion } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, increment } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 
@@ -19,7 +19,6 @@ export default function ActivityTracker() {
   const { user, userProfile, isLoggedIn } = useAuth();
   const pathname = usePathname();
   const lastActiveTimestampRef = useRef<number>(Date.now());
-  const initializedTodayRef = useRef<string | null>(null);
 
   // Track user interaction to determine idle state
   useEffect(() => {
@@ -41,85 +40,6 @@ export default function ActivityTracker() {
       window.removeEventListener("scroll", handleActivity);
     };
   }, []);
-
-  // Record initial login & session startup
-  useEffect(() => {
-    if (!isLoggedIn || !user?.email) return;
-
-    const email = user.email.toLowerCase();
-    const today = getTodayDateString();
-    const docId = `${email}_${today}`;
-    const activityDocRef = doc(db, "daily_activity", docId);
-    const userDocRef = doc(db, "users", email);
-
-    const initSession = async () => {
-      try {
-        const now = Date.now();
-        const snap = await getDoc(activityDocRef);
-        const userName = userProfile?.displayName || userProfile?.name || user.displayName || email.split("@")[0];
-
-        if (!snap.exists()) {
-          await setDoc(activityDocRef, {
-            email,
-            name: userName,
-            date: today,
-            loginTime: now,
-            firstLogin: now,
-            lastActive: now,
-            loginCount: 1,
-            totalSeconds: 0,
-            pageVisits: { [(pathname || "/").replace(/[/.]/g, "_")]: 0 },
-            timelineEvents: [
-              {
-                time: now,
-                desc: "Logged in to EKMS Portal (Session #1)",
-                type: "auth",
-                icon: "LogIn",
-                color: "emerald",
-              },
-            ],
-          });
-        } else {
-          const actData = snap.data();
-          const isReturningAfterLogout = !!actData.logoutTime && actData.logoutTime >= (actData.loginTime || 0);
-
-          if (initializedTodayRef.current !== today || isReturningAfterLogout) {
-            const nextSessionNum = (actData.loginCount || 1) + (isReturningAfterLogout ? 1 : 0);
-            await updateDoc(activityDocRef, {
-              name: userName,
-              lastActive: now,
-              loginTime: now,
-              ...(isReturningAfterLogout ? { loginCount: increment(1) } : {}),
-              timelineEvents: arrayUnion({
-                time: now,
-                desc: `Logged in to EKMS Portal (Session #${nextSessionNum})`,
-                type: "auth",
-                icon: "LogIn",
-                color: "blue",
-              }),
-            });
-          }
-        }
-
-        // Also update users collection
-        await setDoc(
-          userDocRef,
-          {
-            lastLogin: now,
-            lastActive: now,
-            isOnline: true,
-          },
-          { merge: true }
-        );
-
-        initializedTodayRef.current = today;
-      } catch (err) {
-        console.error("ActivityTracker init error:", err);
-      }
-    };
-
-    initSession();
-  }, [isLoggedIn, user?.email, userProfile?.displayName, userProfile?.name]);
 
   // Periodic heartbeat every 15s to accumulate active time spent
   useEffect(() => {
@@ -163,6 +83,7 @@ export default function ActivityTracker() {
               loginTime: now,
               firstLogin: now,
               lastActive: now,
+              loginCount: 1,
               totalSeconds: 15,
               pageVisits: { [cleanPath]: 15 },
             },
@@ -173,43 +94,7 @@ export default function ActivityTracker() {
     }, 15000);
 
     return () => clearInterval(heartbeatInterval);
-  }, [isLoggedIn, user?.email, pathname]);
-
-  // Record logout / tab close
-  useEffect(() => {
-    if (!isLoggedIn || !user?.email) return;
-
-    const email = user.email.toLowerCase();
-
-    const handleBeforeUnload = () => {
-      const today = getTodayDateString();
-      const docId = `${email}_${today}`;
-      const now = Date.now();
-      try {
-        setDoc(
-          doc(db, "daily_activity", docId),
-          {
-            logoutTime: now,
-            lastActive: now,
-          },
-          { merge: true }
-        );
-        setDoc(
-          doc(db, "users", email),
-          {
-            lastLogout: now,
-            isOnline: false,
-          },
-          { merge: true }
-        );
-      } catch {}
-    };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-    };
-  }, [isLoggedIn, user?.email]);
+  }, [isLoggedIn, user?.email, pathname, userProfile]);
 
   return null;
 }

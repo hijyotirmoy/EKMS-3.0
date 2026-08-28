@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut as fbSignOut } from "firebase/auth";
-import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, increment } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import { UserProfile, UserRole, SystemStatus } from "@/lib/types";
 
@@ -227,6 +227,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (requestedRole === "Admin" && actualRole !== "Admin" && actualRole !== "Master Admin") {
       await fbSignOut(auth);
       throw new Error("Access Denied: You do not have Admin permissions.");
+    }
+
+    // Record login session ONLY when user logs in via the login window/form
+    try {
+      const now = Date.now();
+      const d = new Date();
+      const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const docId = `${email.toLowerCase()}_${today}`;
+      const userName = profile?.displayName || profile?.name || currentUser.displayName || email.split("@")[0];
+
+      const snap = await getDoc(doc(db, "daily_activity", docId));
+      if (!snap.exists()) {
+        await setDoc(doc(db, "daily_activity", docId), {
+          email: email.toLowerCase(),
+          name: userName,
+          date: today,
+          loginTime: now,
+          firstLogin: now,
+          lastActive: now,
+          loginCount: 1,
+          totalSeconds: 0,
+          pageVisits: {},
+          timelineEvents: [
+            {
+              time: now,
+              desc: "Logged in to EKMS Portal (Session #1)",
+              type: "auth",
+              icon: "LogIn",
+              color: "emerald",
+            },
+          ],
+        });
+      } else {
+        const nextSessionNum = (snap.data()?.loginCount || 0) + 1;
+        await updateDoc(doc(db, "daily_activity", docId), {
+          name: userName,
+          lastActive: now,
+          loginTime: now,
+          loginCount: increment(1),
+          timelineEvents: arrayUnion({
+            time: now,
+            desc: `Logged in to EKMS Portal (Session #${nextSessionNum})`,
+            type: "auth",
+            icon: "LogIn",
+            color: "emerald",
+          }),
+        });
+      }
+
+      await setDoc(
+        doc(db, "users", email.toLowerCase()),
+        {
+          lastLogin: now,
+          lastActive: now,
+          isOnline: true,
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error("Login session tracking error:", err);
     }
   };
 
