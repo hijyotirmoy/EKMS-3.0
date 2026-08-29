@@ -643,31 +643,31 @@ export default function AdminFacilitiesPage() {
         </div>
       </div>
 
-      {/* 11 KPI Metrics */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 text-center">
-        <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
-          <div className="text-xl font-black text-slate-900">{metrics.total}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Total</div>
+      {/* 6 KPI Metrics */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Total Facilities</div>
+          <div className="text-xl font-black text-amber-900 mt-1">{metrics.total}</div>
         </div>
-        <div className="bg-blue-50 border border-blue-200 p-3.5 rounded-xl">
-          <div className="text-xl font-black text-blue-700">{metrics.esic}</div>
-          <div className="text-[10px] font-bold text-blue-600 uppercase tracking-wider mt-1">ESIC Total</div>
+        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">ESIC Total</div>
+          <div className="text-xl font-black text-blue-900 mt-1">{metrics.esic}</div>
         </div>
-        <div className="bg-emerald-50 border border-emerald-200 p-3.5 rounded-xl">
-          <div className="text-xl font-black text-emerald-700">{metrics.nhm}</div>
-          <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mt-1">NHM Total</div>
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">NHM Total</div>
+          <div className="text-xl font-black text-emerald-900 mt-1">{metrics.nhm}</div>
         </div>
-        <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
-          <div className="text-xl font-black text-slate-800">{metrics.esicDisp}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Dispensaries</div>
+        <div className="bg-teal-50/70 border border-teal-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">Dispensaries</div>
+          <div className="text-xl font-black text-teal-900 mt-1">{metrics.esicDisp}</div>
         </div>
-        <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
-          <div className="text-xl font-black text-slate-800">{metrics.esicHosp}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">ESIC Hosp</div>
+        <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">ESIC Hosp</div>
+          <div className="text-xl font-black text-purple-900 mt-1">{metrics.esicHosp}</div>
         </div>
-        <div className="bg-white border border-slate-200 p-3.5 rounded-xl">
-          <div className="text-xl font-black text-slate-800">{metrics.nhmPhc + metrics.nhmChc}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">PHC / CHC</div>
+        <div className="bg-cyan-50/70 border border-cyan-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-cyan-800 uppercase tracking-wider">PHC / CHC</div>
+          <div className="text-xl font-black text-cyan-900 mt-1">{metrics.nhmPhc + metrics.nhmChc}</div>
         </div>
       </div>
 

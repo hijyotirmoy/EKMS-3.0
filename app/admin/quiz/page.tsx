@@ -16,6 +16,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Quiz, MCQQuestion } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification } from "@/lib/notificationService";
 import * as XLSX from "xlsx";
 import {
   Gamepad2,
@@ -424,6 +425,16 @@ export default function AdminQuizPage() {
           desc: `Created new assessment: "${quizTitle.trim()}"`,
           type: "add",
         });
+
+        // Notify all users about new quiz
+        await createNotification({
+          title: `🏆 New Quiz: ${quizTitle.trim()}`,
+          message: `A new assessment **"${quizTitle.trim()}"** (${payload.questions} questions • ${payload.time} mins) is now available! Test your knowledge in the Quiz portal.`,
+          type: "quiz",
+          targetEmail: "all",
+          link: "/quiz",
+        });
+
         toast.success("New assessment created successfully!");
       }
       await touchMetadata("quizzes");
@@ -584,39 +595,33 @@ export default function AdminQuizPage() {
           </div>
 
           {/* 4 Top Metric Cards (TOTAL AGENTS TRACKED ONLY COUNTS ATTEMPTED USERS) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-center">
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                TOTAL QUIZZES
+          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">
+                Total Quizzes
               </div>
-              <div className="text-3xl font-black text-blue-600">{quizzes.length}</div>
-              <div className="text-[11px] text-slate-400 font-semibold mt-1">
-                {activeCount} Active | {inactiveCount} Inactive
-              </div>
+              <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{quizzes.length}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                TOTAL ATTEMPTS
+            <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+                Total Attempts
               </div>
-              <div className="text-3xl font-black text-amber-600">{totalAttempts}</div>
-              <div className="text-[11px] text-slate-400 font-semibold mt-1">Platform Total</div>
+              <div className="text-xl sm:text-2xl font-black text-amber-900 mt-1">{totalAttempts}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                AVG PLATFORM SCORE
+            <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                Avg Platform Score
               </div>
-              <div className="text-3xl font-black text-emerald-600">{avgPlatformScore}%</div>
-              <div className="text-[11px] text-slate-400 font-semibold mt-1">Overall Average</div>
+              <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{avgPlatformScore}%</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                TOTAL AGENTS TRACKED
+            <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">
+                Agents Tracked
               </div>
-              <div className="text-3xl font-black text-purple-600">{totalAgentsTracked}</div>
-              <div className="text-[11px] text-slate-400 font-semibold mt-1">With Quiz Attempts</div>
+              <div className="text-xl sm:text-2xl font-black text-purple-900 mt-1">{totalAgentsTracked}</div>
             </div>
           </div>
 
@@ -941,29 +946,20 @@ export default function AdminQuizPage() {
           </div>
 
           {/* 3 Metric Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-              <Gamepad2 className="w-6 h-6 text-blue-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">{activeCount}</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Active Assessments
-              </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Active Assessments</div>
+              <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{activeCount}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-              <CheckCircle2 className="w-6 h-6 text-emerald-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">{totalAttempts}</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Total Attempts Completed
-              </div>
+            <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Total Attempts</div>
+              <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{totalAttempts}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-              <Clock className="w-6 h-6 text-purple-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">{avgPlatformScore}%</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Avg. Platform Score
-              </div>
+            <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl col-span-2 sm:col-span-1 flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">Avg. Platform Score</div>
+              <div className="text-xl sm:text-2xl font-black text-purple-900 mt-1">{avgPlatformScore}%</div>
             </div>
           </div>
 

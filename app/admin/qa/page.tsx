@@ -15,6 +15,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { QnAItem } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification } from "@/lib/notificationService";
 import * as XLSX from "xlsx";
 import {
   HelpCircle,
@@ -214,6 +215,16 @@ export default function AdminQAPage() {
           desc: `Published new Q&A [${qaCode}]: "${qaQuestion.trim().substring(0, 40)}..."`,
           type: "add",
         });
+
+        // Notify all users about new Q&A
+        await createNotification({
+          title: `💡 New Guidance: ${qaCode}`,
+          message: `A new guidance article **[${qaCode}] "${qaQuestion.trim().substring(0, 60)}..."** has been published under **${finalCategory || "General"}**.`,
+          type: "qna",
+          targetEmail: "all",
+          link: `/?search=${encodeURIComponent(qaCode)}`,
+        });
+
         toast.success("New Q&A article published!");
       }
 
@@ -361,6 +372,16 @@ export default function AdminQAPage() {
         if (count > 0) {
           await batch.commit();
           await touchMetadata("qna");
+
+          // Dispatch ONE summary notification for the bulk upload
+          await createNotification({
+            title: `📚 ${count} New Guidance Articles Published`,
+            message: `**${count} new Q&A articles** have been added to the ESIC KMS knowledge base. Search or explore them on the guidance portal!`,
+            type: "qna",
+            targetEmail: "all",
+            link: "/",
+          });
+
           toast.success(`Successfully uploaded ${count} new Q&A items!`);
         }
       } catch (err: any) {
@@ -423,29 +444,20 @@ export default function AdminQAPage() {
       </div>
 
       {/* 3 Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-          <HelpCircle className="w-6 h-6 text-blue-600 mx-auto mb-2" />
-          <div className="text-2xl font-extrabold text-slate-900">{metrics.total}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-            Total Q&A Articles
-          </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Total Q&A Articles</div>
+          <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{metrics.total}</div>
         </div>
 
-        <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-          <Layers className="w-6 h-6 text-emerald-600 mx-auto mb-2" />
-          <div className="text-2xl font-extrabold text-slate-900">{metrics.categoriesCount}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-            Total Categories
-          </div>
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Total Categories</div>
+          <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{metrics.categoriesCount}</div>
         </div>
 
-        <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs text-center">
-          <Bot className="w-6 h-6 text-purple-600 mx-auto mb-2" />
-          <div className="text-2xl font-extrabold text-slate-900">{metrics.aiCount}</div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-            VA Optimized Responses
-          </div>
+        <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl col-span-2 sm:col-span-1 flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">VA Responses</div>
+          <div className="text-xl sm:text-2xl font-black text-purple-900 mt-1">{metrics.aiCount}</div>
         </div>
       </div>
 

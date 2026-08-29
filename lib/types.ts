@@ -214,6 +214,36 @@ export interface Announcement {
   updatedAt?: number;
 }
 
+export type NotificationTargetRole = "all" | "admin" | "agent";
+
+export type NotificationType =
+  | "booking"
+  | "birthday"
+  | "announcement"
+  | "system"
+  | "quiz"
+  | "course"
+  | "doubt"
+  | "report"
+  | "qna"
+  | "facility";
+
+export interface AppNotification {
+  id: string;
+  title: string;
+  message: string;
+  type: NotificationType;
+  targetEmail: string | "all"; // Specific user email or "all"
+  targetRole?: NotificationTargetRole; // Role filter: "all" (default), "admin", or "agent"
+  celebrantEmail?: string;     // For birthday notifications
+  readBy?: string[];           // Emails of users who marked as read
+  closedBy?: string[];         // Emails of users who dismissed/closed
+  createdAt: number;
+  updatedAt?: number;
+  link?: string;
+  metadata?: Record<string, any>;
+}
+
 export interface DailyActivityLog {
   id?: string;
   email: string;

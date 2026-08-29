@@ -6,6 +6,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { logUserActivity } from "@/lib/activityLogger";
+import { notifyAdmins } from "@/lib/notificationService";
 import { Flag, X, AlertCircle } from "lucide-react";
 
 interface ReportIssueModalProps {
@@ -66,6 +67,14 @@ export default function ReportIssueModal({
       logUserActivity(user.email, {
         desc: `Submitted report on ${selectedType} [${targetLabel}]: "${message.trim().substring(0, 45)}..."`,
         type: "report",
+      });
+
+      // Notify Admins
+      await notifyAdmins({
+        title: `🚩 Issue Reported: ${selectedType}`,
+        message: `**${payload.reporterName}** reported an issue regarding **${targetLabel}**: "${message.trim().substring(0, 80)}..."`,
+        type: "report",
+        link: "/reports",
       });
 
       setMessage("");

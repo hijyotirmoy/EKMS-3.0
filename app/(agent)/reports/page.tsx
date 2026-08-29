@@ -1,12 +1,24 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { collection, onSnapshot, doc, updateDoc, addDoc, query, where, orderBy } from "firebase/firestore";
+import {
+  collection,
+  onSnapshot,
+  doc,
+  updateDoc,
+  addDoc,
+  deleteDoc,
+  writeBatch,
+  query,
+  where,
+  orderBy,
+} from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { AppReport } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import {
   Flag,
   Search,
@@ -27,6 +39,10 @@ import {
   Layers,
   ArrowRight,
   Filter,
+  Trash2,
+  AlertTriangle,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 
 export default function ReportsPage() {
@@ -38,6 +54,10 @@ export default function ReportsPage() {
 
   // Filter State: 'pending' (default) | 'solved' | 'all'
   const [statusFilter, setStatusFilter] = useState<"pending" | "solved" | "all">("pending");
+
+  // Selection & Bulk Actions
+  const [selectedReportIds, setSelectedReportIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Modals
   const [viewReport, setViewReport] = useState<AppReport | null>(null);
@@ -141,6 +161,18 @@ export default function ReportsPage() {
         desc: `Marked ${report.type || "System"} report as solved: "${(report.message || "").substring(0, 40)}..."`,
         type: "report",
       });
+
+      // Notify the user who reported the issue
+      if (report.reporterEmail) {
+        await createNotification({
+          title: "✅ Reported Issue Resolved",
+          message: `Your report regarding **${report.targetCode || report.type || "Feedback"}** has been reviewed and marked as **Solved** by Admin (${userProfile?.displayName || "Admin"}). Thank you for helping improve EKMS!`,
+          type: "report",
+          targetEmail: report.reporterEmail,
+          link: "/reports",
+        });
+      }
+
       setViewReport(null);
       toast.success("Report marked as solved and archived.");
     } catch (e: any) {
@@ -148,6 +180,104 @@ export default function ReportsPage() {
       toast.error("Failed to update status.");
     } finally {
       setSolveLoading(false);
+    }
+  };
+
+  // 5. Toggle Individual Report Selection
+  const handleToggleSelectReport = (id: string) => {
+    setSelectedReportIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // 6. Toggle Select All Currently Filtered Reports
+  const handleToggleSelectAll = () => {
+    if (filteredReports.length === 0) return;
+    const allFilteredSelected = filteredReports.every((r) => selectedReportIds.has(r.id));
+    if (allFilteredSelected) {
+      setSelectedReportIds(new Set());
+    } else {
+      const next = new Set(selectedReportIds);
+      filteredReports.forEach((r) => next.add(r.id));
+      setSelectedReportIds(next);
+    }
+  };
+
+  // 7. Bulk Delete Selected Reports (Admin Only)
+  const handleBulkDelete = async () => {
+    if (!isAdmin || selectedReportIds.size === 0) return;
+
+    const count = selectedReportIds.size;
+    const confirmed = await showConfirm({
+      title: `Permanently Delete ${count} Report${count === 1 ? "" : "s"}?`,
+      message: `Are you sure you want to permanently delete ${count} selected report${count === 1 ? "" : "s"}? This action cannot be undone and will remove them from all views.`,
+      isDestructive: true,
+      confirmText: `Yes, Delete ${count} Report${count === 1 ? "" : "s"}`,
+    });
+    if (!confirmed) return;
+
+    setBulkDeleting(true);
+    try {
+      const batch = writeBatch(db);
+      selectedReportIds.forEach((id) => {
+        batch.delete(doc(db, "reports", id));
+      });
+      await batch.commit();
+
+      logUserActivity(user?.email, {
+        desc: `Bulk deleted ${count} issue report${count === 1 ? "" : "s"}`,
+        type: "delete",
+      });
+
+      setSelectedReportIds(new Set());
+      if (viewReport && selectedReportIds.has(viewReport.id)) {
+        setViewReport(null);
+      }
+      toast.success(`Successfully deleted ${count} report${count === 1 ? "" : "s"}.`);
+    } catch (err: any) {
+      console.error("Bulk delete error:", err);
+      toast.error("Failed to delete reports: " + (err.message || "Unknown error"));
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  // 8. Single Report Delete (Admin Only)
+  const handleSingleDelete = async (report: AppReport) => {
+    if (!isAdmin) return;
+
+    const confirmed = await showConfirm({
+      title: "Delete Report?",
+      message: `Are you sure you want to permanently delete this report by ${report.reporterName || report.reporterEmail || "Agent"}?`,
+      isDestructive: true,
+      confirmText: "Delete Report",
+    });
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, "reports", report.id));
+      logUserActivity(user?.email, {
+        desc: `Deleted report from ${report.reporterName || report.reporterEmail}`,
+        type: "delete",
+      });
+      setSelectedReportIds((prev) => {
+        const next = new Set(prev);
+        next.delete(report.id);
+        return next;
+      });
+      if (viewReport?.id === report.id) {
+        setViewReport(null);
+      }
+      toast.success("Report deleted successfully.");
+    } catch (err: any) {
+      console.error("Delete report error:", err);
+      toast.error("Failed to delete report.");
     }
   };
 
@@ -178,6 +308,15 @@ export default function ReportsPage() {
         desc: `Submitted ${addType} report: "${addMessage.trim().substring(0, 45)}..."`,
         type: "report",
       });
+
+      // Notify Admins
+      await notifyAdmins({
+        title: `🚩 Issue Reported: ${addType}`,
+        message: `**${payload.reporterName}** submitted a report: "${addMessage.trim().substring(0, 80)}..."`,
+        type: "report",
+        link: "/reports",
+      });
+
       setAddMessage("");
       setAddModalOpen(false);
       toast.success("Report submitted successfully!");
@@ -249,70 +388,63 @@ export default function ReportsPage() {
       </div>
 
       {/* 3 Top Interactive KPI Filter Boxes */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center select-none">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 select-none">
         {/* Pending Reports (Active by Default) */}
         <div
           onClick={() => setStatusFilter("pending")}
-          className={`p-5 rounded-2xl border transition-all cursor-pointer shadow-xs ${
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
             statusFilter === "pending"
-              ? "bg-amber-50/70 border-amber-300 ring-2 ring-amber-500/20 shadow-md"
-              : "bg-white border-slate-200 hover:bg-slate-50/70"
+              ? "bg-amber-50/90 border-amber-400 ring-2 ring-amber-500/30 shadow-md scale-[1.01]"
+              : "bg-amber-50/70 border-amber-200 hover:border-amber-300 hover:shadow-xs"
           }`}
         >
-          <div className="flex items-center justify-center gap-2 mb-1">
-            <Clock className={`w-4 h-4 ${statusFilter === "pending" ? "text-amber-600" : "text-slate-400"}`} />
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              Pending Reports
-            </div>
+          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+            Pending Reports
           </div>
-          <div className="text-3xl font-black text-amber-600">{pendingCount}</div>
-          <div className="text-[11px] text-slate-400 mt-1">Awaiting Resolution</div>
+          <div className="text-xl sm:text-2xl font-black text-amber-900 mt-1">{pendingCount}</div>
         </div>
 
         {/* Solved Reports */}
         <div
           onClick={() => setStatusFilter("solved")}
-          className={`p-5 rounded-2xl border transition-all cursor-pointer shadow-xs ${
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
             statusFilter === "solved"
-              ? "bg-emerald-50/70 border-emerald-300 ring-2 ring-emerald-500/20 shadow-md"
-              : "bg-white border-slate-200 hover:bg-slate-50/70"
+              ? "bg-emerald-50/90 border-emerald-400 ring-2 ring-emerald-500/30 shadow-md scale-[1.01]"
+              : "bg-emerald-50/70 border-emerald-200 hover:border-emerald-300 hover:shadow-xs"
           }`}
         >
-          <div className="flex items-center justify-center gap-2 mb-1">
-            <CheckCircle2
-              className={`w-4 h-4 ${statusFilter === "solved" ? "text-emerald-600" : "text-slate-400"}`}
-            />
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              Solved Reports
-            </div>
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+            Solved Reports
           </div>
-          <div className="text-3xl font-black text-emerald-600">{solvedCount}</div>
-          <div className="text-[11px] text-slate-400 mt-1">Resolved & Archived</div>
+          <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{solvedCount}</div>
         </div>
 
         {/* Total Reports */}
         <div
           onClick={() => setStatusFilter("all")}
-          className={`p-5 rounded-2xl border transition-all cursor-pointer shadow-xs ${
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer col-span-2 sm:col-span-1 flex flex-col justify-between ${
             statusFilter === "all"
-              ? "bg-blue-50/70 border-blue-300 ring-2 ring-blue-500/20 shadow-md"
-              : "bg-white border-slate-200 hover:bg-slate-50/70"
+              ? "bg-blue-50/90 border-blue-400 ring-2 ring-blue-500/30 shadow-md scale-[1.01]"
+              : "bg-blue-50/70 border-blue-200 hover:border-blue-300 hover:shadow-xs"
           }`}
         >
-          <div className="flex items-center justify-center gap-2 mb-1">
-            <Flag className={`w-4 h-4 ${statusFilter === "all" ? "text-blue-600" : "text-slate-400"}`} />
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">
               Total Reports
             </div>
+            {isAdmin && totalCount > 0 && (
+              <span className="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-bold">
+                Admin
+              </span>
+            )}
           </div>
-          <div className="text-3xl font-black text-blue-600">{totalCount}</div>
-          <div className="text-[11px] text-slate-400 mt-1">All Recorded Reports</div>
+          <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{totalCount}</div>
         </div>
       </div>
 
       {/* Reports Table Section */}
       <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2">
             <h3 className="font-bold text-slate-900 text-base">
               {statusFilter === "pending"
@@ -326,44 +458,115 @@ export default function ReportsPage() {
             </span>
           </div>
 
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setStatusFilter("pending")}
-              className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                statusFilter === "pending"
-                  ? "bg-amber-600 text-white shadow-2xs"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-              }`}
-            >
-              Pending
-            </button>
-            <button
-              onClick={() => setStatusFilter("solved")}
-              className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                statusFilter === "solved"
-                  ? "bg-emerald-600 text-white shadow-2xs"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-              }`}
-            >
-              Solved History
-            </button>
-            <button
-              onClick={() => setStatusFilter("all")}
-              className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                statusFilter === "all"
-                  ? "bg-blue-600 text-white shadow-2xs"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-              }`}
-            >
-              All
-            </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {isAdmin && filteredReports.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleToggleSelectAll}
+                  className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full text-xs font-semibold transition-colors flex items-center gap-1"
+                >
+                  <CheckSquare className="w-3.5 h-3.5 text-slate-500" />
+                  <span>
+                    {filteredReports.length > 0 &&
+                    filteredReports.every((r) => selectedReportIds.has(r.id))
+                      ? "Deselect All"
+                      : "Select All"}
+                  </span>
+                </button>
+                {selectedReportIds.size > 0 && (
+                  <button
+                    onClick={handleBulkDelete}
+                    disabled={bulkDeleting}
+                    className="px-3.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-xs font-bold shadow-xs transition-colors flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{bulkDeleting ? "Deleting..." : `Delete (${selectedReportIds.size})`}</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setStatusFilter("pending")}
+                className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
+                  statusFilter === "pending"
+                    ? "bg-amber-600 text-white shadow-2xs"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                Pending
+              </button>
+              <button
+                onClick={() => setStatusFilter("solved")}
+                className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
+                  statusFilter === "solved"
+                    ? "bg-emerald-600 text-white shadow-2xs"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                Solved History
+              </button>
+              <button
+                onClick={() => setStatusFilter("all")}
+                className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
+                  statusFilter === "all"
+                    ? "bg-blue-600 text-white shadow-2xs"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                All
+              </button>
+            </div>
           </div>
         </div>
+
+        {/* Bulk Action Bar for Selected Reports */}
+        {isAdmin && selectedReportIds.size > 0 && (
+          <div className="flex items-center justify-between bg-rose-50 border border-rose-200 px-4 py-2.5 rounded-2xl text-xs shadow-xs animate-in fade-in">
+            <div className="flex items-center gap-2 font-bold text-rose-900">
+              <AlertTriangle className="w-4 h-4 text-rose-600" />
+              <span>
+                {selectedReportIds.size} report{selectedReportIds.size === 1 ? "" : "s"} selected for deletion
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSelectedReportIds(new Set())}
+                className="px-3 py-1.5 bg-white border border-rose-200 text-rose-700 hover:bg-rose-50 rounded-xl font-semibold transition-colors"
+              >
+                Deselect All
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkDeleting}
+                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-xs transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{bulkDeleting ? "Deleting..." : `Delete Selected (${selectedReportIds.size})`}</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="overflow-x-auto rounded-2xl border border-slate-100">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
+                {isAdmin && (
+                  <th className="p-4 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredReports.length > 0 &&
+                        filteredReports.every((r) => selectedReportIds.has(r.id))
+                      }
+                      onChange={handleToggleSelectAll}
+                      className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                      title="Select all"
+                    />
+                  </th>
+                )}
                 <th className="p-4">Reporter</th>
                 <th className="p-4">Date & Time</th>
                 <th className="p-4">Domain Context</th>
@@ -375,13 +578,19 @@ export default function ReportsPage() {
             <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
               {loading ? (
                 <tr>
-                  <td colSpan={statusFilter === "solved" ? 6 : 5} className="text-center py-16 text-slate-400">
+                  <td
+                    colSpan={isAdmin ? (statusFilter === "solved" ? 7 : 6) : statusFilter === "solved" ? 6 : 5}
+                    className="text-center py-16 text-slate-400"
+                  >
                     Loading reports...
                   </td>
                 </tr>
               ) : filteredReports.length === 0 ? (
                 <tr>
-                  <td colSpan={statusFilter === "solved" ? 6 : 5} className="text-center py-16 text-slate-400">
+                  <td
+                    colSpan={isAdmin ? (statusFilter === "solved" ? 7 : 6) : statusFilter === "solved" ? 6 : 5}
+                    className="text-center py-16 text-slate-400"
+                  >
                     {statusFilter === "pending"
                       ? "No pending reports! All reported issues are currently resolved."
                       : statusFilter === "solved"
@@ -394,9 +603,26 @@ export default function ReportsPage() {
                   const badge = getTypeBadge(report.type);
                   const IconComp = badge.icon;
                   const isSolved = report.status === "solved";
+                  const isSelected = selectedReportIds.has(report.id);
 
                   return (
-                    <tr key={report.id} className="hover:bg-slate-50/70 transition-colors">
+                    <tr
+                      key={report.id}
+                      className={`transition-colors ${
+                        isSelected ? "bg-rose-50/50" : "hover:bg-slate-50/70"
+                      }`}
+                    >
+                      {isAdmin && (
+                        <td className="p-4 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectReport(report.id)}
+                            className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                          />
+                        </td>
+                      )}
+
                       <td className="p-4">
                         <div className="font-bold text-slate-900">{report.reporterName || "Agent"}</div>
                         <div className="text-[10px] text-slate-400">{report.reporterEmail}</div>
@@ -452,7 +678,7 @@ export default function ReportsPage() {
                         <div className="flex items-center justify-end gap-1.5">
                           <button
                             onClick={() => setViewReport(report)}
-                            className="flex items-center gap-1 px-2.5 py-1 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold"
+                            className="flex items-center gap-1 px-2.5 py-1 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold transition-colors"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             <span>View</span>
@@ -461,10 +687,21 @@ export default function ReportsPage() {
                           {isAdmin && !isSolved && (
                             <button
                               onClick={() => handleExecuteSolve(report)}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-2xs"
+                              className="flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-2xs transition-colors"
                             >
                               <Check className="w-3.5 h-3.5" />
                               <span>Solved</span>
+                            </button>
+                          )}
+
+                          {isAdmin && (
+                            <button
+                              onClick={() => handleSingleDelete(report)}
+                              className="flex items-center gap-1 px-2 py-1 border border-rose-200 hover:bg-rose-50 text-rose-600 hover:text-rose-700 rounded-lg text-xs font-semibold transition-colors"
+                              title="Delete report"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span className="hidden md:inline">Delete</span>
                             </button>
                           )}
                         </div>
@@ -530,25 +767,40 @@ export default function ReportsPage() {
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setViewReport(null)}
-                className="px-4 py-2 border rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50"
-              >
-                Close
-              </button>
-              {isAdmin && viewReport.status !== "solved" && (
+            <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-100">
+              {isAdmin ? (
                 <button
                   type="button"
-                  onClick={() => handleExecuteSolve(viewReport)}
-                  disabled={solveLoading}
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1"
+                  onClick={() => handleSingleDelete(viewReport)}
+                  className="px-3.5 py-2 border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors"
                 >
-                  <Check className="w-4 h-4" />
-                  <span>Mark as Solved</span>
+                  <Trash2 className="w-4 h-4" />
+                  <span>Delete Report</span>
                 </button>
+              ) : (
+                <div />
               )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setViewReport(null)}
+                  className="px-4 py-2 border rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  Close
+                </button>
+                {isAdmin && viewReport.status !== "solved" && (
+                  <button
+                    type="button"
+                    onClick={() => handleExecuteSolve(viewReport)}
+                    disabled={solveLoading}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1 transition-colors"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>Mark as Solved</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

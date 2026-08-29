@@ -171,26 +171,20 @@ export default function IndividualAgentReportPage() {
           </div>
 
           {/* 8 KPI Metrics */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 sm:gap-4">
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <Clock className="w-5 h-5 text-blue-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{formatDuration(totalSeconds)}</div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Screen Time Active
-              </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+            <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Screen Time</div>
+              <div className="text-xl font-black text-blue-900 mt-1">{formatDuration(totalSeconds)}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <User className="w-5 h-5 text-purple-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{activity?.loginCount || 1}</div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Sessions Today
-              </div>
+            <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">Sessions</div>
+              <div className="text-xl font-black text-purple-900 mt-1">{activity?.loginCount || 1}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <Gamepad2 className="w-5 h-5 text-indigo-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">
+            <div className="bg-indigo-50/70 border border-indigo-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider">Quizzes (Today)</div>
+              <div className="text-xl font-black text-indigo-900 mt-1">
                 {(() => {
                   const countFromEvents = (activity?.timelineEvents || []).filter(
                     (e) => e.type === "quiz" || e.desc.toLowerCase().includes("completed quiz")
@@ -198,54 +192,36 @@ export default function IndividualAgentReportPage() {
                   const dailyQuiz = countFromEvents || activity?.quizzesCompletedCount || 0;
                   return (
                     <>
-                      {dailyQuiz} <span className="text-[10px] text-slate-400 font-normal">({extraStats.quizzesCompleted})</span>
+                      {dailyQuiz} <span className="text-xs text-indigo-700/70 font-normal">({extraStats.quizzesCompleted})</span>
                     </>
                   );
                 })()}
               </div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Quizzes (Today)
-              </div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <GraduationCap className="w-5 h-5 text-emerald-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{extraStats.coursesCompleted}</div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Courses Completed
-              </div>
+            <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Courses Done</div>
+              <div className="text-xl font-black text-emerald-900 mt-1">{extraStats.coursesCompleted}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <MessageSquare className="w-5 h-5 text-amber-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{extraStats.doubtsCount}</div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Doubts Posted
-              </div>
+            <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Doubts</div>
+              <div className="text-xl font-black text-amber-900 mt-1">{extraStats.doubtsCount}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <Flag className="w-5 h-5 text-rose-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{extraStats.reportsCount}</div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Reports Submitted
-              </div>
+            <div className="bg-rose-50/70 border border-rose-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">Reports</div>
+              <div className="text-xl font-black text-rose-900 mt-1">{extraStats.reportsCount}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <Download className="w-5 h-5 text-teal-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{activity?.filesDownloaded || 0}</div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Files Downloaded
-              </div>
+            <div className="bg-teal-50/70 border border-teal-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">Downloads</div>
+              <div className="text-xl font-black text-teal-900 mt-1">{activity?.filesDownloaded || 0}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs text-center flex flex-col justify-between">
-              <Search className="w-5 h-5 text-slate-600 mx-auto mb-1.5" />
-              <div className="text-lg font-black text-slate-900">{activity?.searches?.length || 0}</div>
-              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Searches Executed
-              </div>
+            <div className="bg-cyan-50/70 border border-cyan-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-cyan-800 uppercase tracking-wider">Searches</div>
+              <div className="text-xl font-black text-cyan-900 mt-1">{activity?.searches?.length || 0}</div>
             </div>
           </div>
 

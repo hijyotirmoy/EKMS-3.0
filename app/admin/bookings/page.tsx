@@ -21,6 +21,7 @@ import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord, RescheduleLog } from "@/lib/types";
 import { getISTMidnight } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import * as XLSX from "xlsx";
 import {
   Calendar as CalendarIcon,
@@ -49,7 +50,7 @@ interface AdminBookingRecord extends BookingRecord {
 }
 
 export default function AdminBookingsPage() {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const { toast, showAlert, showConfirm } = usePopup();
   const [liveBookings, setLiveBookings] = useState<Record<string, DayAvailability>>({});
   const [userProfiles, setUserProfiles] = useState<Record<string, string>>({});
@@ -63,6 +64,8 @@ export default function AdminBookingsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [agentFilter, setAgentFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [bookingStartDate, setBookingStartDate] = useState("");
+  const [bookingEndDate, setBookingEndDate] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 30;
 
@@ -102,24 +105,41 @@ export default function AdminBookingsPage() {
 
   // 1. Live Bookings Listener
   useEffect(() => {
-    const unsubBookings = onSnapshot(collection(db, "bookings"), (snap) => {
-      const data: Record<string, DayAvailability> = {};
-      snap.forEach((d) => {
-        data[d.id] = d.data() as DayAvailability;
-      });
-      setLiveBookings(data);
-    });
+    let isMounted = true;
 
-    const unsubLogs = onSnapshot(collection(db, "rescheduleLogs"), (snap) => {
-      const logs: RescheduleLog[] = [];
-      snap.forEach((d) => logs.push({ id: d.id, ...(d.data() as Omit<RescheduleLog, "id">) }));
-      logs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      setRescheduleLogs(logs);
-    });
+    const unsubBookings = onSnapshot(
+      collection(db, "bookings"),
+      (snap) => {
+        if (!isMounted) return;
+        const data: Record<string, DayAvailability> = {};
+        snap.forEach((d) => {
+          data[d.id] = d.data() as DayAvailability;
+        });
+        setLiveBookings(data);
+      },
+      (err) => {
+        console.warn("Bookings snapshot error:", err);
+      }
+    );
+
+    const unsubLogs = onSnapshot(
+      collection(db, "rescheduleLogs"),
+      (snap) => {
+        if (!isMounted) return;
+        const logs: RescheduleLog[] = [];
+        snap.forEach((d) => logs.push({ id: d.id, ...(d.data() as Omit<RescheduleLog, "id">) }));
+        logs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        setRescheduleLogs(logs);
+      },
+      (err) => {
+        console.warn("Reschedule logs snapshot error:", err);
+      }
+    );
 
     const fetchUsers = async () => {
       try {
         const snap = await getDocs(collection(db, "users"));
+        if (!isMounted) return;
         const map: Record<string, string> = {};
         snap.forEach((d) => {
           map[d.id.toLowerCase()] = d.data().displayName || d.data().name || d.id;
@@ -132,8 +152,17 @@ export default function AdminBookingsPage() {
     fetchUsers();
 
     return () => {
-      unsubBookings();
-      unsubLogs();
+      isMounted = false;
+      try {
+        unsubBookings();
+      } catch (e) {
+        // ignore unmount errors
+      }
+      try {
+        unsubLogs();
+      } catch (e) {
+        // ignore unmount errors
+      }
     };
   }, []);
 
@@ -317,8 +346,20 @@ export default function AdminBookingsPage() {
       });
     }
 
+    if (bookingStartDate) {
+      const [sy, sm, sd] = bookingStartDate.split("-").map(Number);
+      const start = new Date(sy, sm - 1, sd, 0, 0, 0, 0).getTime();
+      result = result.filter((b) => (b.timestamp || 0) >= start);
+    }
+
+    if (bookingEndDate) {
+      const [ey, em, ed] = bookingEndDate.split("-").map(Number);
+      const end = new Date(ey, em - 1, ed, 23, 59, 59, 999).getTime();
+      result = result.filter((b) => (b.timestamp || 0) <= end);
+    }
+
     return result;
-  }, [allBookings, agentFilter, searchTerm, statusFilter]);
+  }, [allBookings, agentFilter, searchTerm, statusFilter, bookingStartDate, bookingEndDate]);
 
   const totalPages = Math.max(1, Math.ceil(filteredBookings.length / itemsPerPage));
   const paginatedBookings = useMemo(() => {
@@ -485,6 +526,30 @@ export default function AdminBookingsPage() {
         desc: `${!b.visited ? "Marked as Visited" : "Unmarked Visited"} for IP: ${b.ipName || "Beneficiary"} (${b.dateKey})`,
         type: "booking",
       });
+
+      // If marking as visited, notify the agent and admins
+      if (!b.visited) {
+        try {
+          if (b.agentEmail) {
+            await createNotification({
+              title: "🏥 Booking Marked as Visited",
+              message: `Your booking for **${b.ipName || "Beneficiary"}** on **${b.dateKey}** has been marked as **Visited** by ${userProfile?.displayName || "Admin"}.`,
+              type: "booking",
+              targetEmail: b.agentEmail.toLowerCase().trim(),
+              link: "/booking",
+            });
+          }
+          await notifyAdmins({
+            title: "🏥 Booking Visited",
+            message: `Booking for **${b.ipName || "Beneficiary"}** on **${b.dateKey}** (booked by ${b.agentName || b.agentEmail}) was marked as **Visited** by ${userProfile?.displayName || "Admin"}.`,
+            type: "booking",
+            link: "/admin/bookings",
+          });
+        } catch (notifErr) {
+          console.error("Visited notification error:", notifErr);
+        }
+      }
+
       toast.success(b.visited ? "Booking marked as active." : "Booking marked as visited.");
     } catch (e: any) {
       toast.error("Failed to update status: " + e.message);
@@ -728,6 +793,38 @@ export default function AdminBookingsPage() {
         type: "booking",
       });
 
+      // Send customized notification to seat owner agent
+      if (rescheduleItem.agentEmail) {
+        const oldFmt = new Date(rescheduleItem.dateKey).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        const newFmt = new Date(rsSelectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+        try {
+          await createNotification({
+            title: "🔄 Booking Rescheduled by Admin",
+            message: `Your verification booking for **${rescheduleItem.ipName}** was rescheduled from **${oldFmt}** to **${newFmt}** by admin (${userProfile?.displayName || user?.email || "Admin"}).`,
+            type: "booking",
+            targetEmail: rescheduleItem.agentEmail.toLowerCase().trim(),
+            link: "/booking",
+            metadata: {
+              ipName: rescheduleItem.ipName,
+              oldDate: rescheduleItem.dateKey,
+              newDate: rsSelectedDate,
+              actionBy: user?.email,
+            },
+          });
+
+          // Notify other Admins
+          await notifyAdmins({
+            title: "🔄 Booking Rescheduled by Admin",
+            message: `**${userProfile?.displayName || user?.email}** rescheduled booking for **${rescheduleItem.ipName}** (Agent: ${rescheduleItem.agentName || rescheduleItem.agentEmail}) to **${newFmt}**.`,
+            type: "booking",
+            link: "/admin/bookings",
+          });
+        } catch (notifErr) {
+          console.error("Admin reschedule notification error:", notifErr);
+        }
+      }
+
       setRescheduleItem(null);
       setRsSelectedDate(null);
       toast.success("Booking successfully rescheduled!");
@@ -908,7 +1005,7 @@ export default function AdminBookingsPage() {
           <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Total Follow-ups</div>
           <div className="text-xl font-black text-amber-900 mt-1">{metrics.delayed}</div>
         </div>
-        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl">
+        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl col-span-2 sm:col-span-1">
           <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Rescheduled</div>
           <div className="text-xl font-black text-blue-900 mt-1">{metrics.rescheduled}</div>
         </div>
@@ -964,13 +1061,55 @@ export default function AdminBookingsPage() {
             </h3>
 
             <div className="flex items-center gap-2.5 flex-wrap">
+              {/* Date Range Filters (From - To) */}
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-700">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">From:</span>
+                <input
+                  type="date"
+                  value={bookingStartDate}
+                  onChange={(e) => {
+                    setBookingStartDate(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="bg-transparent outline-none text-slate-800 text-xs font-semibold cursor-pointer"
+                />
+              </div>
+
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-700">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">To:</span>
+                <input
+                  type="date"
+                  value={bookingEndDate}
+                  onChange={(e) => {
+                    setBookingEndDate(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="bg-transparent outline-none text-slate-800 text-xs font-semibold cursor-pointer"
+                />
+              </div>
+
+              {(bookingStartDate || bookingEndDate) && (
+                <button
+                  onClick={() => {
+                    setBookingStartDate("");
+                    setBookingEndDate("");
+                    setCurrentPage(1);
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                  title="Reset date filter"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Reset</span>
+                </button>
+              )}
+
               <select
                 value={agentFilter}
                 onChange={(e) => {
                   setAgentFilter(e.target.value);
                   setCurrentPage(1);
                 }}
-                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-blue-600 outline-none"
+                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-blue-600 outline-none cursor-pointer"
               >
                 <option value="all">AGENT: ALL</option>
                 {uniqueAgents.map((a) => (
@@ -986,7 +1125,7 @@ export default function AdminBookingsPage() {
                   setStatusFilter(e.target.value);
                   setCurrentPage(1);
                 }}
-                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-blue-600 outline-none"
+                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-blue-600 outline-none cursor-pointer"
               >
                 <option value="all">STATUS: ALL</option>
                 <option value="upcoming">Upcoming</option>

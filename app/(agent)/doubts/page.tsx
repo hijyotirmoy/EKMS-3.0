@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Doubt } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import {
   HelpCircle,
   Clock,
@@ -133,6 +134,15 @@ export default function DoubtsPage() {
         desc: `Posted doubt: "${askContent.trim().substring(0, 45)}..."`,
         type: "doubt",
       });
+
+      // Notify Admins
+      await notifyAdmins({
+        title: `❓ New Doubt from ${newDoubt.author}`,
+        message: `**${newDoubt.author}** posted a new doubt: "${newDoubt.question.substring(0, 80)}..."`,
+        type: "doubt",
+        link: "/admin/doubts",
+      });
+
       setAskContent("");
       setAskModalOpen(false);
       toast.success("Your doubt has been posted to the board!");
@@ -169,6 +179,26 @@ export default function DoubtsPage() {
         type: "doubt",
       });
 
+      // Notify doubt author if someone else answered
+      const currentEmail = (user?.email || "").toLowerCase();
+      if (resolveModalDoubt.authorEmail && (!currentEmail || resolveModalDoubt.authorEmail.toLowerCase() !== currentEmail)) {
+        await createNotification({
+          title: "💬 Answer Received on Your Doubt",
+          message: `**${userProfile?.displayName || "A teammate"}** submitted an answer to your doubt: "${(resolveModalDoubt.question || "").substring(0, 60)}...".`,
+          type: "doubt",
+          targetEmail: resolveModalDoubt.authorEmail.toLowerCase().trim(),
+          link: "/doubts",
+        });
+      }
+
+      // Notify Admins
+      await notifyAdmins({
+        title: "💬 Doubt Answered: Verification Needed",
+        message: `**${userProfile?.displayName || user?.email || "Agent"}** answered the doubt: "${(resolveModalDoubt.question || "").substring(0, 60)}...".`,
+        type: "doubt",
+        link: "/admin/doubts",
+      });
+
       setResolveModalDoubt(null);
       setResolveAnswer("");
       toast.success("Your answer has been submitted for admin verification!");
@@ -202,6 +232,29 @@ export default function DoubtsPage() {
           const userDocRef = doc(db, "users", verifyModalDoubt.resolvedByEmail);
           await updateDoc(userDocRef, { doubtsResolved: increment(1) });
         } catch (e) {}
+      }
+
+      // Notify doubt author
+      if (verifyModalDoubt.authorEmail) {
+        await createNotification({
+          title: "✅ Doubt Officially Verified & Resolved",
+          message: `Your doubt **"${(verifyModalDoubt.question || "").substring(0, 60)}..."** has been verified and resolved by Admin!`,
+          type: "doubt",
+          targetEmail: verifyModalDoubt.authorEmail.toLowerCase().trim(),
+          link: "/doubts",
+        });
+      }
+
+      // Notify solver agent
+      const currentEmail = (user?.email || "").toLowerCase();
+      if (verifyModalDoubt.resolvedByEmail && (!currentEmail || verifyModalDoubt.resolvedByEmail.toLowerCase() !== currentEmail)) {
+        await createNotification({
+          title: "🎖️ Your Doubt Answer was Approved!",
+          message: `Your answer to doubt **"${(verifyModalDoubt.question || "").substring(0, 60)}..."** was approved and verified by Admin. Great job!`,
+          type: "doubt",
+          targetEmail: verifyModalDoubt.resolvedByEmail.toLowerCase().trim(),
+          link: "/doubts",
+        });
       }
 
       setVerifyModalDoubt(null);

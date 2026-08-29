@@ -1,0 +1,109 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: Check if user is an Admin safely
+    function isAdmin() {
+      return request.auth != null && 
+             exists(/databases/$(database)/documents/users/$(request.auth.token.email)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role in ["Admin", "Master Admin"];
+    }
+
+    // 1. Notifications: Authenticated users can receive & trigger notifications
+    match /notifications/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    // 2. Announcements: Read-only for public/agents, write for authenticated/admins
+    match /announcements/{document=**} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // 3. Knowledge Base & CMS (Read-Only for Public/Agents, Full Write for Admins)
+    match /qna/{document=**} { allow read: if true; allow write: if isAdmin(); }
+    match /qa/{document=**} { allow read: if true; allow write: if isAdmin(); }
+    match /facilities/{document=**} { allow read: if true; allow write: if isAdmin(); }
+    match /files/{document=**} { allow read: if true; allow write: if isAdmin(); }
+    match /blogs/{document=**} { allow read: if true; allow write: if isAdmin(); }
+
+    // 4. System Status, Settings & Security Locks
+    match /system/{document=**} { 
+      allow read: if true; 
+      allow create, delete: if isAdmin();
+      allow update: if request.auth != null; 
+    }
+    match /settings/{document=**} { 
+      allow read: if true; 
+      allow write: if isAdmin(); 
+    }
+    match /security_locks/{email} {
+      allow read, write: if true;
+    }
+
+    // 5. User Profiles: Allow users to create & update profile, quiz scores, course progress
+    match /users/{email} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null;
+      allow delete: if isAdmin();
+    }
+
+    // 6. Doubts Board: Agents can post & answer doubts, Admins full access
+    match /doubts/{document=**} { 
+      allow read: if true; 
+      allow create, update: if request.auth != null;
+      allow delete: if isAdmin() || (request.auth != null && resource.data.authorEmail == request.auth.token.email);
+    }
+
+    // 7. Quizzes & Onboarding Courses
+    match /quizzes/{document=**} { 
+      allow read: if true; 
+      allow create, delete: if isAdmin();
+      allow update: if request.auth != null;
+    }
+    match /courses/{document=**} { 
+      allow read: if true; 
+      allow create, delete: if isAdmin();
+      allow update: if request.auth != null;
+    }
+    match /onboarding/{document=**} { 
+      allow read: if true; 
+      allow create, delete: if isAdmin();
+      allow update: if request.auth != null;
+    }
+    match /onboardings/{document=**} { 
+      allow read: if true; 
+      allow create, delete: if isAdmin();
+      allow update: if request.auth != null;
+    }
+
+    // 8. Agent Daily Activity Tracking
+    match /daily_activity/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    match /activity_logs/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // 9. Missing Content Tracker
+    match /missing_searches/{term} {
+      allow read: if isAdmin();
+      allow write: if true; 
+    }
+    
+    // 10. Reports & Issue Tickets
+    match /reports/{reportId} {
+      allow create: if request.auth != null;
+      allow read, update, delete: if request.auth != null; 
+    }
+    
+    // 11. Verification Bookings & Reschedule Logs
+    match /bookings/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    match /rescheduleLogs/{logId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

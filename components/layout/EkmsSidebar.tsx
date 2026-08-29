@@ -26,6 +26,7 @@ import {
   User,
   Flag,
   ExternalLink,
+  Bell,
 } from "lucide-react";
 
 interface EkmsSidebarProps {
@@ -192,7 +193,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       badge: missingContentCount,
     },
     { href: "/admin/teams", label: "Manage Teams", icon: Users2, color: "text-indigo-600" },
-    { href: "/admin/announcements", label: "Announcements", icon: Megaphone, color: "text-pink-500" },
+    { href: "/admin/notifications", label: "Notifications", icon: Bell, color: "text-pink-500" },
     {
       href: "/admin/doubts",
       label: "Manage Doubts",

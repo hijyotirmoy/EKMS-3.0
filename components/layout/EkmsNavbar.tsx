@@ -16,6 +16,7 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import NotificationModal from "@/components/common/NotificationModal";
+import { getLocalReadNotifications } from "@/lib/notificationService";
 
 interface EkmsNavbarProps {
   onToggleSidebar: () => void;
@@ -23,7 +24,7 @@ interface EkmsNavbarProps {
 }
 
 export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
-  const { user, userProfile, isLoggedIn, openLoginModal } = useAuth();
+  const { user, userProfile, isLoggedIn, isAdmin, openLoginModal } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -32,18 +33,141 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
   const [notificationCount, setNotificationCount] = useState(0);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
 
+  const [readOverrideIds, setReadOverrideIds] = useState<Set<string>>(() => {
+    return new Set(user?.email ? getLocalReadNotifications(user.email) : []);
+  });
+
+  // Sync with localStorage when user logs in or refreshes
+  useEffect(() => {
+    if (user?.email) {
+      const localIds = getLocalReadNotifications(user.email);
+      setReadOverrideIds((prev) => {
+        const next = new Set(prev);
+        localIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+  }, [user?.email]);
+
+  // Listen to instant read events
+  useEffect(() => {
+    const handleReadUpdate = (e: any) => {
+      if (e.detail?.ids) {
+        setReadOverrideIds((prev) => {
+          const next = new Set(prev);
+          e.detail.ids.forEach((id: string) => next.add(id));
+          return next;
+        });
+      }
+    };
+
+    window.addEventListener("ekms-notification-read-update", handleReadUpdate);
+    return () => {
+      window.removeEventListener("ekms-notification-read-update", handleReadUpdate);
+    };
+  }, []);
+
   // Sync Notifications Badge (only if logged in)
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!isLoggedIn || !user?.email) {
       setNotificationCount(0);
       return;
     }
-    const q = query(collection(db, "announcements"), where("isVisible", "==", true));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setNotificationCount(snapshot.size);
-    });
-    return () => unsubscribe();
-  }, [isLoggedIn]);
+
+    const userEmail = user.email.toLowerCase().trim();
+    let rawNotifs: any[] = [];
+    let rawAnn: any[] = [];
+
+    const calculateUnread = () => {
+      let unread = 0;
+      const seenIds = new Set<string>();
+      const combinedMap = new Map<string, any>();
+
+      rawNotifs.forEach((n) => combinedMap.set(n.id, n));
+      rawAnn.forEach((a) => {
+        if (!combinedMap.has(a.id)) {
+          combinedMap.set(a.id, a);
+        }
+      });
+
+      const userRole = (userProfile?.role || (user ? "Agent" : "guest")).toLowerCase().trim();
+      const isUserAdmin = isAdmin || userRole.includes("admin") || userRole.includes("master");
+
+      combinedMap.forEach((data) => {
+        const target = (data.targetEmail || "all").toLowerCase().trim();
+        const isDirectlyForMe = target !== "all" && target === userEmail;
+
+        const notifRole = (data.targetRole || "all").toLowerCase().trim();
+        const isRoleAdmin = notifRole === "admin" || notifRole === "master_admin" || notifRole === "admins";
+        const isRoleAgent = notifRole === "agent" || notifRole === "agents";
+
+        // Role check
+        if (isRoleAdmin && !isUserAdmin) return;
+        if (isRoleAgent && isUserAdmin && !isDirectlyForMe) return;
+
+        if (target === "all" || target === userEmail) {
+          if (data.type === "birthday" && data.celebrantEmail?.toLowerCase().trim() === userEmail) {
+            return;
+          }
+          seenIds.add(data.id);
+          const isRead = data.readBy?.includes(userEmail) || readOverrideIds.has(data.id);
+          const isClosed = data.closedBy?.includes(userEmail) || readOverrideIds.has(data.id);
+          if (!isRead && !isClosed) {
+            unread++;
+          }
+        }
+      });
+
+      setNotificationCount(unread);
+    };
+
+    const unsubNotifs = onSnapshot(
+      collection(db, "notifications"),
+      (snap) => {
+        rawNotifs = [];
+        snap.forEach((d) => rawNotifs.push({ id: d.id, ...d.data() }));
+        calculateUnread();
+      },
+      (err) => {}
+    );
+
+    const unsubAnn = onSnapshot(
+      collection(db, "announcements"),
+      (snap) => {
+        const list: any[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as any;
+          if (data.isNotification || (data.type && data.type !== "announcement")) {
+            list.push({ id: d.id, ...data });
+          } else if (data.isVisible) {
+            list.push({
+              id: d.id,
+              title: data.title || "📢 Official Announcement",
+              message: data.message,
+              type: "announcement",
+              targetEmail: (data.targetEmail || "all").toLowerCase().trim(),
+              targetRole: data.targetRole || "all",
+              readBy: data.readBy || [],
+              closedBy: data.closedBy || [],
+              createdAt: data.createdAt || Date.now(),
+            });
+          }
+        });
+        rawAnn = list;
+        calculateUnread();
+      },
+      (err) => {}
+    );
+
+    return () => {
+      try {
+        unsubNotifs();
+      } catch (e) {}
+      try {
+        unsubAnn();
+      } catch (e) {}
+    };
+  }, [isLoggedIn, user, isAdmin, readOverrideIds]);
 
   const handleSearchChange = (val: string) => {
     setSearchTerm(val);
@@ -118,13 +242,12 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
             </button>
           </div>
         ) : (
-          /* Normal Navbar */
-          <>
-            {/* Left Area: Hamburger & Logo */}
-            <div className="flex items-center gap-2 md:gap-4 min-w-max">
+          <div className="flex items-center justify-between w-full">
+            {/* Left Area: Hamburger & Brand */}
+            <div className="flex items-center gap-2 md:gap-3">
               <button
                 onClick={onToggleSidebar}
-                className="p-2 text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
+                className="p-2 -ml-1 text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
                 title="Toggle Sidebar"
               >
                 <Menu className="w-5 h-5" />
@@ -136,48 +259,48 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
                     src="/logo.png"
                     alt="EKMS Logo"
                     fill
-                    className="object-contain rounded-full shadow-sm group-hover:scale-105 transition-transform"
+                    className="object-contain rounded-full shadow-xs group-hover:scale-105 transition-transform"
                     priority
                   />
                 </div>
                 <div className="flex flex-col">
-                  <span className="text-lg font-bold text-slate-900 tracking-tight leading-tight">
+                  <span className="text-base font-extrabold text-slate-900 tracking-tight leading-none group-hover:text-blue-600 transition-colors">
                     ESIC KMS
                   </span>
-                  <span className="text-[9px] uppercase tracking-wider font-semibold text-blue-600 hidden md:block">
+                  <span className="text-[9px] uppercase tracking-wider font-semibold text-blue-600 hidden md:block mt-0.5">
                     Knowledge Management System
                   </span>
                 </div>
               </Link>
             </div>
 
-            {/* Center Area: Search Bar (Desktop) */}
-            <div className="hidden md:flex items-center justify-center flex-1 max-w-2xl px-6">
-              <form onSubmit={handleSearchSubmit} className="relative w-full flex items-center">
-                <div className="flex items-center w-full bg-slate-50 border border-slate-300 rounded-full overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:bg-white focus-within:border-transparent transition-all shadow-xs">
+            {/* Middle Area: Global Search Input */}
+            <div className="hidden md:flex flex-1 max-w-lg mx-4">
+              <form onSubmit={handleSearchSubmit} className="w-full relative flex items-center">
+                <div className="relative w-full flex items-center">
                   <input
                     type="text"
                     value={searchTerm}
                     onChange={(e) => handleSearchChange(e.target.value)}
                     placeholder="Search guidance database by keyword, tags, question, or QA code..."
-                    className="flex-1 pl-5 pr-3 py-2 bg-transparent text-sm text-slate-800 outline-none"
+                    className="w-full pl-5 pr-16 py-2 bg-slate-50/70 hover:bg-slate-50 border border-slate-200 rounded-full text-xs text-slate-700 placeholder:text-slate-400 outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-2xs"
                   />
                   {searchTerm && (
                     <button
                       type="button"
                       onClick={handleClearSearch}
-                      className="p-1.5 mr-1 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-full transition-colors"
+                      className="absolute right-12 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-200/60 rounded-full transition-colors flex items-center justify-center"
                       title="Clear search"
                     >
-                      <X className="w-4 h-4" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   )}
                   <button
                     type="submit"
-                    className="px-5 py-2.5 bg-slate-100 border-l border-slate-300 hover:bg-slate-200 text-slate-700 transition-colors flex items-center justify-center"
+                    className="absolute right-0 top-0 bottom-0 px-3.5 flex items-center justify-center text-slate-400 hover:text-blue-600 border-l border-slate-200 hover:bg-slate-100 rounded-r-full transition-colors"
                     title="Search"
                   >
-                    <Search className="w-4 h-4" />
+                    <Search className="w-4 h-4 text-slate-400" />
                   </button>
                 </div>
               </form>
@@ -224,11 +347,11 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
               <button
                 onClick={() => setIsNotifOpen(true)}
                 className="relative p-2 text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
-                title="Announcements"
+                title="Notifications"
               >
-                <Bell className="w-5 h-5" />
+                <Bell className="w-5 h-5 text-slate-700" />
                 {notificationCount > 0 && (
-                  <span className="absolute top-1 right-1 w-4 h-4 bg-rose-600 text-white rounded-full text-[10px] font-bold flex items-center justify-center border-2 border-white animate-pulse">
+                  <span className="absolute top-1 right-1 min-w-[17px] h-[17px] px-1 bg-rose-600 text-white rounded-full text-[9px] font-extrabold flex items-center justify-center border-2 border-white shadow-xs animate-pulse pointer-events-none">
                     {notificationCount > 9 ? "9+" : notificationCount}
                   </span>
                 )}
@@ -266,7 +389,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
                 </button>
               )}
             </div>
-          </>
+          </div>
         )}
       </header>
 

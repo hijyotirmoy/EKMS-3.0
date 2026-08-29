@@ -17,6 +17,7 @@ import { usePopup } from "@/context/PopupContext";
 import { Course, Chapter, MCQQuestion, CourseRating, QnAItem, AppFile } from "@/lib/types";
 import { recalculateCourseProgress, getBase64Image } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification } from "@/lib/notificationService";
 import * as XLSX from "xlsx";
 import {
   GraduationCap,
@@ -479,11 +480,27 @@ export default function AdminOnboardingPage() {
 
     try {
       if (activeCourseId) {
+        const prevCourse = courses.find((c) => c.id === activeCourseId);
+        const prevChapterCount = prevCourse?.chapters?.length || 0;
+        const newChapterCount = payload.chapters.length;
+
         await setDoc(doc(db, "onboardings", activeCourseId), payload, { merge: true });
         logUserActivity(user?.email, {
           desc: `Updated course: "${editorCourse.title.trim()}"`,
           type: "edit",
         });
+
+        // If new chapters were added
+        if (newChapterCount > prevChapterCount) {
+          const added = newChapterCount - prevChapterCount;
+          await createNotification({
+            title: `📖 New Chapter Added: ${editorCourse.title.trim()}`,
+            message: `**${added} new chapter${added > 1 ? "s were" : " was"}** added to **"${editorCourse.title.trim()}"**. Dive in and explore the latest learning modules!`,
+            type: "course",
+            targetEmail: "all",
+            link: "/onboarding",
+          });
+        }
       } else {
         const nextNum =
           Math.max(0, ...courses.map((c) => Number(c.id.replace(/\D/g, "")) || 0)) + 1;
@@ -497,6 +514,15 @@ export default function AdminOnboardingPage() {
         logUserActivity(user?.email, {
           desc: `Published new course: "${editorCourse.title.trim()}"`,
           type: "add",
+        });
+
+        // Notify all users about new course
+        await createNotification({
+          title: `🎓 New Course: ${editorCourse.title.trim()}`,
+          message: `A new course **"${editorCourse.title.trim()}"** (${resolvedCategory} • Phase ${payload.phase}) has been published in the Onboarding portal!`,
+          type: "course",
+          targetEmail: "all",
+          link: "/onboarding",
         });
       }
 
@@ -1915,29 +1941,20 @@ export default function AdminOnboardingPage() {
           </div>
 
           {/* 3 Metric Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
-              <GraduationCap className="w-6 h-6 text-blue-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">{activeCount}</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Active Courses
-              </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Active Courses</div>
+              <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{activeCount}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
-              <BookOpen className="w-6 h-6 text-emerald-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">{totalChapters}</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Total Chapters
-              </div>
+            <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Total Chapters</div>
+              <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{totalChapters}</div>
             </div>
 
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
-              <Award className="w-6 h-6 text-purple-600 mx-auto mb-2" />
-              <div className="text-2xl font-extrabold text-slate-900">{totalPhases}</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Total Training Phases
-              </div>
+            <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl col-span-2 sm:col-span-1 flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">Training Phases</div>
+              <div className="text-xl sm:text-2xl font-black text-purple-900 mt-1">{totalPhases}</div>
             </div>
           </div>
 

@@ -42,14 +42,17 @@ export function timeAgo(timestamp: number): string {
   return "Just now";
 }
 
-// Parse markdown links like [Link Text](https://example.com) to HTML
+// Parse markdown formatting (links, bold, italic, line breaks) to safe HTML
 export function parseMarkdownLinks(text?: string): string {
   if (!text) return "";
   return text
     .replace(
       /\[(.*?)\]\((.*?)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline font-medium hover:text-blue-800">$1</a>'
+      '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline font-semibold hover:text-blue-800">$1</a>'
     )
+    .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-slate-900">$1</strong>')
+    .replace(/__(.*?)__/g, '<strong class="font-bold text-slate-900">$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em class="italic">$1</em>')
     .replace(/\n/g, "<br />");
 }
 

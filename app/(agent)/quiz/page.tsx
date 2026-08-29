@@ -8,6 +8,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Quiz } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import {
   Gamepad2,
   Clock,
@@ -263,6 +264,28 @@ export default function QuizPage() {
         desc: `Completed quiz: "${activeQuiz.title}" (Score: ${score}/${activeQuiz.questions})`,
         type: "quiz",
       });
+
+      const pct = Math.round((score / activeQuiz.questions) * 100);
+
+      // 1. Notify User
+      if (user.email) {
+        await createNotification({
+          title: `🏆 Quiz Completed: ${activeQuiz.title}`,
+          message: `You completed the assessment **"${activeQuiz.title}"** with a score of **${score}/${activeQuiz.questions}** (${pct}%).`,
+          type: "quiz",
+          targetEmail: user.email.toLowerCase().trim(),
+          link: "/quiz",
+        });
+      }
+
+      // 2. Notify Admins & Master Admins
+      await notifyAdmins({
+        title: `🏆 Quiz Attempt: ${activeQuiz.title}`,
+        message: `**${userProfile?.displayName || user.email || "Agent"}** completed the assessment **"${activeQuiz.title}"** (Score: ${score}/${activeQuiz.questions} • ${pct}%).`,
+        type: "quiz",
+        link: "/admin/quiz",
+      });
+
       await refreshProfile();
     } catch (e) {
       console.error("Failed to sync score to database:", e);
@@ -468,32 +491,27 @@ export default function QuizPage() {
           </div>
 
           {/* 4 Performance Metric Cards (2 in a row on mobile) */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
-            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-slate-900">{personalMetrics.total}</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Total Quizzes
-              </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Total Quizzes</div>
+              <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{personalMetrics.total}</div>
             </div>
-            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-emerald-600">
+
+            <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Completed / Left</div>
+              <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">
                 {personalMetrics.taken} / {personalMetrics.pending}
               </div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Completed / Left
-              </div>
             </div>
-            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-amber-500">{personalMetrics.avgScore}%</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Average Score
-              </div>
+
+            <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Average Score</div>
+              <div className="text-xl sm:text-2xl font-black text-amber-900 mt-1">{personalMetrics.avgScore}%</div>
             </div>
-            <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs text-center">
-              <div className="text-xl sm:text-2xl font-extrabold text-purple-600">{personalMetrics.passRate}%</div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                Pass Rate
-              </div>
+
+            <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
+              <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">Pass Rate</div>
+              <div className="text-xl sm:text-2xl font-black text-purple-900 mt-1">{personalMetrics.passRate}%</div>
             </div>
           </div>
 

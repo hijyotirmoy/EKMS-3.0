@@ -20,6 +20,7 @@ import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord } from "@/lib/types";
 import { getISTMidnight } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -44,7 +45,7 @@ interface FlattenedBooking extends BookingRecord {
 }
 
 export default function AgentBookingPage() {
-  const { user, isLoggedIn, openLoginModal } = useAuth();
+  const { user, userProfile, isLoggedIn, openLoginModal } = useAuth();
   const { toast } = usePopup();
   const [liveBookings, setLiveBookings] = useState<Record<string, DayAvailability>>({});
   const [calendarDate, setCalendarDate] = useState(new Date());
@@ -98,9 +99,12 @@ export default function AgentBookingPage() {
       } catch (e) {}
     }
 
+    let isMounted = true;
+
     const unsubscribe = onSnapshot(
       collection(db, "bookings"),
       (snapshot) => {
+        if (!isMounted) return;
         const data: Record<string, DayAvailability> = {};
         snapshot.forEach((doc) => {
           data[doc.id] = doc.data() as DayAvailability;
@@ -111,10 +115,17 @@ export default function AgentBookingPage() {
           sessionStorage.setItem("ekms_bookings_cache", JSON.stringify(data));
         } catch (e) {}
       },
-      (err) => console.error("Bookings sync error:", err)
+      (err) => console.warn("Bookings sync error:", err)
     );
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      try {
+        unsubscribe();
+      } catch (e) {
+        // ignore unmount errors
+      }
+    };
   }, []);
 
   // 2. Fetch Reschedule Logs for user
@@ -316,6 +327,40 @@ export default function AgentBookingPage() {
         type: "booking",
       });
 
+      // Send customized user confirmation notification
+      if (user?.email) {
+        const formattedDate = new Date(bookModalDate).toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+
+        try {
+          await createNotification({
+            title: "🎉 Verification Booking Confirmed",
+            message: `Your verification appointment on **${formattedDate}** has been successfully booked for **${ipName.trim()}** (Phone: ${ipPhone.trim()}).`,
+            type: "booking",
+            targetEmail: user.email.toLowerCase().trim(),
+            link: "/booking",
+            metadata: {
+              ipName: ipName.trim(),
+              phone: ipPhone.trim(),
+              dateKey: bookModalDate,
+            },
+          });
+
+          // Notify Admins
+          await notifyAdmins({
+            title: "📅 New Booking Received",
+            message: `**${userProfile?.displayName || user.email}** booked an appointment for **${ipName.trim()}** on **${formattedDate}**.`,
+            type: "booking",
+            link: "/admin/bookings",
+          });
+        } catch (notifErr) {
+          console.error("Booking notification error:", notifErr);
+        }
+      }
+
       setBookModalDate(null);
       setIpName("");
       setIpPhone("");
@@ -390,6 +435,38 @@ export default function AgentBookingPage() {
         desc: `Rescheduled booking for IP: ${rescheduleData.record.ipName || "Beneficiary"} from ${rescheduleData.oldDateKey} to ${rsSelectedDate}`,
         type: "booking",
       });
+
+      // Send customized reschedule notification
+      if (user?.email) {
+        const oldFmt = new Date(rescheduleData.oldDateKey).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        const newFmt = new Date(rsSelectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        const targetAgent = (rescheduleData.record.agentEmail || user.email).toLowerCase().trim();
+
+        try {
+          await createNotification({
+            title: "🔄 Verification Booking Rescheduled",
+            message: `Your booking for **${rescheduleData.record.ipName}** has been moved from **${oldFmt}** to **${newFmt}**.`,
+            type: "booking",
+            targetEmail: targetAgent,
+            link: "/booking",
+            metadata: {
+              ipName: rescheduleData.record.ipName,
+              oldDate: rescheduleData.oldDateKey,
+              newDate: rsSelectedDate,
+            },
+          });
+
+          // Notify Admins
+          await notifyAdmins({
+            title: "🔄 Booking Rescheduled",
+            message: `**${userProfile?.displayName || user.email}** rescheduled booking for **${rescheduleData.record.ipName}** from **${oldFmt}** to **${newFmt}**.`,
+            type: "booking",
+            link: "/admin/bookings",
+          });
+        } catch (notifErr) {
+          console.error("Reschedule notification error:", notifErr);
+        }
+      }
 
       setRescheduleData(null);
       setRsSelectedDate(null);
@@ -620,38 +697,38 @@ export default function AgentBookingPage() {
       </div>
 
       {/* 8 Metric KPI Cards (2 in a row on mobile) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 sm:gap-3">
-        <div className="bg-amber-50/70 border border-amber-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Total (Mine)</div>
-          <div className="text-lg sm:text-xl font-extrabold text-amber-900 mt-1">{metrics.totalMy}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Total (Mine)</div>
+          <div className="text-xl font-black text-amber-900 mt-1">{metrics.totalMy}</div>
         </div>
-        <div className="bg-blue-50/70 border border-blue-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-blue-800 uppercase tracking-wider truncate">This Month</div>
-          <div className="text-lg sm:text-xl font-extrabold text-blue-900 mt-1">{metrics.monthMy}</div>
+        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider truncate">This Month</div>
+          <div className="text-xl font-black text-blue-900 mt-1">{metrics.monthMy}</div>
         </div>
-        <div className="bg-teal-50/70 border border-teal-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-teal-800 uppercase tracking-wider truncate">This Week</div>
-          <div className="text-lg sm:text-xl font-extrabold text-teal-900 mt-1">{metrics.weekMy}</div>
+        <div className="bg-teal-50/70 border border-teal-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider truncate">This Week</div>
+          <div className="text-xl font-black text-teal-900 mt-1">{metrics.weekMy}</div>
         </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Today&apos;s Bookings</div>
-          <div className="text-lg sm:text-xl font-extrabold text-emerald-900 mt-1">{metrics.todayMy}</div>
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Today&apos;s Bookings</div>
+          <div className="text-xl font-black text-emerald-900 mt-1">{metrics.todayMy}</div>
         </div>
-        <div className="bg-indigo-50/70 border border-indigo-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-indigo-800 uppercase tracking-wider truncate">Next Month</div>
-          <div className="text-lg sm:text-xl font-extrabold text-indigo-900 mt-1">{metrics.nextMonthMy}</div>
+        <div className="bg-indigo-50/70 border border-indigo-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider truncate">Next Month</div>
+          <div className="text-xl font-black text-indigo-900 mt-1">{metrics.nextMonthMy}</div>
         </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Visited</div>
-          <div className="text-lg sm:text-xl font-extrabold text-emerald-900 mt-1">{metrics.visitedMy}</div>
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Visited</div>
+          <div className="text-xl font-black text-emerald-900 mt-1">{metrics.visitedMy}</div>
         </div>
-        <div className="bg-amber-50/70 border border-amber-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Follow-ups</div>
-          <div className="text-lg sm:text-xl font-extrabold text-amber-900 mt-1">{metrics.delayedMy}</div>
+        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Follow-ups</div>
+          <div className="text-xl font-black text-amber-900 mt-1">{metrics.delayedMy}</div>
         </div>
-        <div className="bg-purple-50/70 border border-purple-200 p-2.5 sm:p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[9px] sm:text-[10px] font-bold text-purple-800 uppercase tracking-wider truncate">Rescheduled</div>
-          <div className="text-lg sm:text-xl font-extrabold text-purple-900 mt-1">{metrics.rescheduledByMeCount}</div>
+        <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider truncate">Rescheduled</div>
+          <div className="text-xl font-black text-purple-900 mt-1">{metrics.rescheduledByMeCount}</div>
         </div>
       </div>
 

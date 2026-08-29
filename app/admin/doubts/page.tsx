@@ -15,6 +15,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Doubt } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
+import { createNotification } from "@/lib/notificationService";
 import {
   HelpCircle,
   Clock,
@@ -119,6 +120,15 @@ export default function AdminDoubtsPage() {
           const userDocRef = doc(db, "users", resolveDoubt.authorEmail.toLowerCase());
           await updateDoc(userDocRef, { doubtsResolved: increment(1) });
         } catch (e) {}
+
+        // Notify doubt author
+        createNotification({
+          title: "✅ Doubt Answered by Admin",
+          message: `Your doubt **"${(resolveDoubt.question || "").substring(0, 60)}..."** has been resolved and answered by Admin (${userProfile?.displayName || "Admin"}).`,
+          type: "doubt",
+          targetEmail: resolveDoubt.authorEmail,
+          link: "/doubts",
+        });
       }
 
       logUserActivity(user?.email, {
@@ -166,30 +176,25 @@ export default function AdminDoubtsPage() {
       </div>
 
       {/* 4 KPI Metrics (2 in a row on mobile) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 text-center">
-        <div className="bg-white border border-slate-200 p-3 sm:p-4 rounded-2xl shadow-xs">
-          <div className="text-xl sm:text-2xl font-black text-blue-600">{metrics.total}</div>
-          <div className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-            Total Doubts
-          </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Total Doubts</div>
+          <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{metrics.total}</div>
         </div>
-        <div className="bg-rose-50 border border-rose-200 p-3 sm:p-4 rounded-2xl shadow-xs">
-          <div className="text-xl sm:text-2xl font-black text-rose-700">{metrics.pending}</div>
-          <div className="text-[9px] sm:text-[10px] font-bold text-rose-600 uppercase tracking-wider mt-1">
-            Pending
-          </div>
+
+        <div className="bg-rose-50/70 border border-rose-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">Pending</div>
+          <div className="text-xl sm:text-2xl font-black text-rose-900 mt-1">{metrics.pending}</div>
         </div>
-        <div className="bg-amber-50 border border-amber-200 p-3 sm:p-4 rounded-2xl shadow-xs">
-          <div className="text-xl sm:text-2xl font-black text-amber-700">{metrics.waiting}</div>
-          <div className="text-[9px] sm:text-[10px] font-bold text-amber-600 uppercase tracking-wider mt-1">
-            Waiting Verif.
-          </div>
+
+        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Waiting Verif.</div>
+          <div className="text-xl sm:text-2xl font-black text-amber-900 mt-1">{metrics.waiting}</div>
         </div>
-        <div className="bg-emerald-50 border border-emerald-200 p-3 sm:p-4 rounded-2xl shadow-xs">
-          <div className="text-xl sm:text-2xl font-black text-emerald-700">{metrics.resolved}</div>
-          <div className="text-[9px] sm:text-[10px] font-bold text-emerald-600 uppercase tracking-wider mt-1">
-            Resolved
-          </div>
+
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Resolved</div>
+          <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{metrics.resolved}</div>
         </div>
       </div>
 

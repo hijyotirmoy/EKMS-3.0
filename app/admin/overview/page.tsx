@@ -623,17 +623,105 @@ export default function AdminOverviewPage() {
   };
 
   const statCards = [
-    { label: "Total Q&A", value: counts.qa, href: "/admin/qa", icon: HelpCircle, color: "text-blue-600", bg: "bg-blue-50" },
-    { label: "Total Files", value: counts.files, href: "/admin/files", icon: Folder, color: "text-emerald-700", bg: "bg-emerald-50" },
-    { label: "Facilities", value: counts.facilities, href: "/admin/facilities", icon: Building2, color: "text-amber-600", bg: "bg-amber-50" },
-    { label: "Agents", value: counts.agents, href: "/admin/teams", icon: Headphones, color: "text-blue-600", bg: "bg-blue-50" },
-    { label: "Admins", value: counts.admins, href: "/admin/teams", icon: Shield, color: "text-purple-600", bg: "bg-purple-50" },
-    { label: "Master Admins", value: counts.masters, href: "/admin/teams", icon: Crown, color: "text-rose-600", bg: "bg-rose-50" },
-    { label: "Quizzes", value: counts.quizzes, href: "/admin/quiz", icon: Gamepad2, color: "text-purple-600", bg: "bg-purple-50" },
-    { label: "Doubts", value: counts.doubts, href: "/admin/doubts", icon: MessageSquare, color: "text-teal-600", bg: "bg-teal-50" },
-    { label: "Missing Content", value: counts.missing, href: "/admin/missing-content", icon: SearchX, color: "text-rose-600", bg: "bg-rose-50" },
-    { label: "Pending Reports", value: counts.reports, href: "/reports", icon: Flag, color: "text-rose-600", bg: "bg-rose-50" },
-    { label: "Courses", value: counts.courses, href: "/admin/onboarding", icon: GraduationCap, color: "text-indigo-600", bg: "bg-indigo-50" },
+    {
+      label: "Total Q&A",
+      value: counts.qa,
+      href: "/admin/qa",
+      bg: "bg-blue-50/70",
+      border: "border-blue-200",
+      labelColor: "text-blue-800",
+      valueColor: "text-blue-900",
+    },
+    {
+      label: "Total Files",
+      value: counts.files,
+      href: "/admin/files",
+      bg: "bg-emerald-50/70",
+      border: "border-emerald-200",
+      labelColor: "text-emerald-800",
+      valueColor: "text-emerald-900",
+    },
+    {
+      label: "Facilities",
+      value: counts.facilities,
+      href: "/admin/facilities",
+      bg: "bg-amber-50/70",
+      border: "border-amber-200",
+      labelColor: "text-amber-800",
+      valueColor: "text-amber-900",
+    },
+    {
+      label: "Agents",
+      value: counts.agents,
+      href: "/admin/teams",
+      bg: "bg-teal-50/70",
+      border: "border-teal-200",
+      labelColor: "text-teal-800",
+      valueColor: "text-teal-900",
+    },
+    {
+      label: "Admins",
+      value: counts.admins,
+      href: "/admin/teams",
+      bg: "bg-purple-50/70",
+      border: "border-purple-200",
+      labelColor: "text-purple-800",
+      valueColor: "text-purple-900",
+    },
+    {
+      label: "Master Admins",
+      value: counts.masters,
+      href: "/admin/teams",
+      bg: "bg-rose-50/70",
+      border: "border-rose-200",
+      labelColor: "text-rose-800",
+      valueColor: "text-rose-900",
+    },
+    {
+      label: "Quizzes",
+      value: counts.quizzes,
+      href: "/admin/quiz",
+      bg: "bg-indigo-50/70",
+      border: "border-indigo-200",
+      labelColor: "text-indigo-800",
+      valueColor: "text-indigo-900",
+    },
+    {
+      label: "Doubts",
+      value: counts.doubts,
+      href: "/admin/doubts",
+      bg: "bg-cyan-50/70",
+      border: "border-cyan-200",
+      labelColor: "text-cyan-800",
+      valueColor: "text-cyan-900",
+    },
+    {
+      label: "Missing Content",
+      value: counts.missing,
+      href: "/admin/missing-content",
+      bg: "bg-amber-50/70",
+      border: "border-amber-200",
+      labelColor: "text-amber-800",
+      valueColor: "text-amber-900",
+    },
+    {
+      label: "Pending Reports",
+      value: counts.reports,
+      href: "/reports",
+      bg: "bg-rose-50/70",
+      border: "border-rose-200",
+      labelColor: "text-rose-800",
+      valueColor: "text-rose-900",
+    },
+    {
+      label: "Courses",
+      value: counts.courses,
+      href: "/admin/onboarding",
+      bg: "bg-blue-50/70",
+      border: "border-blue-200",
+      labelColor: "text-blue-800",
+      valueColor: "text-blue-900",
+    },
   ];
 
   return (
@@ -694,10 +782,10 @@ export default function AdminOverviewPage() {
               </div>
 
               {/* 8 Major Activity Metrics Boxes */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 sm:gap-4">
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <Clock className="w-5 h-5 text-blue-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+                <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Screen Time</div>
+                  <div className="text-xl font-black text-blue-900 mt-1">
                     {(() => {
                       let sec = drilldownData.activity?.totalSeconds || 0;
                       if (!sec && drilldownData.activity?.pageVisits) {
@@ -706,24 +794,18 @@ export default function AdminOverviewPage() {
                       return formatDuration(sec);
                     })()}
                   </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Screen Time Active
-                  </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <User className="w-5 h-5 text-purple-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
+                <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">Sessions</div>
+                  <div className="text-xl font-black text-purple-900 mt-1">
                     {drilldownData.activity?.loginCount || 1}
                   </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Sessions Today
-                  </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <Gamepad2 className="w-5 h-5 text-indigo-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
+                <div className="bg-indigo-50/70 border border-indigo-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider">Quizzes (Today)</div>
+                  <div className="text-xl font-black text-indigo-900 mt-1">
                     {(() => {
                       const countFromEvents = (drilldownData.activity?.timelineEvents || []).filter(
                         (e) => e.type === "quiz" || e.desc.toLowerCase().includes("completed quiz")
@@ -731,63 +813,45 @@ export default function AdminOverviewPage() {
                       const dailyQuiz = countFromEvents || drilldownData.activity?.quizzesCompletedCount || 0;
                       return (
                         <>
-                          {dailyQuiz} <span className="text-[10px] text-slate-400 font-normal">({agentExtraStats.quizzesCompleted})</span>
+                          {dailyQuiz} <span className="text-xs text-indigo-700/70 font-normal">({agentExtraStats.quizzesCompleted})</span>
                         </>
                       );
                     })()}
                   </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Quizzes (Today)
-                  </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <GraduationCap className="w-5 h-5 text-emerald-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
+                <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Courses Done</div>
+                  <div className="text-xl font-black text-emerald-900 mt-1">
                     {agentExtraStats.coursesCompleted}
                   </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Courses Completed
-                  </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <MessageSquare className="w-5 h-5 text-amber-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
+                <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Doubts</div>
+                  <div className="text-xl font-black text-amber-900 mt-1">
                     {agentExtraStats.doubtsCount}
                   </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Doubts Posted
+                </div>
+
+                <div className="bg-rose-50/70 border border-rose-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">Reports (Today)</div>
+                  <div className="text-xl font-black text-rose-900 mt-1">
+                    {agentExtraStats.dailyReportsCount} <span className="text-xs text-rose-700/70 font-normal">({agentExtraStats.reportsCount})</span>
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <Flag className="w-5 h-5 text-rose-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
-                    {agentExtraStats.dailyReportsCount} <span className="text-[10px] text-slate-400 font-normal">({agentExtraStats.reportsCount})</span>
-                  </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Reports (Today)
-                  </div>
-                </div>
-
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <Download className="w-5 h-5 text-teal-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
+                <div className="bg-teal-50/70 border border-teal-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">Downloads</div>
+                  <div className="text-xl font-black text-teal-900 mt-1">
                     {drilldownData.activity?.filesDownloaded || 0}
                   </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Files Downloaded
-                  </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 p-4 rounded-2xl text-center shadow-xs flex flex-col justify-between">
-                  <Search className="w-5 h-5 text-slate-600 mx-auto mb-1.5" />
-                  <div className="text-lg font-black text-slate-900">
+                <div className="bg-cyan-50/70 border border-cyan-200 p-3.5 rounded-xl flex flex-col justify-between">
+                  <div className="text-[10px] font-bold text-cyan-800 uppercase tracking-wider">Searches</div>
+                  <div className="text-xl font-black text-cyan-900 mt-1">
                     {drilldownData.activity?.searches?.length || 0}
-                  </div>
-                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    Searches Executed
                   </div>
                 </div>
               </div>
@@ -938,27 +1002,22 @@ export default function AdminOverviewPage() {
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h1>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-4">
-            {statCards.map((card) => {
-              const Icon = card.icon;
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            {statCards.map((card, idx) => {
+              const isLastOdd = idx === statCards.length - 1;
               return (
                 <Link
                   key={card.label}
                   href={card.href}
-                  className="bg-white border border-slate-200 rounded-2xl p-3 sm:p-4 shadow-xs hover:shadow-md hover:scale-[1.02] transition-all flex flex-col justify-between group"
+                  className={`${card.bg} border ${card.border} p-3.5 rounded-xl transition-all hover:shadow-md hover:scale-[1.02] flex flex-col justify-between ${
+                    isLastOdd ? "col-span-2 sm:col-span-1" : ""
+                  }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div
-                      className={`w-8 h-8 sm:w-10 sm:h-10 rounded-xl ${card.bg} ${card.color} flex items-center justify-center`}
-                    >
-                      <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
-                    </div>
+                  <div className={`text-[10px] font-bold ${card.labelColor} uppercase tracking-wider`}>
+                    {card.label}
                   </div>
-                  <div className="mt-3 sm:mt-4">
-                    <div className="text-xl sm:text-2xl font-black text-slate-900 leading-none">{card.value}</div>
-                    <div className="text-[10px] sm:text-[11px] font-semibold text-slate-500 mt-1 truncate">
-                      {card.label}
-                    </div>
+                  <div className={`text-xl sm:text-2xl font-black ${card.valueColor} mt-1`}>
+                    {card.value}
                   </div>
                 </Link>
               );

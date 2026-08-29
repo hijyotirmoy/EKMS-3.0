@@ -38,8 +38,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const role: UserRole | "guest" = userProfile?.role || (user ? "Agent" : "guest");
   const isLoggedIn = !!user;
-  const isMasterAdmin = role === "Master Admin";
-  const isAdmin = role === "Admin" || role === "Master Admin";
+  const roleStr = (role || "").toLowerCase().trim();
+  const isMasterAdmin = roleStr.includes("master");
+  const isAdmin = isMasterAdmin || roleStr.includes("admin");
 
   const openLoginModal = () => setShowLoginModal(true);
   const closeLoginModal = () => setShowLoginModal(false);

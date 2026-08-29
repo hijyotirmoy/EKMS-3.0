@@ -317,30 +317,21 @@ export default function AdminFilesPage() {
         </button>
       </div>
 
-      {/* 3 Metric Cards (2-col on mobile) */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 sm:gap-4">
-        <div className="bg-white border border-slate-200 p-3 sm:p-5 rounded-2xl shadow-xs text-center">
-          <Folder className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600 mx-auto mb-1 sm:mb-2" />
-          <div className="text-xl sm:text-2xl font-extrabold text-slate-900">{totalFiles}</div>
-          <div className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-            Total Files
-          </div>
+      {/* 3 Metric Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Total Files</div>
+          <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{totalFiles}</div>
         </div>
 
-        <div className="bg-white border border-slate-200 p-3 sm:p-5 rounded-2xl shadow-xs text-center">
-          <Download className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-600 mx-auto mb-1 sm:mb-2" />
-          <div className="text-xl sm:text-2xl font-extrabold text-slate-900">{totalDownloads}</div>
-          <div className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-            Downloads
-          </div>
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Downloads</div>
+          <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{totalDownloads}</div>
         </div>
 
-        <div className="col-span-2 sm:col-span-1 bg-white border border-slate-200 p-3 sm:p-5 rounded-2xl shadow-xs text-center">
-          <Database className="w-5 h-5 sm:w-6 sm:h-6 text-amber-600 mx-auto mb-1 sm:mb-2" />
-          <div className="text-xl sm:text-2xl font-extrabold text-slate-900">{formatBytes(totalStorageBytes)}</div>
-          <div className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-            Storage Used
-          </div>
+        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl col-span-2 sm:col-span-1 flex flex-col justify-between">
+          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Storage Used</div>
+          <div className="text-xl sm:text-2xl font-black text-amber-900 mt-1">{formatBytes(totalStorageBytes)}</div>
         </div>
       </div>
 
