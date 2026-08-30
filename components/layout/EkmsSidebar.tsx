@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
@@ -27,6 +28,8 @@ import {
   Flag,
   ExternalLink,
   Bell,
+  Database,
+  Sparkles,
 } from "lucide-react";
 
 interface EkmsSidebarProps {
@@ -172,6 +175,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     },
     { href: "/team", label: "Team", icon: Users, color: "text-blue-600" },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500" },
+    { href: "/data", label: "Data", icon: Database, color: "text-teal-600" },
   ];
 
   const adminLinks = [
@@ -212,12 +216,39 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     { href: "/reports", label: "Reports", icon: Flag, color: "text-rose-600", badge: pendingReportsCount },
   ];
 
+  const connectedSites = [
+    {
+      href: "https://facility.ekms.in/",
+      label: "EKMS Facility",
+      domain: "facility.ekms.in",
+      icon: MapPin,
+      color: "text-emerald-600",
+    },
+    {
+      href: "https://ai.ekms.in/",
+      label: "EKMS AI",
+      domain: "ai.ekms.in",
+      icon: Sparkles,
+      imageSrc: "/ai-logo.png",
+      color: "text-purple-600",
+    },
+    {
+      href: "https://data.ekms.in/",
+      label: "EKMS Data",
+      domain: "data.ekms.in",
+      icon: Database,
+      imageSrc: "/data-logo.png",
+      color: "text-teal-600",
+    },
+  ];
+
   // Mini sidebar items
   const miniLinks = [
     { href: "/", label: "Home", icon: Home, color: "text-rose-500", isExternal: false },
     { href: "/onboarding", label: "Onboarding", icon: GraduationCap, color: "text-blue-600", isExternal: false, badge: pendingCoursesCount },
     { href: "/quiz", label: "Quizzes", icon: Gamepad2, color: "text-purple-600", isExternal: false, badge: pendingQuizzesCount },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500", isExternal: false },
+    { href: "/data", label: "Data", icon: Database, color: "text-teal-600", isExternal: false },
     { href: "https://facility.ekms.in/", label: "Facility Map", icon: MapPin, color: "text-emerald-600", isExternal: true },
   ];
 
@@ -268,7 +299,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                 onClick={(e) => handleMiniNavClick(e, item.href)}
                 className={`flex flex-col items-center justify-center w-16 py-3 px-1 rounded-xl text-center transition-all group relative ${
                   isActive
-                    ? "bg-slate-100 text-slate-900 font-bold shadow-xs"
+                    ? "bg-slate-100 text-slate-900 font-bold"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                 }`}
                 title={item.label}
@@ -350,7 +381,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                   onClick={(e) => handleNavClick(e, item.href)}
                   className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
                     isActive
-                      ? "bg-slate-100 text-slate-900 font-semibold shadow-xs"
+                      ? "bg-slate-100 text-slate-900 font-semibold"
                       : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
                   }`}
                 >
@@ -368,20 +399,6 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                 </Link>
               );
             })}
-
-            {/* External Assam Facility Link */}
-            <a
-              href="https://facility.ekms.in/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all group"
-            >
-              <div className="flex items-center gap-3.5">
-                <MapPin className="w-5 h-5 text-emerald-700 group-hover:scale-110 transition-transform" />
-                <span>Facility Map</span>
-              </div>
-              <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
-            </a>
           </div>
 
           {/* Admin Controls Suite (Role Protected) */}
@@ -457,6 +474,56 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     </span>
                   )}
                 </Link>
+              );
+            })}
+          </div>
+
+          {/* Connected Sites Section */}
+          <div className="pt-3 px-2 space-y-1">
+            <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+              <span>Connected Sites</span>
+              <span className="text-[9px] bg-slate-100 text-slate-500 font-bold px-1.5 py-0.5 rounded">
+                ECOSYSTEM
+              </span>
+            </div>
+            {connectedSites.map((site) => {
+              const Icon = site.icon;
+              return (
+                <a
+                  key={site.href}
+                  href={site.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all group"
+                  title={`Open ${site.label} (${site.domain})`}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    {site.imageSrc ? (
+                      <div className="w-5 h-5 rounded overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                        <Image
+                          src={site.imageSrc}
+                          alt={site.label}
+                          width={20}
+                          height={20}
+                          className="w-5 h-5 object-contain"
+                        />
+                      </div>
+                    ) : (
+                      <Icon
+                        className={`w-5 h-5 ${site.color} group-hover:scale-110 transition-transform shrink-0`}
+                      />
+                    )}
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-bold text-slate-800 group-hover:text-blue-600 transition-colors truncate">
+                        {site.label}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono truncate">
+                        {site.domain}
+                      </span>
+                    </div>
+                  </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 shrink-0 ml-2" />
+                </a>
               );
             })}
           </div>

@@ -36,7 +36,7 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
         />
 
         <main
-          className={`flex-1 w-full transition-all duration-300 min-h-[calc(100vh-56px)] flex flex-col ${
+          className={`flex-1 w-full transition-[padding] duration-250 ease-out will-change-[padding] min-h-[calc(100vh-56px)] flex flex-col ${
             isSidebarOpen ? "lg:pl-64" : "lg:pl-[72px]"
           }`}
         >
