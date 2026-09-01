@@ -13,6 +13,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { AppNotification, NotificationType, NotificationTargetRole } from "@/lib/types";
 import { parseMarkdownLinks } from "@/lib/utils";
+import { maskNotificationMessage } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createNotification, formatNotificationTime } from "@/lib/notificationService";
 import {
@@ -727,7 +728,11 @@ export default function AdminAnnouncementsPage() {
                         </div>
                         <div
                           className="font-bold text-slate-900 leading-snug line-clamp-1"
-                          dangerouslySetInnerHTML={{ __html: parseMarkdownLinks(item.title) }}
+                          dangerouslySetInnerHTML={{
+                            __html: parseMarkdownLinks(
+                              maskNotificationMessage(item.title, (item.metadata as any)?.ipName)
+                            ),
+                          }}
                         />
                       </td>
 
@@ -738,7 +743,11 @@ export default function AdminAnnouncementsPage() {
                       <td className="p-4 max-w-xs">
                         <div
                           className="text-slate-700 line-clamp-2 leading-relaxed text-xs"
-                          dangerouslySetInnerHTML={{ __html: parseMarkdownLinks(item.message) }}
+                          dangerouslySetInnerHTML={{
+                            __html: parseMarkdownLinks(
+                              maskNotificationMessage(item.message, (item.metadata as any)?.ipName)
+                            ),
+                          }}
                         />
                       </td>
 
@@ -838,7 +847,11 @@ export default function AdminAnnouncementsPage() {
                 <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Title</span>
                 <div
                   className="font-bold text-slate-900 p-2.5 bg-slate-50 rounded-xl border border-slate-200"
-                  dangerouslySetInnerHTML={{ __html: parseMarkdownLinks(viewItem.title) }}
+                  dangerouslySetInnerHTML={{
+                    __html: parseMarkdownLinks(
+                      maskNotificationMessage(viewItem.title, (viewItem.metadata as any)?.ipName)
+                    ),
+                  }}
                 />
               </div>
 
@@ -849,7 +862,11 @@ export default function AdminAnnouncementsPage() {
                 </span>
                 <div
                   className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 leading-relaxed whitespace-pre-wrap"
-                  dangerouslySetInnerHTML={{ __html: parseMarkdownLinks(viewItem.message) }}
+                  dangerouslySetInnerHTML={{
+                    __html: parseMarkdownLinks(
+                      maskNotificationMessage(viewItem.message, (viewItem.metadata as any)?.ipName)
+                    ),
+                  }}
                 />
               </div>
 

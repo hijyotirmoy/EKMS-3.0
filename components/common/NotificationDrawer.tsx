@@ -13,6 +13,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { AppNotification, Announcement, UserProfile } from "@/lib/types";
 import { parseMarkdownLinks } from "@/lib/utils";
+import { maskNotificationMessage } from "@/lib/maskUtils";
 import {
   formatNotificationTime,
   markNotificationRead,
@@ -331,6 +332,16 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
     }
   };
 
+  // Escape key listener & body scroll lock
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
@@ -338,49 +349,56 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
       {/* Backdrop */}
       <div
         onClick={onClose}
-        className="fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity duration-300 animate-in fade-in"
+        className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity duration-300 animate-in fade-in"
       />
 
-      {/* Facebook-style Right-side Flyout Drawer */}
-      <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
-        <div className="w-screen max-w-md sm:max-w-[420px] bg-white shadow-2xl border-l border-slate-200 flex flex-col animate-in slide-in-from-right duration-300">
+      {/* Responsive Slide-over Drawer (Leaves peek space on left on mobile, 420px on desktop) */}
+      <div className="fixed inset-y-0 right-0 max-w-full flex justify-end z-50 pointer-events-none">
+        <div className="w-[86vw] sm:w-[420px] sm:max-w-md bg-white shadow-2xl border-l border-slate-200 flex flex-col pointer-events-auto h-full animate-in slide-in-from-right duration-300">
           {/* Header */}
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
+          <div className="px-4 sm:px-5 py-3.5 sm:py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/90 shrink-0">
             <div className="flex items-center gap-2.5">
-              <h2 className="text-lg font-black text-slate-900 tracking-tight">Notifications</h2>
-              {unreadCount > 0 && (
-                <span className="px-2 py-0.5 bg-rose-500 text-white text-[10px] font-extrabold rounded-full animate-pulse shadow-xs">
-                  {unreadCount} new
-                </span>
-              )}
+              <div className="w-8 h-8 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
+                <Bell className="w-4 h-4" />
+              </div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">Notifications</h2>
+                {unreadCount > 0 && (
+                  <span className="px-2 py-0.5 bg-rose-500 text-white text-[10px] font-extrabold rounded-full animate-pulse shadow-xs">
+                    {unreadCount} new
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="flex items-center gap-1">
               {liveList.length > 0 && (
                 <button
                   onClick={handleMarkAllRead}
-                  className="flex items-center gap-1 p-1.5 px-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg text-xs font-semibold transition-colors"
+                  className="flex items-center gap-1 p-1.5 px-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 rounded-lg text-xs font-semibold transition-colors"
                   title="Mark all as read"
                 >
                   <CheckCheck className="w-4 h-4" />
                   <span className="hidden sm:inline text-[11px]">Mark all read</span>
                 </button>
               )}
+              {/* Close Button: Fully visible and easily tappable on all screen sizes */}
               <button
                 onClick={onClose}
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-lg transition-colors"
-                title="Close"
+                className="p-2 -mr-1 text-slate-500 hover:text-slate-900 hover:bg-slate-200/80 active:bg-slate-300 rounded-full transition-colors cursor-pointer"
+                title="Close (Esc)"
+                aria-label="Close Notifications"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
           </div>
 
-          {/* 3 Facebook-style Filter Tabs */}
-          <div className="px-4 py-2.5 border-b border-slate-100 bg-white flex items-center gap-1.5">
+          {/* 3 Horizontal Scrolling Filter Tabs */}
+          <div className="px-4 py-2.5 border-b border-slate-100 bg-white flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
             <button
               onClick={() => setActiveTab("all")}
-              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap ${
                 activeTab === "all"
                   ? "bg-blue-600 text-white shadow-xs"
                   : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -390,7 +408,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
             </button>
             <button
               onClick={() => setActiveTab("live")}
-              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap ${
                 activeTab === "live"
                   ? "bg-amber-500 text-white shadow-xs"
                   : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -400,7 +418,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
             </button>
             <button
               onClick={() => setActiveTab("closed")}
-              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap ${
                 activeTab === "closed"
                   ? "bg-emerald-600 text-white shadow-xs"
                   : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -463,7 +481,9 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
                             isUnread ? "text-slate-900" : "text-slate-700"
                           }`}
                           dangerouslySetInnerHTML={{
-                            __html: parseMarkdownLinks(item.title),
+                            __html: parseMarkdownLinks(
+                              maskNotificationMessage(item.title, (item.metadata as any)?.ipName)
+                            ),
                           }}
                         />
                         <span className="text-[10px] text-slate-400 whitespace-nowrap shrink-0">
@@ -474,7 +494,9 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
                       <div
                         className="text-xs text-slate-600 leading-relaxed break-words line-clamp-3"
                         dangerouslySetInnerHTML={{
-                          __html: parseMarkdownLinks(item.message),
+                          __html: parseMarkdownLinks(
+                            maskNotificationMessage(item.message, (item.metadata as any)?.ipName)
+                          ),
                         }}
                       />
 
@@ -495,7 +517,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
                         <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shadow-xs" title="Unread notification" />
                       )}
 
-                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex flex-col gap-1">
+                      <div className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col gap-1">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();

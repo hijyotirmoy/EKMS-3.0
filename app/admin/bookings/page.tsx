@@ -20,6 +20,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord, RescheduleLog } from "@/lib/types";
 import { getISTMidnight } from "@/lib/utils";
+import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import * as XLSX from "xlsx";
@@ -28,6 +29,8 @@ import {
   ChevronLeft,
   ChevronRight,
   FileSpreadsheet,
+  Ticket,
+  CalendarDays,
   BarChart3,
   History,
   Settings,
@@ -43,6 +46,7 @@ import {
   Users,
   AlertTriangle,
   Clock,
+  EyeOff,
 } from "lucide-react";
 
 interface AdminBookingRecord extends BookingRecord {
@@ -56,6 +60,7 @@ export default function AdminBookingsPage() {
   const [userProfiles, setUserProfiles] = useState<Record<string, string>>({});
   const [rescheduleLogs, setRescheduleLogs] = useState<RescheduleLog[]>([]);
   const [calendarDate, setCalendarDate] = useState(new Date());
+  const [maskIpInfo, setMaskIpInfo] = useState(false);
 
   // Views: 'main' | 'analytics' | 'logs'
   const [activeView, setActiveView] = useState<"main" | "analytics" | "logs">("main");
@@ -136,6 +141,20 @@ export default function AdminBookingsPage() {
       }
     );
 
+    const unsubStatus = onSnapshot(
+      doc(db, "system", "status"),
+      (snap) => {
+        if (!isMounted) return;
+        if (snap.exists()) {
+          const data = snap.data();
+          setMaskIpInfo(!!data.maskIpInfo);
+        }
+      },
+      (err) => {
+        console.warn("System status snapshot error:", err);
+      }
+    );
+
     const fetchUsers = async () => {
       try {
         const snap = await getDocs(collection(db, "users"));
@@ -155,14 +174,13 @@ export default function AdminBookingsPage() {
       isMounted = false;
       try {
         unsubBookings();
-      } catch (e) {
-        // ignore unmount errors
-      }
+      } catch (e) {}
       try {
         unsubLogs();
-      } catch (e) {
-        // ignore unmount errors
-      }
+      } catch (e) {}
+      try {
+        unsubStatus();
+      } catch (e) {}
     };
   }, []);
 
@@ -170,6 +188,7 @@ export default function AdminBookingsPage() {
   const { allBookings, activeRescheduleLogs, metrics } = useMemo(() => {
     const list: AdminBookingRecord[] = [];
     const todayObj = new Date();
+    const todayKey = todayObj.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
     const currentYear = todayObj.getFullYear();
     const currentMonth = todayObj.getMonth();
     const currentDay = todayObj.getDate();
@@ -182,21 +201,11 @@ export default function AdminBookingsPage() {
 
     const istMidnight = getISTMidnight();
 
-    const dayOfWeek = todayObj.getDay();
-    const distToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const startOfWeek = new Date(todayObj);
-    startOfWeek.setHours(0, 0, 0, 0);
-    startOfWeek.setDate(todayObj.getDate() - distToMonday);
-
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
-
     let total = 0,
       month = 0,
       lastMonthCount = 0,
       nextMonthCount = 0,
-      week = 0,
+      todaysVisit = 0,
       todayCount = 0,
       availMonth = 0,
       availNextMonth = 0,
@@ -232,9 +241,9 @@ export default function AdminBookingsPage() {
           if (y === currentYear && mIdx === currentMonth) month++;
           if (y === lastMonthYear && mIdx === lastMonth) lastMonthCount++;
           if (y === nextMonthYear && mIdx === nextMonth) nextMonthCount++;
+          if (dateKey === todayKey) todaysVisit++;
 
           const bookedTime = new Date(record.timestamp);
-          if (bookedTime >= startOfWeek && bookedTime <= endOfWeek) week++;
           if (
             bookedTime.getFullYear() === currentYear &&
             bookedTime.getMonth() === currentMonth &&
@@ -292,7 +301,7 @@ export default function AdminBookingsPage() {
         month,
         lastMonthCount,
         nextMonthCount,
-        week,
+        todaysVisit,
         todayCount,
         availMonth,
         availNextMonth,
@@ -318,6 +327,7 @@ export default function AdminBookingsPage() {
   const filteredBookings = useMemo(() => {
     let result = allBookings;
     const istMidnight = getISTMidnight();
+    const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
     if (agentFilter !== "all") {
       result = result.filter((b) => b.agentName === agentFilter);
@@ -335,6 +345,7 @@ export default function AdminBookingsPage() {
 
     if (statusFilter !== "all") {
       result = result.filter((b) => {
+        if (statusFilter === "todays_visit") return b.dateKey === todayKey;
         if (statusFilter === "visited") return !!b.visited;
         if (b.visited) return false;
 
@@ -366,6 +377,22 @@ export default function AdminBookingsPage() {
     const start = (currentPage - 1) * itemsPerPage;
     return filteredBookings.slice(start, start + itemsPerPage);
   }, [filteredBookings, currentPage]);
+
+  const adminFilterLabel = useMemo(() => {
+    switch (statusFilter) {
+      case "todays_visit":
+        return "Today's Visit";
+      case "upcoming":
+        return "Upcoming";
+      case "followup":
+      case "delayed":
+        return "Follow-up";
+      case "visited":
+        return "Visited";
+      default:
+        return "All Bookings";
+    }
+  }, [statusFilter]);
 
   // Analytics Data & Agent Performance Calculation (Filters by Booking Creation Date/Timestamp)
   const analyticsData = useMemo(() => {
@@ -450,9 +477,10 @@ export default function AdminBookingsPage() {
 
   // Cancel Single Booking
   const handleCancelSingleBooking = async (b: AdminBookingRecord) => {
+    const displayName = maskIpInfo && b.ipName ? maskIpName(b.ipName) : (b.ipName || "this booking");
     const confirmed = await showConfirm({
       title: "Remove Booking?",
-      message: `Are you sure you want to remove the booking for ${b.ipName}? The seat will be released immediately.`,
+      message: `Are you sure you want to remove the booking for ${displayName}? The seat will be released immediately.`,
       isDestructive: true,
       confirmText: "Remove Booking",
     });
@@ -507,6 +535,22 @@ export default function AdminBookingsPage() {
 
   // Mark / Unmark Single Booking as Visited
   const handleToggleVisited = async (b: AdminBookingRecord) => {
+    const rawIp = b.ipName || "this IP";
+    const ipName = maskIpInfo && b.ipName ? maskIpName(b.ipName) : rawIp;
+    const isCurrentlyVisited = !!b.visited;
+
+    const confirmed = await showConfirm({
+      title: isCurrentlyVisited ? "Unmark Visit?" : "Confirm Hospital Visit?",
+      message: isCurrentlyVisited
+        ? `Are you sure you want to unmark the visit for ${ipName} and revert the status to active?`
+        : `Are you sure this IP (${ipName}) visited the hospital for their scheduled health check-up?`,
+      confirmText: isCurrentlyVisited ? "Yes, Unmark" : "Yes, Mark Visited",
+      cancelText: "Cancel",
+      isDestructive: false,
+    });
+
+    if (!confirmed) return;
+
     const docRef = doc(db, "bookings", b.dateKey);
     try {
       await runTransaction(db, async (tx) => {
@@ -629,14 +673,12 @@ export default function AdminBookingsPage() {
       ["This Month", metrics.month],
       ["Last Month", metrics.lastMonthCount],
       ["Next Month", metrics.nextMonthCount],
-      ["This Week", metrics.week],
-      ["Today", metrics.todayCount],
-      ["Available This Month", metrics.availMonth],
-      ["Available Next Month", metrics.availNextMonth],
+      ["Today's Visit", metrics.todaysVisit],
+      ["Today's Bookings", metrics.todayCount],
       ["Visited", metrics.visited],
       ["Non-Visited", metrics.nonVisited],
       ["Upcoming", metrics.upcoming],
-      ["Delayed", metrics.delayed],
+      ["Follow-ups", metrics.delayed],
       ["Rescheduled", metrics.rescheduled],
     ]);
     XLSX.utils.book_append_sheet(wb, wsOverview, "Overview");
@@ -855,13 +897,16 @@ export default function AdminBookingsPage() {
     const dayBoxes = [];
 
     for (let i = 0; i < firstDayIndex; i++) {
-      dayBoxes.push(<div key={`empty-${i}`} className="h-14 bg-slate-50/50 rounded-lg" />);
+      dayBoxes.push(<div key={`empty-${i}`} className="h-11 sm:h-14 bg-slate-50/40 rounded-xl" />);
     }
+
+    const todayIST = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
     for (let day = 1; day <= daysInMonth; day++) {
       const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const dbInfo = liveBookings[dateKey] || { seats: 0 };
       const isAvailable = dbInfo.seats > 0;
+      const isToday = dateKey === todayIST;
 
       dayBoxes.push(
         <button
@@ -871,152 +916,152 @@ export default function AdminBookingsPage() {
             setSingleSeats(dbInfo.seats || 0);
             setSingleText(dbInfo.text || "");
           }}
-          className={`h-14 p-1.5 rounded-lg border flex flex-col items-center justify-between transition-all hover:scale-[1.02] shadow-xs text-left ${
+          className={`h-11 sm:h-14 p-0.5 sm:p-1.5 rounded-xl border flex flex-col items-center justify-between transition-all active:scale-95 shadow-2xs text-left cursor-pointer relative ${
+            isToday ? "ring-2 ring-blue-500 ring-offset-1" : ""
+          } ${
             isAvailable
-              ? "bg-emerald-50/80 border-emerald-200 text-emerald-900"
-              : "bg-rose-50/60 border-rose-200 text-rose-800"
+              ? "bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100 text-emerald-950"
+              : "bg-rose-50/60 border-rose-200 hover:bg-rose-100/80 text-rose-900"
           }`}
         >
-          <span className="text-[10px] font-bold self-start">{day}</span>
+          <span className={`text-[9px] sm:text-[10px] font-bold self-start leading-none ${isToday ? "text-blue-600 font-extrabold" : "text-slate-600"}`}>
+            {day}
+          </span>
           <div className="text-center my-auto">
-            <div className="text-base font-extrabold leading-none">{dbInfo.seats}</div>
+            <div className="text-xs sm:text-base font-black leading-none">{dbInfo.seats}</div>
           </div>
           {dbInfo.text ? (
-            <span className="text-[8px] italic truncate w-full text-center">{dbInfo.text}</span>
+            <span className="text-[7px] sm:text-[8px] italic truncate w-full text-center text-slate-500 leading-tight block">
+              {dbInfo.text}
+            </span>
           ) : (
-            <span className="h-2" />
+            <span className="h-1" />
           )}
         </button>
       );
     }
 
     return (
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 flex-1 space-y-2">
-        <h3 className="text-sm font-bold text-center text-slate-800 flex items-center justify-center gap-2">
-          <CalendarIcon className="w-4 h-4 text-amber-500" />
+      <div className="flex-1 space-y-2.5 sm:space-y-3">
+        <h3 className="text-sm sm:text-base font-extrabold text-center text-slate-800 flex items-center justify-center gap-1.5 sm:gap-2">
+          <CalendarIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-500" />
           <span>{monthNames[month]} {year}</span>
         </h3>
-        <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-slate-400 uppercase">
+        <div className="grid grid-cols-7 gap-0.5 sm:gap-1 text-center text-[9px] sm:text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
           <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
         </div>
-        <div className="grid grid-cols-7 gap-1.5">{dayBoxes}</div>
+        <div className="grid grid-cols-7 gap-1 sm:gap-1.5">{dayBoxes}</div>
       </div>
     );
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-200">
+    <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-200">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Manage Bookings</h1>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">Manage Bookings</h1>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        {/* Action Buttons: 2x2 grid on mobile, inline flex on desktop */}
+        <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto">
           <button
             onClick={handleExportExcel}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-xs"
+            className="flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
           >
-            <FileSpreadsheet className="w-4 h-4" />
-            <span>Export Report (.xlsx)</span>
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            <span className="truncate">Export (.xlsx)</span>
           </button>
 
           <button
             onClick={() => setActiveView(activeView === "analytics" ? "main" : "analytics")}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
+            className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
               activeView === "analytics"
-                ? "bg-blue-600 text-white border-blue-600"
+                ? "bg-blue-600 text-white border-blue-600 shadow-2xs"
                 : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
             }`}
           >
-            <BarChart3 className="w-4 h-4" />
-            <span>Performance Analytics</span>
+            <BarChart3 className="w-3.5 h-3.5" />
+            <span className="truncate">Analytics</span>
           </button>
 
           <button
             onClick={() => setActiveView(activeView === "logs" ? "main" : "logs")}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
+            className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
               activeView === "logs"
-                ? "bg-purple-600 text-white border-purple-600"
+                ? "bg-purple-600 text-white border-purple-600 shadow-2xs"
                 : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
             }`}
           >
-            <History className="w-4 h-4" />
-            <span>Reschedule Logs</span>
+            <History className="w-3.5 h-3.5" />
+            <span className="truncate">Reschedule Logs</span>
           </button>
 
           <button
             onClick={() => setBulkModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold shadow-xs"
+            className="flex items-center justify-center gap-1.5 py-2 px-3 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
           >
-            <Settings className="w-4 h-4" />
-            <span>Manage Availability</span>
+            <Settings className="w-3.5 h-3.5" />
+            <span className="truncate">Availability</span>
           </button>
         </div>
       </div>
 
-      {/* 13 Metrics Counter Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7 gap-3">
-        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl">
+      {/* Metrics Counter Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-3">
+        <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Total Bookings</div>
-          <div className="text-xl font-black text-amber-900 mt-1">{metrics.total}</div>
+          <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.total}</div>
         </div>
-        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl">
+        <div className="bg-blue-50/70 border border-blue-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">This Month</div>
-          <div className="text-xl font-black text-blue-900 mt-1">{metrics.month}</div>
+          <div className="text-lg sm:text-xl font-black text-blue-900 mt-0.5">{metrics.month}</div>
         </div>
-        <div className="bg-slate-100 border border-slate-200 p-3.5 rounded-xl">
+        <div className="bg-slate-100 border border-slate-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Last Month</div>
-          <div className="text-xl font-black text-slate-800 mt-1">{metrics.lastMonthCount}</div>
+          <div className="text-lg sm:text-xl font-black text-slate-800 mt-0.5">{metrics.lastMonthCount}</div>
         </div>
-        <div className="bg-indigo-50/70 border border-indigo-200 p-3.5 rounded-xl">
+        <div className="bg-indigo-50/70 border border-indigo-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider">Next Month</div>
-          <div className="text-xl font-black text-indigo-900 mt-1">{metrics.nextMonthCount}</div>
+          <div className="text-lg sm:text-xl font-black text-indigo-900 mt-0.5">{metrics.nextMonthCount}</div>
         </div>
-        <div className="bg-teal-50/70 border border-teal-200 p-3.5 rounded-xl">
-          <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">This Week</div>
-          <div className="text-xl font-black text-teal-900 mt-1">{metrics.week}</div>
+        <div className="bg-sky-50/70 border border-sky-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
+          <div className="text-[10px] font-bold text-sky-800 uppercase tracking-wider">Today&apos;s Visit</div>
+          <div className="text-lg sm:text-xl font-black text-sky-900 mt-0.5">{metrics.todaysVisit}</div>
         </div>
-        <div className="bg-rose-50/70 border border-rose-200 p-3.5 rounded-xl">
-          <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">Today</div>
-          <div className="text-xl font-black text-rose-900 mt-1">{metrics.todayCount}</div>
+        <div className="bg-rose-50/70 border border-rose-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
+          <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">Today&apos;s Bookings</div>
+          <div className="text-lg sm:text-xl font-black text-rose-900 mt-0.5">{metrics.todayCount}</div>
         </div>
-        <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl">
-          <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider">Avail Month</div>
-          <div className="text-xl font-black text-purple-900 mt-1">{metrics.availMonth}</div>
-        </div>
-        <div className="bg-indigo-50/70 border border-indigo-200 p-3.5 rounded-xl">
-          <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider">Avail Next</div>
-          <div className="text-xl font-black text-indigo-900 mt-1">{metrics.availNextMonth}</div>
-        </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl">
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Visited</div>
-          <div className="text-xl font-black text-emerald-900 mt-1">{metrics.visited}</div>
+          <div className="text-lg sm:text-xl font-black text-emerald-900 mt-0.5">{metrics.visited}</div>
         </div>
-        <div className="bg-rose-50/70 border border-rose-200 p-3.5 rounded-xl">
+        <div className="bg-rose-50/70 border border-rose-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">Non-Visited</div>
-          <div className="text-xl font-black text-rose-900 mt-1">{metrics.nonVisited}</div>
+          <div className="text-lg sm:text-xl font-black text-rose-900 mt-0.5">{metrics.nonVisited}</div>
         </div>
-        <div className="bg-cyan-50/70 border border-cyan-200 p-3.5 rounded-xl">
+        <div className="bg-cyan-50/70 border border-cyan-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-cyan-800 uppercase tracking-wider">Upcoming</div>
-          <div className="text-xl font-black text-cyan-900 mt-1">{metrics.upcoming}</div>
+          <div className="text-lg sm:text-xl font-black text-cyan-900 mt-0.5">{metrics.upcoming}</div>
         </div>
-        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl">
+        <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Total Follow-ups</div>
-          <div className="text-xl font-black text-amber-900 mt-1">{metrics.delayed}</div>
+          <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.delayed}</div>
         </div>
-        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl col-span-2 sm:col-span-1">
+        <div className="bg-blue-50/70 border border-blue-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs col-span-2 sm:col-span-1">
           <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Rescheduled</div>
-          <div className="text-xl font-black text-blue-900 mt-1">{metrics.rescheduled}</div>
+          <div className="text-lg sm:text-xl font-black text-blue-900 mt-0.5">{metrics.rescheduled}</div>
         </div>
       </div>
 
       {/* 2-Month Dual Calendar */}
       {activeView === "main" && (
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
+        <div className="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 shadow-xs space-y-4">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <div className="text-xs font-bold uppercase tracking-wider text-blue-600">
-              Manage Seat Quotas & Holiday Messages
+            <div className="text-xs font-bold uppercase tracking-wider text-blue-600 flex items-center gap-2">
+              <CalendarDays className="w-4 h-4" />
+              <span>Booking Calendar</span>
             </div>
             <div className="flex items-center gap-1.5">
               <button
@@ -1025,7 +1070,8 @@ export default function AdminBookingsPage() {
                   d.setMonth(d.getMonth() - 1);
                   setCalendarDate(d);
                 }}
-                className="p-1.5 hover:bg-slate-100 rounded-lg"
+                className="p-1.5 hover:bg-slate-100 active:bg-slate-200 rounded-lg cursor-pointer transition-colors"
+                title="Previous month"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
@@ -1035,106 +1081,70 @@ export default function AdminBookingsPage() {
                   d.setMonth(d.getMonth() + 1);
                   setCalendarDate(d);
                 }}
-                className="p-1.5 hover:bg-slate-100 rounded-lg"
+                className="p-1.5 hover:bg-slate-100 active:bg-slate-200 rounded-lg cursor-pointer transition-colors"
+                title="Next month"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {renderAdminCalendarMonth(calendarDate)}
-            {renderAdminCalendarMonth(nextMonthDate)}
+          {/* 2 Months Grid: Single on mobile, 2 on desktop */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8 md:divide-x md:divide-slate-100">
+            <div>{renderAdminCalendarMonth(calendarDate)}</div>
+            <div className="hidden md:block md:pl-8">{renderAdminCalendarMonth(nextMonthDate)}</div>
           </div>
         </div>
       )}
 
       {/* ----------------------------------------------------
-          VIEW 1: DETAILED BOOKINGS TABLE
+          VIEW 1: BOOKINGS TABLE
           ---------------------------------------------------- */}
       {activeView === "main" && (
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-          {/* Table Controls */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <h3 className="font-bold text-slate-900 text-base">
-              Detailed Booking Records ({filteredBookings.length})
-            </h3>
+        <div className="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 shadow-xs space-y-4">
+          {/* Table Top Bar */}
+          <div className="border-b border-slate-100 pb-4 space-y-3">
+            {/* Header: Title + Dynamic Counter Pill + Reset Button */}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <Ticket className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-slate-900 text-sm sm:text-base tracking-tight whitespace-nowrap">
+                  Booking Records
+                </h3>
 
-            <div className="flex items-center gap-2.5 flex-wrap">
-              {/* Date Range Filters (From - To) */}
-              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-700">
-                <span className="text-[10px] font-bold text-slate-400 uppercase">From:</span>
-                <input
-                  type="date"
-                  value={bookingStartDate}
-                  onChange={(e) => {
-                    setBookingStartDate(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                  className="bg-transparent outline-none text-slate-800 text-xs font-semibold cursor-pointer"
-                />
+                {/* Dynamic Filter Pill Badge */}
+                <div className="flex items-center gap-1.5 bg-sky-50 border border-sky-200/80 text-sky-800 px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full text-xs font-bold shadow-2xs whitespace-nowrap">
+                  <span>{adminFilterLabel}:</span>
+                  <span className="bg-sky-600 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full leading-tight">
+                    {filteredBookings.length}
+                  </span>
+                </div>
               </div>
 
-              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-700">
-                <span className="text-[10px] font-bold text-slate-400 uppercase">To:</span>
-                <input
-                  type="date"
-                  value={bookingEndDate}
-                  onChange={(e) => {
-                    setBookingEndDate(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                  className="bg-transparent outline-none text-slate-800 text-xs font-semibold cursor-pointer"
-                />
-              </div>
-
-              {(bookingStartDate || bookingEndDate) && (
+              {(bookingStartDate || bookingEndDate || agentFilter !== "all" || statusFilter !== "all" || searchTerm) && (
                 <button
                   onClick={() => {
                     setBookingStartDate("");
                     setBookingEndDate("");
+                    setAgentFilter("all");
+                    setStatusFilter("all");
+                    setSearchTerm("");
                     setCurrentPage(1);
                   }}
-                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer"
-                  title="Reset date filter"
+                  className="px-2.5 py-1 sm:px-3 sm:py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs whitespace-nowrap"
+                  title="Reset all filters"
                 >
                   <RefreshCw className="w-3 h-3" />
                   <span>Reset</span>
                 </button>
               )}
+            </div>
 
-              <select
-                value={agentFilter}
-                onChange={(e) => {
-                  setAgentFilter(e.target.value);
-                  setCurrentPage(1);
-                }}
-                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-blue-600 outline-none cursor-pointer"
-              >
-                <option value="all">AGENT: ALL</option>
-                {uniqueAgents.map((a) => (
-                  <option key={a} value={a}>
-                    {a}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={statusFilter}
-                onChange={(e) => {
-                  setStatusFilter(e.target.value);
-                  setCurrentPage(1);
-                }}
-                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-blue-600 outline-none cursor-pointer"
-              >
-                <option value="all">STATUS: ALL</option>
-                <option value="upcoming">Upcoming</option>
-                <option value="followup">Follow up</option>
-                <option value="visited">Visited</option>
-              </select>
-
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            {/* Filter Controls: Single line on desktop, clean responsive grid on mobile */}
+            <div className="flex flex-col xl:flex-row xl:items-center gap-2.5 w-full">
+              {/* Search Bar */}
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   value={searchTerm}
@@ -1142,9 +1152,103 @@ export default function AdminBookingsPage() {
                     setSearchTerm(e.target.value);
                     setCurrentPage(1);
                   }}
-                  placeholder="Search name or phone..."
-                  className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:bg-white"
+                  placeholder="Search by IP / IW name, phone, or agent..."
+                  className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none focus:bg-white focus:border-blue-400 transition-all shadow-2xs"
                 />
+                {searchTerm && (
+                  <button
+                    onClick={() => setSearchTerm("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Filter Dropdowns: 2x2 grid on mobile, inline on desktop */}
+              <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 shrink-0">
+                <label
+                  htmlFor="admin-filter-from-date"
+                  onClick={(e) => {
+                    const input = e.currentTarget.querySelector('input') as HTMLInputElement;
+                    if (input && typeof input.showPicker === 'function') {
+                      try { input.showPicker(); } catch (err) {}
+                    }
+                  }}
+                  className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100/80 active:bg-slate-200 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs w-full sm:w-auto cursor-pointer select-none"
+                >
+                  <span className="text-[10px] font-bold text-slate-400 uppercase shrink-0">From:</span>
+                  <input
+                    id="admin-filter-from-date"
+                    type="date"
+                    value={bookingStartDate}
+                    onChange={(e) => {
+                      setBookingStartDate(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    onClick={(e) => {
+                      try { (e.target as any).showPicker?.(); } catch (err) {}
+                    }}
+                    className="bg-transparent outline-none text-slate-800 text-xs font-bold cursor-pointer w-full min-w-0"
+                  />
+                </label>
+
+                <label
+                  htmlFor="admin-filter-to-date"
+                  onClick={(e) => {
+                    const input = e.currentTarget.querySelector('input') as HTMLInputElement;
+                    if (input && typeof input.showPicker === 'function') {
+                      try { input.showPicker(); } catch (err) {}
+                    }
+                  }}
+                  className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100/80 active:bg-slate-200 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs w-full sm:w-auto cursor-pointer select-none"
+                >
+                  <span className="text-[10px] font-bold text-slate-400 uppercase shrink-0">To:</span>
+                  <input
+                    id="admin-filter-to-date"
+                    type="date"
+                    value={bookingEndDate}
+                    onChange={(e) => {
+                      setBookingEndDate(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    onClick={(e) => {
+                      try { (e.target as any).showPicker?.(); } catch (err) {}
+                    }}
+                    className="bg-transparent outline-none text-slate-800 text-xs font-bold cursor-pointer w-full min-w-0"
+                  />
+                </label>
+
+                <select
+                  value={agentFilter}
+                  onChange={(e) => {
+                    setAgentFilter(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-blue-600 outline-none cursor-pointer shadow-2xs w-full sm:w-auto"
+                >
+                  <option value="all">Agent: All</option>
+                  {uniqueAgents.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={statusFilter}
+                  onChange={(e) => {
+                    setStatusFilter(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-blue-600 outline-none cursor-pointer shadow-2xs w-full sm:w-auto"
+                >
+                  <option value="all">Status: All</option>
+                  <option value="todays_visit">Status: Today&apos;s Visit</option>
+                  <option value="upcoming">Status: Upcoming</option>
+                  <option value="followup">Status: Follow up</option>
+                  <option value="visited">Status: Visited</option>
+                </select>
               </div>
             </div>
           </div>
@@ -1174,8 +1278,8 @@ export default function AdminBookingsPage() {
             </div>
           )}
 
-          {/* Table */}
-          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+          {/* Desktop Table View */}
+          <div className="hidden md:block overflow-x-auto rounded-2xl border border-slate-100">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
@@ -1243,23 +1347,25 @@ export default function AdminBookingsPage() {
                         <td className="p-4 font-bold text-blue-600">{b.agentName}</td>
                         <td className="p-4">
                           <div className="flex items-center gap-1.5 font-bold text-slate-900">
-                            <span>{b.ipName}</span>
-                            <button
-                              onClick={() => handleCopy(b.ipName, `ip-${idx}`)}
-                              className="text-slate-400 hover:text-blue-600"
-                            >
-                              {copiedId === `ip-${idx}` ? (
-                                <Check className="w-3 h-3 text-emerald-600" />
-                              ) : (
-                                <Copy className="w-3 h-3" />
-                              )}
-                            </button>
+                            <span>{maskIpInfo ? maskIpName(b.ipName) : b.ipName}</span>
+                            {!maskIpInfo && (
+                              <button
+                                onClick={() => handleCopy(b.ipName, `ip-${idx}`)}
+                                className="text-slate-400 hover:text-blue-600"
+                              >
+                                {copiedId === `ip-${idx}` ? (
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                              </button>
+                            )}
                           </div>
                         </td>
                         <td className="p-4 font-mono text-slate-600">
                           <div className="flex items-center gap-1.5">
-                            <span>{b.phone}</span>
-                            {b.phone && (
+                            <span>{maskIpInfo ? maskPhone(b.phone) : b.phone}</span>
+                            {b.phone && !maskIpInfo && (
                               <button
                                 onClick={() => handleCopy(b.phone, `phone-main-${idx}`)}
                                 className="text-slate-400 hover:text-blue-600 p-0.5 transition-colors"
@@ -1290,6 +1396,14 @@ export default function AdminBookingsPage() {
                             </span>
                           ) : (() => {
                             const istMidnight = getISTMidnight();
+                            const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+                            if (b.dateKey === todayKey) {
+                              return (
+                                <span className="bg-sky-50 text-sky-800 border border-sky-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-sky-600" /> Today&apos;s Visit
+                                </span>
+                              );
+                            }
                             const schedDate = new Date(b.dateKey);
                             schedDate.setHours(0, 0, 0, 0);
                             if (schedDate < istMidnight) {
@@ -1368,6 +1482,198 @@ export default function AdminBookingsPage() {
             </table>
           </div>
 
+          {/* Mobile List View (Clean rows divided by dotted lines) */}
+          <div className="block md:hidden divide-y divide-dashed divide-slate-200">
+            {paginatedBookings.length === 0 ? (
+              <div className="text-center py-10 text-slate-400 text-xs">
+                No bookings match search or filters.
+              </div>
+            ) : (
+              paginatedBookings.map((b, idx) => {
+                const rowKey = `${b.dateKey}___${b.timestamp}___${b.agentEmail}`;
+                const isChecked = selectedBookingKeys.has(rowKey);
+                const istMidnight = getISTMidnight();
+                const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+                const schedDate = new Date(b.dateKey);
+                schedDate.setHours(0, 0, 0, 0);
+
+                const isDelayed = !b.visited && schedDate < istMidnight;
+
+                const bookedOnDateStr = new Date(b.timestamp).toLocaleDateString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+
+                const schedDateStr = new Date(b.dateKey).toLocaleDateString("en-US", {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                });
+
+                return (
+                  <div
+                    key={`mobile-admin-${rowKey}`}
+                    className="py-4 first:pt-1 last:pb-1 space-y-2.5"
+                  >
+                    {/* Header: Checkbox + IP Name + Status Badge */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            const nextSet = new Set(selectedBookingKeys);
+                            if (e.target.checked) nextSet.add(rowKey);
+                            else nextSet.delete(rowKey);
+                            setSelectedBookingKeys(nextSet);
+                          }}
+                          className="mt-1 cursor-pointer"
+                        />
+                        <div>
+                          <div className="flex items-center gap-1.5 font-bold text-slate-900 text-sm">
+                            <span>{maskIpInfo ? maskIpName(b.ipName) : b.ipName}</span>
+                            {!maskIpInfo && (
+                              <button
+                                onClick={() => handleCopy(b.ipName, `ip-m-${idx}`)}
+                                className="text-slate-400 hover:text-blue-600 p-0.5 rounded cursor-pointer"
+                                title="Copy Name"
+                              >
+                                {copiedId === `ip-m-${idx}` ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                          <span className="text-[11px] font-semibold text-blue-600 block mt-0.5">
+                            Agent: {b.agentName}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Status Badge */}
+                      <div className="shrink-0">
+                        {b.visited ? (
+                          <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Visited
+                          </span>
+                        ) : b.dateKey === todayKey ? (
+                          <span className="bg-sky-50 text-sky-800 border border-sky-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-sky-600" /> Today&apos;s Visit
+                          </span>
+                        ) : isDelayed ? (
+                          (() => {
+                            const [y, m, d] = b.dateKey.split("-").map(Number);
+                            const foDate = new Date(y, m - 1, d);
+                            foDate.setDate(foDate.getDate() + 8);
+                            const foStr = foDate.toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                            });
+                            return (
+                              <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                                <Clock className="w-3 h-3 text-amber-600" /> Follow up ({foStr})
+                              </span>
+                            );
+                          })()
+                        ) : (
+                          <span className="bg-blue-50 text-blue-700 border border-blue-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3" /> Upcoming
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Details in clean 2 columns without nested box */}
+                    <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                          Scheduled Date
+                        </span>
+                        <span className={`font-bold ${b.dateKey === todayKey ? "text-sky-700 font-extrabold" : "text-slate-800"}`}>
+                          {schedDateStr}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                          Phone Number
+                        </span>
+                        <div className="flex items-center gap-1 font-mono text-slate-700 font-semibold">
+                          <a href={maskIpInfo ? undefined : `tel:${b.phone}`} className={maskIpInfo ? "" : "hover:underline text-blue-600"}>
+                            {maskIpInfo ? maskPhone(b.phone) : b.phone}
+                          </a>
+                          {!maskIpInfo && (
+                            <button
+                              onClick={() => handleCopy(b.phone, `phone-main-m-${idx}`)}
+                              className="text-slate-400 hover:text-blue-600 p-0.5 rounded cursor-pointer"
+                              title="Copy Phone"
+                            >
+                              {copiedId === `phone-main-m-${idx}` ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-400">
+                      <span>Booked: {bookedOnDateStr}</span>
+                    </div>
+
+                    {/* Actions Bar */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        onClick={() => handleToggleVisited(b)}
+                        className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer ${
+                          b.visited
+                            ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200"
+                            : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                        }`}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>{b.visited ? "Mark Active" : "Mark Visited"}</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          if (b.visited) {
+                            toast.warning("Visited bookings cannot be rescheduled. Please unmark visit first.");
+                            return;
+                          }
+                          setRescheduleItem(b);
+                          setRsSelectedDate(null);
+                        }}
+                        disabled={b.visited}
+                        className={`py-2 px-3.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                          b.visited
+                            ? "bg-slate-100 text-slate-400 cursor-not-allowed opacity-60"
+                            : "bg-blue-600 hover:bg-blue-700 text-white shadow-2xs"
+                        }`}
+                      >
+                        {b.visited && <Lock className="w-3 h-3" />}
+                        <span>Reschedule</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleCancelSingleBooking(b)}
+                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                        title="Delete Booking"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
           {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-3 pt-3">
@@ -1403,19 +1709,15 @@ export default function AdminBookingsPage() {
             <div className="flex items-center gap-3">
               <button
                 onClick={() => setActiveView("main")}
-                className="p-2 hover:bg-slate-100 rounded-full text-slate-500 hover:text-slate-900 transition-colors"
+                className="p-2 hover:bg-slate-100 rounded-full text-slate-500 hover:text-slate-900 transition-colors cursor-pointer"
                 title="Back to Bookings"
               >
                 <ChevronLeft className="w-6 h-6" />
               </button>
               <div>
-                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                  <BarChart3 className="w-5 h-5 text-blue-600" />
-                  <span>Booking Performance Analytics</span>
+                <h2 className="text-xl font-bold text-slate-900">
+                  Analytics
                 </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Track agent productivity and how many bookings each agent created within the selected date range.
-                </p>
               </div>
             </div>
 
@@ -1614,7 +1916,7 @@ export default function AdminBookingsPage() {
                 ) : (
                   activeRescheduleLogs.map((log) => (
                     <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="p-4 font-bold text-slate-900">{log.ipName}</td>
+                      <td className="p-4 font-bold text-slate-900">{maskIpInfo ? maskIpName(log.ipName) : log.ipName}</td>
                       <td className="p-4 text-blue-600 font-semibold">{log.seatOwner}</td>
                       <td className="p-4 font-bold text-rose-600">{log.originalDate}</td>
                       <td className="p-4 font-bold text-emerald-700">{log.newDate}</td>
@@ -1931,7 +2233,12 @@ export default function AdminBookingsPage() {
 
             <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
               <div>
-                IP Name: <strong className="text-slate-900">{rescheduleItem.ipName}</strong>
+                IP Name:{" "}
+                <strong className="text-slate-900">
+                  {maskIpInfo && rescheduleItem.ipName
+                    ? maskIpName(rescheduleItem.ipName)
+                    : rescheduleItem.ipName}
+                </strong>
               </div>
               <div>
                 Current Date: <strong className="text-rose-600">{rescheduleItem.dateKey}</strong>

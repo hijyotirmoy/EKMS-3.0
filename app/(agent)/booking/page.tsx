@@ -19,6 +19,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord } from "@/lib/types";
 import { getISTMidnight } from "@/lib/utils";
+import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import {
@@ -46,14 +47,15 @@ interface FlattenedBooking extends BookingRecord {
 
 export default function AgentBookingPage() {
   const { user, userProfile, isLoggedIn, openLoginModal } = useAuth();
-  const { toast } = usePopup();
+  const { toast, showConfirm } = usePopup();
   const [liveBookings, setLiveBookings] = useState<Record<string, DayAvailability>>({});
   const [calendarDate, setCalendarDate] = useState(new Date());
+  const [maskIpInfo, setMaskIpInfo] = useState(false);
 
   // Views & Filters
   const [tableView, setTableView] = useState<"all" | "my">("all");
   const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "upcoming" | "followup" | "visited">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "todays_visit" | "upcoming" | "followup" | "visited">("all");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
 
@@ -118,13 +120,22 @@ export default function AgentBookingPage() {
       (err) => console.warn("Bookings sync error:", err)
     );
 
+    const unsubStatus = onSnapshot(
+      doc(db, "system", "status"),
+      (snap) => {
+        if (!isMounted) return;
+        if (snap.exists()) {
+          const data = snap.data();
+          setMaskIpInfo(!!data.maskIpInfo);
+        }
+      },
+      (err) => console.warn("System status snapshot error:", err)
+    );
+
     return () => {
       isMounted = false;
-      try {
-        unsubscribe();
-      } catch (e) {
-        // ignore unmount errors
-      }
+      unsubscribe();
+      unsubStatus();
     };
   }, []);
 
@@ -150,6 +161,7 @@ export default function AgentBookingPage() {
     const myEmail = user?.email?.toLowerCase() || "";
 
     const todayObj = new Date();
+    const todayKey = todayObj.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
     const currentYear = todayObj.getFullYear();
     const currentMonth = todayObj.getMonth();
     const currentDay = todayObj.getDate();
@@ -157,22 +169,10 @@ export default function AgentBookingPage() {
     const nextMonth = currentMonth === 11 ? 0 : currentMonth + 1;
     const nextMonthYear = currentMonth === 11 ? currentYear + 1 : currentYear;
 
-    const istMidnight = getISTMidnight();
-
-    const dayOfWeek = todayObj.getDay();
-    const distToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const startOfWeek = new Date(todayObj);
-    startOfWeek.setHours(0, 0, 0, 0);
-    startOfWeek.setDate(todayObj.getDate() - distToMonday);
-
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
-
     let totalMy = 0;
     let monthMy = 0;
     let nextMonthMy = 0;
-    let weekMy = 0;
+    let todaysVisitMy = 0;
     let todayMy = 0;
     let visitedMy = 0;
     let delayedMy = 0;
@@ -202,9 +202,9 @@ export default function AgentBookingPage() {
 
             if (y === currentYear && m - 1 === currentMonth) monthMy++;
             if (y === nextMonthYear && m - 1 === nextMonth) nextMonthMy++;
+            if (dateKey === todayKey) todaysVisitMy++;
 
             const bookedTime = new Date(record.timestamp);
-            if (bookedTime >= startOfWeek && bookedTime <= endOfWeek) weekMy++;
             if (
               bookedTime.getFullYear() === currentYear &&
               bookedTime.getMonth() === currentMonth &&
@@ -218,7 +218,7 @@ export default function AgentBookingPage() {
             } else {
               const schedDate = new Date(dateKey);
               schedDate.setHours(0, 0, 0, 0);
-              if (schedDate < istMidnight) delayedMy++;
+              if (schedDate < getISTMidnight()) delayedMy++;
             }
           }
         });
@@ -237,7 +237,7 @@ export default function AgentBookingPage() {
         totalMy,
         monthMy,
         nextMonthMy,
-        weekMy,
+        todaysVisitMy,
         todayMy,
         visitedMy,
         delayedMy,
@@ -250,6 +250,7 @@ export default function AgentBookingPage() {
   const displayedBookings = useMemo(() => {
     let list = tableView === "all" ? allBookings : myBookings;
     const istMidnight = getISTMidnight();
+    const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase().trim();
@@ -263,6 +264,7 @@ export default function AgentBookingPage() {
 
     if (statusFilter !== "all") {
       list = list.filter((b) => {
+        if (statusFilter === "todays_visit") return b.dateKey === todayKey;
         if (statusFilter === "visited") return !!b.visited;
         if (b.visited) return false;
 
@@ -277,6 +279,21 @@ export default function AgentBookingPage() {
 
     return list;
   }, [tableView, allBookings, myBookings, searchTerm, statusFilter]);
+
+  const agentFilterLabel = useMemo(() => {
+    switch (statusFilter) {
+      case "todays_visit":
+        return "Today's Visit";
+      case "upcoming":
+        return "Upcoming";
+      case "followup":
+        return "Follow-up";
+      case "visited":
+        return "Visited";
+      default:
+        return "All Bookings";
+    }
+  }, [statusFilter]);
 
   const totalPages = Math.max(1, Math.ceil(displayedBookings.length / itemsPerPage));
   const paginatedList = useMemo(() => {
@@ -338,7 +355,7 @@ export default function AgentBookingPage() {
         try {
           await createNotification({
             title: "🎉 Verification Booking Confirmed",
-            message: `Your verification appointment on **${formattedDate}** has been successfully booked for **${ipName.trim()}** (Phone: ${ipPhone.trim()}).`,
+            message: `Your verification appointment on **${formattedDate}** has been successfully booked for **${maskIpName(ipName.trim())}**.`,
             type: "booking",
             targetEmail: user.email.toLowerCase().trim(),
             link: "/booking",
@@ -352,9 +369,12 @@ export default function AgentBookingPage() {
           // Notify Admins
           await notifyAdmins({
             title: "📅 New Booking Received",
-            message: `**${userProfile?.displayName || user.email}** booked an appointment for **${ipName.trim()}** on **${formattedDate}**.`,
+            message: `**${userProfile?.displayName || user.email}** booked an appointment for **${maskIpName(ipName.trim())}** on **${formattedDate}**.`,
             type: "booking",
             link: "/admin/bookings",
+            metadata: {
+              ipName: ipName.trim(),
+            },
           });
         } catch (notifErr) {
           console.error("Booking notification error:", notifErr);
@@ -548,6 +568,23 @@ export default function AgentBookingPage() {
   // --- 8. TOGGLE VISITED STATUS ---
   const handleToggleVisitedAgent = async (b: BookingRecord) => {
     if (!b.dateKey) return;
+
+    const rawIp = b.ipName || "this IP";
+    const ipName = maskIpInfo && b.ipName ? maskIpName(b.ipName) : rawIp;
+    const isCurrentlyVisited = !!b.visited;
+
+    const confirmed = await showConfirm({
+      title: isCurrentlyVisited ? "Unmark Visit?" : "Confirm Hospital Visit?",
+      message: isCurrentlyVisited
+        ? `Are you sure you want to unmark the visit for ${ipName} and revert the status to active?`
+        : `Are you sure this IP (${ipName}) visited the hospital for their scheduled health check-up?`,
+      confirmText: isCurrentlyVisited ? "Yes, Unmark" : "Yes, Mark Visited",
+      cancelText: "Cancel",
+      isDestructive: false,
+    });
+
+    if (!confirmed) return;
+
     const docRef = doc(db, "bookings", b.dateKey);
     try {
       await runTransaction(db, async (tx) => {
@@ -597,25 +634,26 @@ export default function AgentBookingPage() {
       "January", "February", "March", "April", "May", "June",
       "July", "August", "September", "October", "November", "December",
     ];
-
     const firstDayIndex = new Date(year, month, 1).getDay();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const istMidnight = getISTMidnight();
-
     const dayBoxes = [];
 
-    // Blank padding boxes
     for (let i = 0; i < firstDayIndex; i++) {
-      dayBoxes.push(<div key={`empty-${i}`} className="h-14 bg-slate-50/50 rounded-lg border border-transparent" />);
+      dayBoxes.push(<div key={`empty-${i}`} className="h-11 sm:h-14 bg-slate-50/40 rounded-xl" />);
     }
 
-    // Days
+    const todayIST = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
     for (let day = 1; day <= daysInMonth; day++) {
       const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const dbInfo = liveBookings[dateKey] || { seats: 0 };
-      const boxDate = new Date(year, month, day);
-      const isPast = boxDate < istMidnight;
-      const isAvailable = !isPast && dbInfo.seats > 0;
+      const isAvailable = dbInfo.seats > 0;
+      const isToday = dateKey === todayIST;
+
+      // Check if date is strictly in the past
+      const targetDayMidnight = new Date(dateKey);
+      targetDayMidnight.setHours(0, 0, 0, 0);
+      const isPast = targetDayMidnight < getISTMidnight();
 
       dayBoxes.push(
         <button
@@ -637,48 +675,54 @@ export default function AgentBookingPage() {
             setIpName("");
             setIpPhone("");
           }}
-          disabled={!isAvailable}
-          className={`h-14 p-1.5 rounded-lg border flex flex-col items-center justify-between relative transition-all text-left ${
+          disabled={!isAvailable || isPast}
+          className={`h-11 sm:h-14 p-0.5 sm:p-1.5 rounded-xl border flex flex-col items-center justify-between relative transition-all text-left shadow-2xs active:scale-95 ${
+            isToday ? "ring-2 ring-blue-500 ring-offset-1" : ""
+          } ${
             isPast
               ? "bg-slate-50 border-slate-200 text-slate-400 opacity-60 cursor-not-allowed"
               : isAvailable
-              ? "bg-emerald-50/70 border-emerald-200 text-emerald-800 hover:bg-emerald-100/80 hover:scale-[1.02] shadow-xs cursor-pointer"
+              ? "bg-emerald-50/70 border-emerald-200 hover:bg-emerald-100/80 text-emerald-900 cursor-pointer"
               : "bg-rose-50/60 border-rose-200 text-rose-700 opacity-80 cursor-not-allowed"
           }`}
         >
-          <span className="text-[10px] font-bold self-start">{day}</span>
+          <span className={`text-[9px] sm:text-[10px] font-bold self-start leading-none ${isToday ? "text-blue-600 font-extrabold" : "text-slate-600"}`}>
+            {day}
+          </span>
           <div className="text-center my-auto">
-            <div className="text-base font-extrabold leading-none">{dbInfo.seats}</div>
+            <div className="text-xs sm:text-base font-black leading-none">{dbInfo.seats}</div>
           </div>
-          {dbInfo.text && (
-            <span className="text-[8px] italic text-slate-500 truncate w-full text-center">
+          {dbInfo.text ? (
+            <span className="text-[7px] sm:text-[8px] italic text-slate-500 truncate w-full text-center leading-tight block">
               {dbInfo.text}
             </span>
+          ) : (
+            <span className="h-1" />
           )}
         </button>
       );
     }
 
     return (
-      <div className="bg-white p-4 rounded-xl border border-slate-200 flex-1">
-        <h3 className="text-sm font-bold text-center text-slate-800 mb-3 flex items-center justify-center gap-2">
-          <CalendarIcon className="w-4 h-4 text-amber-500" />
+      <div className="flex-1 space-y-2.5 sm:space-y-3">
+        <h3 className="text-sm sm:text-base font-extrabold text-center text-slate-800 flex items-center justify-center gap-1.5 sm:gap-2">
+          <CalendarIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-500" />
           <span>{monthNames[month]} {year}</span>
         </h3>
-        <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+        <div className="grid grid-cols-7 gap-0.5 sm:gap-1 text-center text-[9px] sm:text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
           <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
         </div>
-        <div className="grid grid-cols-7 gap-1.5">{dayBoxes}</div>
+        <div className="grid grid-cols-7 gap-1 sm:gap-1.5">{dayBoxes}</div>
       </div>
     );
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       {/* Top Header with date in parallel on mobile & desktop */}
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
             Bookings
           </h1>
         </div>
@@ -696,48 +740,48 @@ export default function AgentBookingPage() {
         </div>
       </div>
 
-      {/* 8 Metric KPI Cards (2 in a row on mobile) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+      {/* 8 Metric KPI Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 sm:gap-3">
+        <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Total (Mine)</div>
-          <div className="text-xl font-black text-amber-900 mt-1">{metrics.totalMy}</div>
+          <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.totalMy}</div>
         </div>
-        <div className="bg-blue-50/70 border border-blue-200 p-3.5 rounded-xl flex flex-col justify-between">
+        <div className="bg-blue-50/70 border border-blue-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider truncate">This Month</div>
-          <div className="text-xl font-black text-blue-900 mt-1">{metrics.monthMy}</div>
+          <div className="text-lg sm:text-xl font-black text-blue-900 mt-0.5">{metrics.monthMy}</div>
         </div>
-        <div className="bg-teal-50/70 border border-teal-200 p-3.5 rounded-xl flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider truncate">This Week</div>
-          <div className="text-xl font-black text-teal-900 mt-1">{metrics.weekMy}</div>
+        <div className="bg-sky-50/70 border border-sky-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
+          <div className="text-[10px] font-bold text-sky-800 uppercase tracking-wider truncate">Today&apos;s Visit</div>
+          <div className="text-lg sm:text-xl font-black text-sky-900 mt-0.5">{metrics.todaysVisitMy}</div>
         </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Today&apos;s Bookings</div>
-          <div className="text-xl font-black text-emerald-900 mt-1">{metrics.todayMy}</div>
+          <div className="text-lg sm:text-xl font-black text-emerald-900 mt-0.5">{metrics.todayMy}</div>
         </div>
-        <div className="bg-indigo-50/70 border border-indigo-200 p-3.5 rounded-xl flex flex-col justify-between">
+        <div className="bg-indigo-50/70 border border-indigo-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider truncate">Next Month</div>
-          <div className="text-xl font-black text-indigo-900 mt-1">{metrics.nextMonthMy}</div>
+          <div className="text-lg sm:text-xl font-black text-indigo-900 mt-0.5">{metrics.nextMonthMy}</div>
         </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-3.5 rounded-xl flex flex-col justify-between">
+        <div className="bg-emerald-50/70 border border-emerald-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Visited</div>
-          <div className="text-xl font-black text-emerald-900 mt-1">{metrics.visitedMy}</div>
+          <div className="text-lg sm:text-xl font-black text-emerald-900 mt-0.5">{metrics.visitedMy}</div>
         </div>
-        <div className="bg-amber-50/70 border border-amber-200 p-3.5 rounded-xl flex flex-col justify-between">
+        <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Follow-ups</div>
-          <div className="text-xl font-black text-amber-900 mt-1">{metrics.delayedMy}</div>
+          <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.delayedMy}</div>
         </div>
-        <div className="bg-purple-50/70 border border-purple-200 p-3.5 rounded-xl flex flex-col justify-between">
+        <div className="bg-purple-50/70 border border-purple-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider truncate">Rescheduled</div>
-          <div className="text-xl font-black text-purple-900 mt-1">{metrics.rescheduledByMeCount}</div>
+          <div className="text-lg sm:text-xl font-black text-purple-900 mt-0.5">{metrics.rescheduledByMeCount}</div>
         </div>
       </div>
 
       {/* Dual Month Calendar View */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
+      <div className="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 shadow-xs space-y-4">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="text-xs font-bold uppercase tracking-wider text-blue-600 flex items-center gap-2">
             <CalendarDays className="w-4 h-4" />
-            <span>Select an available date to book</span>
+            <span>Booking Calendar</span>
           </div>
           <div className="flex items-center gap-1.5">
             <button
@@ -746,7 +790,8 @@ export default function AgentBookingPage() {
                 d.setMonth(d.getMonth() - 1);
                 setCalendarDate(d);
               }}
-              className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              className="p-1.5 text-slate-600 hover:bg-slate-100 active:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+              title="Previous month"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -756,95 +801,150 @@ export default function AgentBookingPage() {
                 d.setMonth(d.getMonth() + 1);
                 setCalendarDate(d);
               }}
-              className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              className="p-1.5 text-slate-600 hover:bg-slate-100 active:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+              title="Next month"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {renderCalendarMonth(calendarDate)}
-          {renderCalendarMonth(nextMonthDate)}
+        {/* 2 Months Grid: Single month on mobile, 2 months on desktop */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8 md:divide-x md:divide-slate-100">
+          <div>{renderCalendarMonth(calendarDate)}</div>
+          <div className="hidden md:block md:pl-8">{renderCalendarMonth(nextMonthDate)}</div>
         </div>
       </div>
 
       {/* Booking Records Table Section */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
-        {/* Table Controls Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          {/* Table Switcher */}
-          <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl self-start">
-            <button
-              onClick={() => {
-                setTableView("all");
-                setCurrentPage(1);
-              }}
-              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                tableView === "all"
-                  ? "bg-white text-blue-600 shadow-xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              All Bookings
-            </button>
-            <button
-              onClick={() => {
-                setTableView("my");
-                setCurrentPage(1);
-              }}
-              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                tableView === "my"
-                  ? "bg-white text-blue-600 shadow-xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              My Bookings
-            </button>
+      <div className="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 shadow-xs space-y-4">
+        {/* Table Top Bar */}
+        <div className="border-b border-slate-100 pb-4 space-y-3">
+          {/* Header: Title + Dynamic Counter Pill */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Ticket className="w-5 h-5 text-blue-600" />
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight whitespace-nowrap">
+                Booking Records
+              </h2>
+
+              {/* Dynamic Filter Pill Badge */}
+              <div className="flex items-center gap-1.5 bg-sky-50 border border-sky-200/80 text-sky-800 px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full text-xs font-bold shadow-2xs whitespace-nowrap">
+                <span>{agentFilterLabel}:</span>
+                <span className="bg-sky-600 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full leading-tight">
+                  {displayedBookings.length}
+                </span>
+              </div>
+            </div>
+
+            {/* Segmented View Switcher on Desktop/Tablet inline */}
+            <div className="hidden sm:flex items-center bg-slate-100 p-1 rounded-xl">
+              <button
+                onClick={() => {
+                  setTableView("all");
+                  setCurrentPage(1);
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  tableView === "all"
+                    ? "bg-white text-blue-600 shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                All ({allBookings.length})
+              </button>
+              <button
+                onClick={() => {
+                  setTableView("my");
+                  setCurrentPage(1);
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  tableView === "my"
+                    ? "bg-white text-blue-600 shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                My ({myBookings.length})
+              </button>
+            </div>
           </div>
 
-          {/* Search & Status Filter */}
-          <div className="flex items-center gap-3 flex-1 max-w-md justify-end">
+          {/* Controls on Mobile & Desktop */}
+          <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 w-full">
+            {/* Search Bar */}
             <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
+                placeholder="Search by IP / IW name, phone, or agent..."
                 value={searchTerm}
                 onChange={(e) => {
                   setSearchTerm(e.target.value);
                   setCurrentPage(1);
                 }}
-                placeholder="Search IP name, phone, or agent..."
-                className="w-full pl-9 pr-8 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none focus:bg-white focus:border-blue-400 transition-all shadow-2xs"
               />
               {searchTerm && (
                 <button
                   onClick={() => setSearchTerm("")}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>
 
-            <select
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value as any);
-                setCurrentPage(1);
-              }}
-              className="px-3 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 rounded-lg text-blue-600 outline-none"
-            >
-              <option value="all">STATUS: ALL</option>
-              <option value="upcoming">Upcoming</option>
-              <option value="followup">Follow up</option>
-              <option value="visited">Visited</option>
-            </select>
+            {/* Filter & View Controls on Mobile */}
+            <div className="flex items-center gap-2 w-full lg:w-auto">
+              <select
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value as any);
+                  setCurrentPage(1);
+                }}
+                className="px-3 py-2 text-xs font-bold bg-slate-50 border border-slate-200 rounded-xl text-blue-600 outline-none cursor-pointer focus:bg-white focus:border-blue-400 transition-all shadow-2xs flex-1 sm:flex-none"
+              >
+                <option value="all">Status: All</option>
+                <option value="todays_visit">Status: Today&apos;s Visit</option>
+                <option value="upcoming">Status: Upcoming</option>
+                <option value="followup">Status: Follow up</option>
+                <option value="visited">Status: Visited</option>
+              </select>
+
+              {/* Mobile Only Segmented Switcher */}
+              <div className="flex sm:hidden items-center bg-slate-100 p-1 rounded-xl shrink-0">
+                <button
+                  onClick={() => {
+                    setTableView("all");
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                    tableView === "all"
+                      ? "bg-white text-blue-600 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  All ({allBookings.length})
+                </button>
+                <button
+                  onClick={() => {
+                    setTableView("my");
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                    tableView === "my"
+                      ? "bg-white text-blue-600 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  My ({myBookings.length})
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Table Content */}
-        <div className="overflow-x-auto rounded-xl border border-slate-100">
+        {/* Desktop Table View */}
+        <div className="hidden md:block overflow-x-auto rounded-xl border border-slate-100">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
@@ -870,6 +970,7 @@ export default function AgentBookingPage() {
               ) : (
                 paginatedList.map((b, idx) => {
                   const istMidnight = getISTMidnight();
+                  const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
                   const schedDate = new Date(b.dateKey);
                   schedDate.setHours(0, 0, 0, 0);
 
@@ -896,34 +997,38 @@ export default function AgentBookingPage() {
                       )}
                       <td className="p-3.5">
                         <div className="flex items-center gap-1.5 font-semibold text-slate-900">
-                          <span>{b.ipName}</span>
-                          <button
-                            onClick={() => handleCopy(b.ipName, `name-${idx}`)}
-                            className="text-slate-400 hover:text-blue-600 p-0.5 rounded"
-                            title="Copy Name"
-                          >
-                            {copiedId === `name-${idx}` ? (
-                              <Check className="w-3 h-3 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
-                            )}
-                          </button>
+                          <span>{maskIpInfo ? maskIpName(b.ipName) : b.ipName}</span>
+                          {!maskIpInfo && (
+                            <button
+                              onClick={() => handleCopy(b.ipName, `name-${idx}`)}
+                              className="text-slate-400 hover:text-blue-600 p-0.5 rounded"
+                              title="Copy Name"
+                            >
+                              {copiedId === `name-${idx}` ? (
+                                <Check className="w-3 h-3 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="p-3.5">
                         <div className="flex items-center gap-1.5 font-mono text-slate-600">
-                          <span>{b.phone}</span>
-                          <button
-                            onClick={() => handleCopy(b.phone, `phone-${idx}`)}
-                            className="text-slate-400 hover:text-blue-600 p-0.5 rounded"
-                            title="Copy Phone"
-                          >
-                            {copiedId === `phone-${idx}` ? (
-                              <Check className="w-3 h-3 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
-                            )}
-                          </button>
+                          <span>{maskIpInfo ? maskPhone(b.phone) : b.phone}</span>
+                          {!maskIpInfo && (
+                            <button
+                              onClick={() => handleCopy(b.phone, `phone-${idx}`)}
+                              className="text-slate-400 hover:text-blue-600 p-0.5 rounded"
+                              title="Copy Phone"
+                            >
+                              {copiedId === `phone-${idx}` ? (
+                                <Check className="w-3 h-3 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="p-3.5 text-slate-800">{schedDateStr}</td>
@@ -932,6 +1037,10 @@ export default function AgentBookingPage() {
                         {b.visited ? (
                           <span className="bg-emerald-50 text-emerald-700 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3" /> Visited
+                          </span>
+                        ) : b.dateKey === todayKey ? (
+                          <span className="bg-sky-50 text-sky-800 border border-sky-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-sky-600" /> Today&apos;s Visit
                           </span>
                         ) : isDelayed ? (
                           (() => {
@@ -996,16 +1105,14 @@ export default function AgentBookingPage() {
                             <span>Reschedule</span>
                           </button>
 
-                          {/* Cancel Button (My Bookings) */}
-                          {tableView === "my" && (
-                            <button
-                              onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
-                              className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
-                              title="Cancel Booking"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                          {/* Cancel / Release Seat Button */}
+                          <button
+                            onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                            title="Cancel Booking & Release Seat"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -1014,6 +1121,186 @@ export default function AgentBookingPage() {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile List View (Clean rows divided by dotted lines) */}
+        <div className="block md:hidden divide-y divide-dashed divide-slate-200">
+          {paginatedList.length === 0 ? (
+            <div className="text-center py-10 text-slate-400 text-xs">
+              No bookings found matching criteria.
+            </div>
+          ) : (
+            paginatedList.map((b, idx) => {
+              const istMidnight = getISTMidnight();
+              const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+              const schedDate = new Date(b.dateKey);
+              schedDate.setHours(0, 0, 0, 0);
+
+              const isDelayed = !b.visited && schedDate < istMidnight;
+              const isUpcoming = !b.visited && schedDate >= istMidnight;
+
+              const bookedOnDateStr = new Date(b.timestamp).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+
+              const schedDateStr = new Date(b.dateKey).toLocaleDateString("en-US", {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+              });
+
+              return (
+                <div
+                  key={`mobile-${b.dateKey}-${b.timestamp}-${idx}`}
+                  className="py-4 first:pt-1 last:pb-1 space-y-2.5"
+                >
+                  {/* Header: IP Name & Status Badge */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-1.5 font-bold text-slate-900 text-sm">
+                        <span>{maskIpInfo ? maskIpName(b.ipName) : b.ipName}</span>
+                        {!maskIpInfo && (
+                          <button
+                            onClick={() => handleCopy(b.ipName, `name-m-${idx}`)}
+                            className="text-slate-400 hover:text-blue-600 p-0.5 rounded cursor-pointer"
+                            title="Copy Name"
+                          >
+                            {copiedId === `name-m-${idx}` ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                      {tableView === "all" && b.agentName && (
+                        <span className="text-[11px] font-semibold text-blue-600 block mt-0.5">
+                          Booked by {b.agentName}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Status Badge */}
+                    <div className="shrink-0">
+                      {b.visited ? (
+                        <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" /> Visited
+                        </span>
+                      ) : b.dateKey === todayKey ? (
+                        <span className="bg-sky-50 text-sky-800 border border-sky-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-sky-600" /> Today&apos;s Visit
+                        </span>
+                      ) : isDelayed ? (
+                        (() => {
+                          const [y, m, d] = b.dateKey.split("-").map(Number);
+                          const foDate = new Date(y, m - 1, d);
+                          foDate.setDate(foDate.getDate() + 8);
+                          const foStr = foDate.toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                          });
+                          return (
+                            <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                              <Clock className="w-3 h-3 text-amber-600" /> Follow up ({foStr})
+                            </span>
+                          );
+                        })()
+                      ) : (
+                        <span className="bg-blue-50 text-blue-700 border border-blue-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3" /> Upcoming
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Scheduled Date, Phone Number & Booked On Details (Clean, no sub-boxes) */}
+                  <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                        Scheduled Date
+                      </span>
+                      <span className={`font-bold ${b.dateKey === todayKey ? "text-sky-700 font-extrabold" : "text-slate-800"}`}>
+                        {schedDateStr}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                        Phone Number
+                      </span>
+                      <div className="flex items-center gap-1 font-mono text-slate-700 font-semibold">
+                        <a href={maskIpInfo ? undefined : `tel:${b.phone}`} className={maskIpInfo ? "" : "hover:underline text-blue-600"}>
+                          {maskIpInfo ? maskPhone(b.phone) : b.phone}
+                        </a>
+                        {!maskIpInfo && (
+                          <button
+                            onClick={() => handleCopy(b.phone, `phone-m-${idx}`)}
+                            className="text-slate-400 hover:text-blue-600 p-0.5 rounded cursor-pointer"
+                            title="Copy Phone"
+                          >
+                            {copiedId === `phone-m-${idx}` ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400">
+                    <span>Booked: {bookedOnDateStr}</span>
+                  </div>
+
+                  {/* Actions Bar */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      onClick={() => handleToggleVisitedAgent(b)}
+                      className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer ${
+                        b.visited
+                          ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200"
+                          : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>{b.visited ? "Mark Active" : "Mark Visited"}</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        if (b.visited) {
+                          toast.warning("Visited bookings cannot be rescheduled. Please unmark visit first.");
+                          return;
+                        }
+                        setRescheduleData({ oldDateKey: b.dateKey, record: b });
+                        setRsSelectedDate(null);
+                      }}
+                      disabled={b.visited}
+                      className={`py-2 px-3.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                        b.visited
+                          ? "bg-slate-100 text-slate-400 cursor-not-allowed opacity-60"
+                          : "bg-blue-600 hover:bg-blue-700 text-white shadow-2xs"
+                      }`}
+                    >
+                      {b.visited && <Lock className="w-3 h-3" />}
+                      <span>Reschedule</span>
+                    </button>
+
+                    <button
+                      onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
+                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                      title="Cancel Booking"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
 
         {/* Pagination */}
@@ -1116,7 +1403,12 @@ export default function AgentBookingPage() {
 
             <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl text-xs space-y-1">
               <div>
-                Rescheduling For: <strong className="text-slate-900">{rescheduleData.record.ipName}</strong>
+                Rescheduling For:{" "}
+                <strong className="text-slate-900">
+                  {maskIpInfo && rescheduleData.record.ipName
+                    ? maskIpName(rescheduleData.record.ipName)
+                    : rescheduleData.record.ipName}
+                </strong>
               </div>
               <div>
                 Current Date: <strong className="text-rose-600">{rescheduleData.oldDateKey}</strong>
@@ -1235,8 +1527,12 @@ export default function AgentBookingPage() {
               <h3 className="text-base font-bold text-slate-900">Remove Booking?</h3>
               <p className="text-xs text-slate-500 mt-1">
                 Are you sure you want to cancel the booking for{" "}
-                <strong className="text-slate-800">{cancelData.record.ipName}</strong> on{" "}
-                <strong>{cancelData.dateKey}</strong>? The seat will be returned immediately.
+                <strong className="text-slate-800">
+                  {maskIpInfo && cancelData.record.ipName
+                    ? maskIpName(cancelData.record.ipName)
+                    : cancelData.record.ipName}
+                </strong>{" "}
+                on <strong>{cancelData.dateKey}</strong>? The seat will be returned immediately.
               </p>
             </div>
             <div className="flex items-center justify-center gap-2 pt-2">
@@ -1268,7 +1564,13 @@ export default function AgentBookingPage() {
             <div>
               <h3 className="text-base font-bold text-slate-900">Mark as Visited?</h3>
               <p className="text-xs text-slate-500 mt-1">
-                Confirming visit for <strong className="text-slate-800">{visitData.record.ipName}</strong>. This locks the booking permanently.
+                Confirming visit for{" "}
+                <strong className="text-slate-800">
+                  {maskIpInfo && visitData.record.ipName
+                    ? maskIpName(visitData.record.ipName)
+                    : visitData.record.ipName}
+                </strong>
+                . This locks the booking permanently.
               </p>
             </div>
             <div className="flex items-center justify-center gap-2 pt-2">

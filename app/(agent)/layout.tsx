@@ -23,24 +23,24 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
   }, [loading, isLoggedIn, isPublicPage, openLoginModal]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50">
+    <div className="min-h-screen flex flex-col bg-slate-50 overflow-x-hidden max-w-full">
       <EkmsNavbar
         isSidebarOpen={isSidebarOpen}
         onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
       />
 
-      <div className="flex flex-1 pt-14">
+      <div className="flex flex-1 pt-14 max-w-full overflow-x-hidden">
         <EkmsSidebar
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
         />
 
         <main
-          className={`flex-1 w-full transition-[padding] duration-250 ease-out will-change-[padding] min-h-[calc(100vh-56px)] flex flex-col ${
+          className={`flex-1 w-full max-w-full overflow-x-hidden transition-[padding] duration-250 ease-out will-change-[padding] min-h-[calc(100vh-56px)] flex flex-col ${
             isSidebarOpen ? "lg:pl-64" : "lg:pl-[72px]"
           }`}
         >
-          <div className="flex-1 w-full px-3.5 sm:px-6 lg:px-8 py-2.5 sm:py-6">
+          <div className="flex-1 w-full max-w-full px-3 sm:px-6 lg:px-8 py-3 sm:py-6 overflow-x-hidden">
             {isPublicPage ? (
               children
             ) : loading ? (

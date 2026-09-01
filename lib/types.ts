@@ -16,6 +16,8 @@ export interface UserProfile {
   streak?: number;
   lastActiveDate?: any;
   orgTier?: string;
+  orgBranch?: string;
+  orgRoleTitle?: string;
   quizCompleted?: string[];
   quizScores?: Record<string, number>;
   totalQuizzesTaken?: number;
@@ -287,4 +289,34 @@ export interface SystemStatus {
 export interface OrganogramTier {
   id: string;
   name: string;
+  order?: number;
+  description?: string;
 }
+
+export interface OrganogramBranch {
+  id: string;
+  name: string;
+  tierId?: string; // which tier this branch belongs to
+  parentBranchId?: string | null; // nested sub-branch support (e.g. sub-branches within a branch)
+  parentId?: string | null; // backwards compatibility
+  color?: string; // "blue" | "purple" | "emerald" | "amber" | "rose" | "teal" | "indigo" | "slate"
+  icon?: string; // icon name e.g. "Laptop", "Headphones", "MapPin", "Users", "Shield", "Zap", "Layers"
+  order?: number;
+  description?: string;
+}
+
+export interface OrganogramLeader {
+  email: string;
+  name?: string;
+  title?: string;
+  photoURL?: string | null;
+  agentId?: string;
+}
+
+export interface OrganogramConfig {
+  leader?: OrganogramLeader | null;
+  tiers?: OrganogramTier[];
+  branches: OrganogramBranch[];
+  updatedAt?: number;
+}
+

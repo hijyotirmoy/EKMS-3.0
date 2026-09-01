@@ -16,12 +16,18 @@ import {
   Save,
   CheckCircle2,
   AlertTriangle,
+  EyeOff,
+  Eye,
 } from "lucide-react";
 
 export default function AdminSettingsPage() {
   const { userProfile, isMasterAdmin } = useAuth();
   const { toast } = usePopup();
-  const [activeTab, setActiveTab] = useState<"images" | "files" | "session" | "maintenance">("session");
+  const [activeTab, setActiveTab] = useState<"privacy" | "session" | "maintenance" | "images" | "files">("privacy");
+
+  // Mask IP Info Policy
+  const [maskIpInfo, setMaskIpInfo] = useState(false);
+  const [savingMaskIp, setSavingMaskIp] = useState(false);
 
   // Session Policy
   const [sessionTimeoutEnabled, setSessionTimeoutEnabled] = useState(true);
@@ -46,6 +52,9 @@ export default function AdminSettingsPage() {
         const docSnap = await getDoc(doc(db, "system", "status"));
         if (docSnap.exists()) {
           const data = docSnap.data();
+          if (data.maskIpInfo !== undefined) {
+            setMaskIpInfo(!!data.maskIpInfo);
+          }
           if (data.sessionTimeoutEnabled !== undefined) {
             setSessionTimeoutEnabled(!!data.sessionTimeoutEnabled);
           }
@@ -67,6 +76,34 @@ export default function AdminSettingsPage() {
     };
     fetchSettings();
   }, []);
+
+  // Save Mask IP Info Policy
+  const handleSaveMaskIp = async () => {
+    setSavingMaskIp(true);
+    try {
+      await setDoc(
+        doc(db, "system", "status"),
+        {
+          maskIpInfo,
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+      logUserActivity(userProfile?.email, {
+        desc: `Updated IP Data Masking Policy: ${maskIpInfo ? "ENABLED" : "DISABLED"}`,
+        type: "settings",
+      });
+      toast.success(
+        maskIpInfo
+          ? "Mask IP Info enabled! IP names and phone numbers are now masked across all booking interfaces."
+          : "Mask IP Info disabled. Full IP names and numbers are now visible."
+      );
+    } catch (e: any) {
+      toast.error("Save failed: " + e.message);
+    } finally {
+      setSavingMaskIp(false);
+    }
+  };
 
   // Save Session Policy
   const handleSaveSession = async () => {
@@ -137,8 +174,20 @@ export default function AdminSettingsPage() {
         {/* Settings Navigation Sidebar */}
         <div className="lg:col-span-4 bg-white border border-slate-200 rounded-3xl p-4 shadow-xs space-y-1 select-none">
           <button
+            onClick={() => setActiveTab("privacy")}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
+              activeTab === "privacy"
+                ? "bg-blue-600 text-white shadow-xs"
+                : "text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            <EyeOff className="w-4 h-4" />
+            <span>Mask IP Info</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("session")}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
               activeTab === "session"
                 ? "bg-blue-600 text-white shadow-xs"
                 : "text-slate-700 hover:bg-slate-50"
@@ -150,7 +199,7 @@ export default function AdminSettingsPage() {
 
           <button
             onClick={() => setActiveTab("maintenance")}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
               activeTab === "maintenance"
                 ? "bg-rose-600 text-white shadow-xs"
                 : "text-slate-700 hover:bg-slate-50"
@@ -162,7 +211,7 @@ export default function AdminSettingsPage() {
 
           <button
             onClick={() => setActiveTab("images")}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
               activeTab === "images"
                 ? "bg-blue-600 text-white shadow-xs"
                 : "text-slate-700 hover:bg-slate-50"
@@ -174,7 +223,7 @@ export default function AdminSettingsPage() {
 
           <button
             onClick={() => setActiveTab("files")}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left ${
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
               activeTab === "files"
                 ? "bg-blue-600 text-white shadow-xs"
                 : "text-slate-700 hover:bg-slate-50"
@@ -187,6 +236,100 @@ export default function AdminSettingsPage() {
 
         {/* Settings Panel Content Area */}
         <div className="lg:col-span-8 bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs">
+          {/* ----------------------------------------------------
+              TAB 0: MASK IP INFO (PRIVACY)
+              ---------------------------------------------------- */}
+          {activeTab === "privacy" && (
+            <div className="space-y-6">
+              <div className="border-b border-slate-100 pb-4">
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <EyeOff className="w-5 h-5 text-blue-600" />
+                  <span>Mask IP Info (Privacy & Data Protection)</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Controls whether Insured Persons (IP) contact details are masked across Agent and Admin Booking interfaces.
+                </p>
+              </div>
+
+              <div className="space-y-5">
+                {/* Main Toggle Card */}
+                <div className="flex items-center justify-between p-4 sm:p-5 bg-slate-50 border border-slate-200 rounded-2xl">
+                  <div className="space-y-1 max-w-lg">
+                    <h4 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <span>Enable IP Info Masking</span>
+                      {maskIpInfo ? (
+                        <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                          ACTIVE
+                        </span>
+                      ) : (
+                        <span className="bg-slate-200 text-slate-600 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                          DISABLED
+                        </span>
+                      )}
+                    </h4>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      When toggled ON, IP names show only the first 3 letters and last 3 letters (e.g. <strong>KES*** ***IKA</strong>), and phone numbers show only the last 4 digits (e.g. <strong>******7320</strong>).
+                    </p>
+                  </div>
+
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
+                    <input
+                      type="checkbox"
+                      checked={maskIpInfo}
+                      onChange={(e) => setMaskIpInfo(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-12 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                </div>
+
+                {/* Live Preview Card */}
+                <div className="p-4 sm:p-5 bg-blue-50/50 border border-blue-200/80 rounded-2xl space-y-3">
+                  <h4 className="text-xs font-bold text-blue-950 uppercase tracking-wider flex items-center gap-1.5">
+                    <Shield className="w-4 h-4 text-blue-600" />
+                    <span>Live Display Preview</span>
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-white p-4 rounded-xl border border-blue-100 shadow-2xs">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
+                        IP / IW Name
+                      </span>
+                      <div className="font-bold text-slate-900 text-sm">
+                        {maskIpInfo ? "KES*** ***IKA" : "KESHAB HAZARIKA"}
+                      </div>
+                      <span className="text-[10px] text-slate-400">
+                        Original: KESHAB HAZARIKA
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
+                        Phone Number
+                      </span>
+                      <div className="font-mono font-bold text-slate-900 text-sm">
+                        {maskIpInfo ? "******7320" : "9613457320"}
+                      </div>
+                      <span className="text-[10px] text-slate-400">
+                        Original: 9613457320
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Save Button */}
+                <div className="pt-3 border-t border-slate-100 flex justify-end">
+                  <button
+                    onClick={handleSaveMaskIp}
+                    disabled={savingMaskIp}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{savingMaskIp ? "Saving Policy..." : "Save Mask IP Policy"}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ----------------------------------------------------
               TAB 1: SESSION TIMEOUT
               ---------------------------------------------------- */}

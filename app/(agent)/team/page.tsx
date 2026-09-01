@@ -4,7 +4,8 @@ import React, { useState, useEffect, useMemo } from "react";
 import { doc, getDoc, collection, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getOrFetchCollection } from "@/lib/cache";
-import { UserProfile, Quiz, Doubt, Course, OrganogramTier } from "@/lib/types";
+import { UserProfile, Quiz, Doubt, Course, OrganogramConfig } from "@/lib/types";
+import OrganogramCanvas from "@/components/team/OrganogramCanvas";
 import {
   Users,
   Mail,
@@ -32,7 +33,10 @@ export default function TeamPage() {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [doubts, setDoubts] = useState<Doubt[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
-  const [orgTiers, setOrgTiers] = useState<OrganogramTier[]>([]);
+  const [orgConfig, setOrgConfig] = useState<OrganogramConfig>({
+    branches: [],
+    tiers: [],
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -43,10 +47,12 @@ export default function TeamPage() {
       const uList: UserProfile[] = [];
       snap.forEach((d) => {
         const data = d.data();
+        const email = (data.email || d.id || "").toLowerCase().trim();
         uList.push({
           ...(data as Omit<UserProfile, "email">),
-          email: d.id,
-          displayName: data.displayName || data.name || (data.email || d.id).split("@")[0],
+          email: email,
+          id: d.id,
+          displayName: data.displayName || data.name || email.split("@")[0],
         });
       });
       if (isMounted) {
@@ -55,22 +61,26 @@ export default function TeamPage() {
       }
     });
 
+    // Real-time live listener on organogram config
+    const unsubOrg = onSnapshot(doc(db, "settings", "organogram"), (snap) => {
+      if (snap.exists() && isMounted) {
+        const data = snap.data() as OrganogramConfig;
+        setOrgConfig(data);
+      }
+    });
+
     const loadTeamData = async () => {
       try {
-        const [qList, dList, cList, orgSnap] = await Promise.all([
+        const [qList, dList, cList] = await Promise.all([
           getOrFetchCollection<Quiz>("quizzes"),
           getOrFetchCollection<Doubt>("doubts"),
           getOrFetchCollection<Course>("onboardings", { metaKey: "onboarding" }),
-          getDoc(doc(db, "settings", "organogram")),
         ]);
 
         if (isMounted) {
           setQuizzes(qList);
           setDoubts(dList);
           setCourses(cList);
-          if (orgSnap.exists() && orgSnap.data()?.tiers) {
-            setOrgTiers(orgSnap.data()?.tiers);
-          }
         }
       } catch (err) {
         console.error("Team data load error:", err);
@@ -82,6 +92,7 @@ export default function TeamPage() {
     return () => {
       isMounted = false;
       unsubUsers();
+      unsubOrg();
     };
   }, []);
 
@@ -286,58 +297,11 @@ export default function TeamPage() {
       )}
 
       {/* ----------------------------------------------------
-          TAB 2: ORGANOGRAM SITEMAP HIERARCHY
+          TAB 2: ORGANOGRAM HIERARCHY TREE CANVAS
           ---------------------------------------------------- */}
       {activeTab === "organogram" && (
-        <div className="bg-slate-50/50 border border-slate-200 rounded-3xl p-6 sm:p-10 space-y-10 overflow-x-auto animate-in fade-in duration-150">
-          {orgTiers.map((tier, idx) => {
-            const tierMembers = users.filter((u) => {
-              let userTier = u.orgTier;
-              if (!userTier) {
-                if (u.role === "Master Admin") userTier = "tier-directors";
-                else if (u.role === "Admin") userTier = "tier-admins";
-                else userTier = "tier-agents";
-              }
-              return userTier === tier.id;
-            });
-
-            if (tierMembers.length === 0) return null;
-
-            return (
-              <div key={tier.id} className="text-center space-y-4 relative">
-                {idx > 0 && (
-                  <div className="w-0.5 h-6 bg-slate-300 mx-auto -mt-6 mb-4" />
-                )}
-
-                <div className="inline-block bg-white border border-slate-200 px-5 py-1.5 rounded-full text-xs font-bold text-slate-700 uppercase tracking-wider shadow-xs">
-                  {tier.name}
-                </div>
-
-                <div className="flex items-center justify-center gap-4 flex-wrap">
-                  {tierMembers.map((m) => (
-                    <div
-                      key={m.email}
-                      className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs flex items-center gap-3 min-w-[200px] text-left hover:shadow-md transition-shadow"
-                    >
-                      <div className="w-10 h-10 rounded-full bg-blue-600 text-white font-bold text-sm flex items-center justify-center overflow-hidden flex-shrink-0">
-                        {m.photoURL ? (
-                          <img src={m.photoURL} alt="Avatar" className="w-full h-full object-cover" />
-                        ) : (
-                          (m.displayName || m.email).charAt(0).toUpperCase()
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="font-bold text-slate-900 text-xs truncate">
-                          {m.displayName || "Agent"}
-                        </div>
-                        <div className="text-[10px] text-slate-400 truncate">{m.email}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+        <div className="animate-in fade-in duration-150">
+          <OrganogramCanvas config={orgConfig} users={users} isAdminMode={false} />
         </div>
       )}
 
