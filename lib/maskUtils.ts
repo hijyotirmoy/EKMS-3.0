@@ -3,6 +3,9 @@
  * When 'Mask IP Info' is toggled ON:
  * - IP Name: First 3 letters + '***' and '***' + last 3 letters (e.g., 'KESHAB HAZARIKA' -> 'KES*** ***IKA')
  * - Phone: First digits replaced with stars, showing only the last 4 digits (e.g., '9613457320' -> '******7320')
+ *
+ * When 'Mask IP Info' is toggled OFF (Unmasked):
+ * - Shows the complete raw IP full name and phone number.
  */
 
 export function maskIpName(name: string): string {
@@ -37,36 +40,79 @@ export function maskPhone(phone: string): string {
 }
 
 /**
- * Always masks IP names inside notification messages or titles regardless of toggle state.
- * Handles markdown formatting (**...**) and plain text notifications.
+ * Dynamically formats notification text based on the global mask policy.
+ * When mask === true: Applies 3-letter + 3-star name and last-4-digit phone masking.
+ * When mask === false: Restores / ensures full name and full phone numbers are displayed.
  */
-export function maskNotificationMessage(msg: string, metadataIpName?: string): string {
+export function formatNotificationMessage(
+  msg: string,
+  mask: boolean,
+  metadataIpName?: string,
+  metadataPhone?: string
+): string {
   if (!msg || typeof msg !== "string") return "";
 
   let result = msg;
 
-  if (metadataIpName && typeof metadataIpName === "string" && metadataIpName.trim()) {
-    const rawIp = metadataIpName.trim();
-    const masked = maskIpName(rawIp);
-    result = result.split(rawIp).join(masked);
+  if (mask) {
+    // 1. Explicit metadata replacement
+    if (metadataIpName && typeof metadataIpName === "string" && metadataIpName.trim()) {
+      const rawIp = metadataIpName.trim();
+      result = result.split(rawIp).join(maskIpName(rawIp));
+    }
+
+    if (metadataPhone && typeof metadataPhone === "string" && metadataPhone.trim()) {
+      const rawPh = metadataPhone.trim();
+      result = result.split(rawPh).join(maskPhone(rawPh));
+    }
+
+    // 2. Regex for Phone numbers in text: e.g. Phone: 9613457320 or Phone: **9613457320**
+    result = result.replace(
+      /(Phone:\s*\*{0,2})([0-9\s\-+]{7,15})(\*{0,2})/gi,
+      (match, p1, p2, p3) => {
+        return p1 + maskPhone(p2.trim()) + p3;
+      }
+    );
+
+    // 3. Regex for IP names in text:
+    result = result.replace(
+      /(booked an appointment for\s+\*{0,2}|appointment for\s+\*{0,2}|booked for\s+\*{0,2}|booking for\s+\*{0,2}|verification booking for\s+\*{0,2}|rescheduled booking for\s+\*{0,2}|appointment of\s+\*{0,2}|booking of\s+\*{0,2})([^*]+?)(\*{0,2}\s*(?:\(Phone|\bon\b|\bwas\b|\bfrom\b|\bto\b|\bis\b|\bhas\b|\.|$))/gi,
+      (match, p1, p2, p3) => {
+        const candidate = p2.trim();
+        // Avoid masking already masked strings or common words
+        if (candidate.includes("***")) return match;
+        return p1 + maskIpName(candidate) + p3;
+      }
+    );
+  } else {
+    // UNMASKED: If notification was previously stored with masked stars but metadata has raw values, restore full values
+    if (metadataIpName && typeof metadataIpName === "string" && metadataIpName.trim()) {
+      const rawIp = metadataIpName.trim();
+      const maskedIp = maskIpName(rawIp);
+      if (maskedIp && result.includes(maskedIp)) {
+        result = result.split(maskedIp).join(rawIp);
+      }
+    }
+
+    if (metadataPhone && typeof metadataPhone === "string" && metadataPhone.trim()) {
+      const rawPh = metadataPhone.trim();
+      const maskedPh = maskPhone(rawPh);
+      if (maskedPh && result.includes(maskedPh)) {
+        result = result.split(maskedPh).join(rawPh);
+      }
+    }
   }
-
-  // Pattern 1: ... (booked an appointment for / appointment for) [**]NAME[**] on [**]DATE[**]
-  result = result.replace(
-    /(booked an appointment for\s+\*{0,2}|appointment for\s+\*{0,2})([^*]+?)(\*{0,2}\s+on\s+)/gi,
-    (match, p1, p2, p3) => {
-      return p1 + maskIpName(p2.trim()) + p3;
-    }
-  );
-
-  // Pattern 2: ... (booking for / verification booking for) [**]NAME[**] (on|was|from|to|is) ...
-  result = result.replace(
-    /(booking for\s+\*{0,2}|verification booking for\s+\*{0,2})([^*]+?)(\*{0,2}\s+(?:on|was|from|to|is)\s+)/gi,
-    (match, p1, p2, p3) => {
-      return p1 + maskIpName(p2.trim()) + p3;
-    }
-  );
 
   return result;
 }
 
+/**
+ * Backward-compatible wrapper
+ */
+export function maskNotificationMessage(
+  msg: string,
+  metadataIpName?: string,
+  metadataPhone?: string
+): string {
+  return formatNotificationMessage(msg, true, metadataIpName, metadataPhone);
+}

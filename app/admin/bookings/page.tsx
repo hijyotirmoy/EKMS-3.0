@@ -6,6 +6,9 @@ import {
   onSnapshot,
   doc,
   setDoc,
+  updateDoc,
+  increment,
+  getDoc,
   getDocs,
   runTransaction,
   writeBatch,
@@ -19,7 +22,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord, RescheduleLog } from "@/lib/types";
-import { getISTMidnight } from "@/lib/utils";
+import { getISTMidnight, getFollowUpInfo } from "@/lib/utils";
 import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createNotification, notifyAdmins } from "@/lib/notificationService";
@@ -206,6 +209,7 @@ export default function AdminBookingsPage() {
       lastMonthCount = 0,
       nextMonthCount = 0,
       todaysVisit = 0,
+      todaysFollowup = 0,
       todayCount = 0,
       availMonth = 0,
       availNextMonth = 0,
@@ -238,12 +242,21 @@ export default function AdminBookingsPage() {
             agentName: cleanName,
           });
 
-          if (y === currentYear && mIdx === currentMonth) month++;
+          const bookedTime = new Date(record.timestamp);
+          const isBookedThisMonth =
+            bookedTime.getFullYear() === currentYear &&
+            bookedTime.getMonth() === currentMonth;
+
+          if ((y === currentYear && mIdx === currentMonth) || isBookedThisMonth) month++;
           if (y === lastMonthYear && mIdx === lastMonth) lastMonthCount++;
           if (y === nextMonthYear && mIdx === nextMonth) nextMonthCount++;
-          if (dateKey === todayKey) todaysVisit++;
+          if (dateKey === todayKey && !record.visited) todaysVisit++;
 
-          const bookedTime = new Date(record.timestamp);
+          const followUpInfo = getFollowUpInfo(dateKey);
+          if (followUpInfo.key === todayKey && !record.visited) {
+            todaysFollowup++;
+          }
+
           if (
             bookedTime.getFullYear() === currentYear &&
             bookedTime.getMonth() === currentMonth &&
@@ -302,6 +315,7 @@ export default function AdminBookingsPage() {
         lastMonthCount,
         nextMonthCount,
         todaysVisit,
+        todaysFollowup,
         todayCount,
         availMonth,
         availNextMonth,
@@ -345,13 +359,15 @@ export default function AdminBookingsPage() {
 
     if (statusFilter !== "all") {
       result = result.filter((b) => {
-        if (statusFilter === "todays_visit") return b.dateKey === todayKey;
+        if (statusFilter === "todays_visit") return b.dateKey === todayKey && !b.visited;
         if (statusFilter === "visited") return !!b.visited;
+        if (statusFilter === "todays_followup" || statusFilter === "followup" || statusFilter === "delayed") {
+          return getFollowUpInfo(b.dateKey).key === todayKey;
+        }
         if (b.visited) return false;
 
         const sched = new Date(b.dateKey);
         sched.setHours(0, 0, 0, 0);
-        if (statusFilter === "followup" || statusFilter === "delayed") return sched < istMidnight;
         if (statusFilter === "upcoming") return sched >= istMidnight;
         return true;
       });
@@ -382,11 +398,12 @@ export default function AdminBookingsPage() {
     switch (statusFilter) {
       case "todays_visit":
         return "Today's Visit";
-      case "upcoming":
-        return "Upcoming";
+      case "todays_followup":
       case "followup":
       case "delayed":
-        return "Follow-up";
+        return "Today's Follow up";
+      case "upcoming":
+        return "Upcoming";
       case "visited":
         return "Visited";
       default:
@@ -488,19 +505,26 @@ export default function AdminBookingsPage() {
 
     const docRef = doc(db, "bookings", b.dateKey);
     try {
-      await runTransaction(db, async (tx) => {
-        const snap = await tx.get(docRef);
-        if (!snap.exists()) return;
-        const records: BookingRecord[] = snap.data().bookedRecords || [];
-        const target = records.find(
-          (r) => r.timestamp === b.timestamp && r.agentEmail === b.agentEmail
-        );
-        if (target) {
-          tx.update(docRef, {
-            seats: (snap.data().seats || 0) + 1,
-            bookedRecords: arrayRemove(target),
-          });
-        }
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) throw new Error("Booking date not found.");
+
+      const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
+      const matchIndex = rawRecords.findIndex(
+        (r) =>
+          r.timestamp === b.timestamp &&
+          (r.agentEmail || "").toLowerCase().trim() === (b.agentEmail || "").toLowerCase().trim()
+      );
+
+      if (matchIndex === -1) {
+        throw new Error("This booking record was not found or was already removed.");
+      }
+
+      const updatedRecords = [...rawRecords];
+      updatedRecords.splice(matchIndex, 1);
+
+      await updateDoc(docRef, {
+        seats: increment(1),
+        bookedRecords: updatedRecords,
       });
 
       // Automatically delete related reschedule logs for this deleted booking
@@ -523,8 +547,40 @@ export default function AdminBookingsPage() {
         console.warn("Could not delete rescheduleLogs:", e);
       }
 
+      // Send notifications for cancellation
+      try {
+        await notifyAdmins({
+          title: "🗑️ Booking Cancelled / Removed",
+          message: `**${userProfile?.displayName || user?.email}** removed the booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}**.`,
+          type: "booking",
+          link: "/admin/bookings",
+          metadata: {
+            ipName: b.ipName,
+            phone: b.phone,
+            dateKey: b.dateKey,
+          },
+        });
+
+        if (b.agentEmail) {
+          await createNotification({
+            title: "🗑️ Booking Cancelled",
+            message: `Your booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}** was removed by admin.`,
+            type: "booking",
+            targetEmail: b.agentEmail.toLowerCase().trim(),
+            link: "/booking",
+            metadata: {
+              ipName: b.ipName,
+              phone: b.phone,
+              dateKey: b.dateKey,
+            },
+          });
+        }
+      } catch (notifErr) {
+        console.error("Cancel notification error:", notifErr);
+      }
+
       logUserActivity(user?.email, {
-        desc: `Deleted verification booking for IP: ${b.ipName || "Beneficiary"} (${b.dateKey})`,
+        desc: `Deleted verification booking for IP: ${b.ipName || "Beneficiary"} (Phone: ${b.phone || "N/A"}) on ${b.dateKey}`,
         type: "delete",
       });
       toast.success("Booking successfully removed and seat released.");
@@ -553,46 +609,56 @@ export default function AdminBookingsPage() {
 
     const docRef = doc(db, "bookings", b.dateKey);
     try {
-      await runTransaction(db, async (tx) => {
-        const snap = await tx.get(docRef);
-        if (!snap.exists()) return;
-        const records: BookingRecord[] = snap.data().bookedRecords || [];
-        const index = records.findIndex(
-          (r) => r.timestamp === b.timestamp && r.agentEmail === b.agentEmail
-        );
-        if (index !== -1) {
-          const updated = [...records];
-          updated[index] = { ...updated[index], visited: !b.visited };
-          tx.update(docRef, { bookedRecords: updated });
+      const dayData = liveBookings[b.dateKey];
+      if (dayData && dayData.bookedRecords) {
+        const updated = dayData.bookedRecords.map((r) => {
+          if (r.timestamp === b.timestamp && r.agentEmail === b.agentEmail) {
+            return { ...r, visited: !b.visited };
+          }
+          return r;
+        });
+        await updateDoc(docRef, { bookedRecords: updated });
+      }
+
+      // Send notifications for visit status update
+      try {
+        const isNowVisited = !b.visited;
+        const actionText = isNowVisited ? "marked as Visited" : "unmarked and reverted to active";
+        const notifTitle = isNowVisited ? "🏥 Booking Marked as Visited" : "🔄 Visit Status Reverted";
+
+        if (b.agentEmail) {
+          await createNotification({
+            title: notifTitle,
+            message: `Your booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}** has been ${actionText} by ${userProfile?.displayName || "Admin"}.`,
+            type: "booking",
+            targetEmail: b.agentEmail.toLowerCase().trim(),
+            link: "/booking",
+            metadata: {
+              ipName: b.ipName,
+              phone: b.phone,
+              dateKey: b.dateKey,
+            },
+          });
         }
-      });
+        await notifyAdmins({
+          title: notifTitle,
+          message: `Booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}** (booked by ${b.agentName || b.agentEmail}) was ${actionText} by ${userProfile?.displayName || "Admin"}.`,
+          type: "booking",
+          link: "/admin/bookings",
+          metadata: {
+            ipName: b.ipName,
+            phone: b.phone,
+            dateKey: b.dateKey,
+          },
+        });
+      } catch (notifErr) {
+        console.error("Visited notification error:", notifErr);
+      }
+
       logUserActivity(user?.email, {
-        desc: `${!b.visited ? "Marked as Visited" : "Unmarked Visited"} for IP: ${b.ipName || "Beneficiary"} (${b.dateKey})`,
+        desc: `${!b.visited ? "Marked as Visited" : "Unmarked Visited"} for IP: ${b.ipName || "Beneficiary"} (Phone: ${b.phone || "N/A"}) on ${b.dateKey}`,
         type: "booking",
       });
-
-      // If marking as visited, notify the agent and admins
-      if (!b.visited) {
-        try {
-          if (b.agentEmail) {
-            await createNotification({
-              title: "🏥 Booking Marked as Visited",
-              message: `Your booking for **${b.ipName || "Beneficiary"}** on **${b.dateKey}** has been marked as **Visited** by ${userProfile?.displayName || "Admin"}.`,
-              type: "booking",
-              targetEmail: b.agentEmail.toLowerCase().trim(),
-              link: "/booking",
-            });
-          }
-          await notifyAdmins({
-            title: "🏥 Booking Visited",
-            message: `Booking for **${b.ipName || "Beneficiary"}** on **${b.dateKey}** (booked by ${b.agentName || b.agentEmail}) was marked as **Visited** by ${userProfile?.displayName || "Admin"}.`,
-            type: "booking",
-            link: "/admin/bookings",
-          });
-        } catch (notifErr) {
-          console.error("Visited notification error:", notifErr);
-        }
-      }
 
       toast.success(b.visited ? "Booking marked as active." : "Booking marked as visited.");
     } catch (e: any) {
@@ -967,9 +1033,9 @@ export default function AdminBookingsPage() {
         <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto">
           <button
             onClick={handleExportExcel}
-            className="flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
+            className="flex items-center justify-center gap-1.5 py-2 px-3 bg-white border border-slate-200 text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300 active:bg-emerald-600 active:text-white rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
           >
-            <FileSpreadsheet className="w-3.5 h-3.5" />
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
             <span className="truncate">Export (.xlsx)</span>
           </button>
 
@@ -978,10 +1044,10 @@ export default function AdminBookingsPage() {
             className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
               activeView === "analytics"
                 ? "bg-blue-600 text-white border-blue-600 shadow-2xs"
-                : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                : "bg-white border-slate-200 text-slate-700 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300"
             }`}
           >
-            <BarChart3 className="w-3.5 h-3.5" />
+            <BarChart3 className={`w-3.5 h-3.5 ${activeView === "analytics" ? "text-white" : "text-blue-600"}`} />
             <span className="truncate">Analytics</span>
           </button>
 
@@ -990,25 +1056,29 @@ export default function AdminBookingsPage() {
             className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
               activeView === "logs"
                 ? "bg-purple-600 text-white border-purple-600 shadow-2xs"
-                : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                : "bg-white border-slate-200 text-slate-700 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-300"
             }`}
           >
-            <History className="w-3.5 h-3.5" />
+            <History className={`w-3.5 h-3.5 ${activeView === "logs" ? "text-white" : "text-purple-600"}`} />
             <span className="truncate">Reschedule Logs</span>
           </button>
 
           <button
             onClick={() => setBulkModalOpen(true)}
-            className="flex items-center justify-center gap-1.5 py-2 px-3 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer"
+            className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+              bulkModalOpen
+                ? "bg-amber-500 text-white border-amber-500 shadow-2xs"
+                : "bg-white border-slate-200 text-slate-700 hover:bg-amber-50 hover:text-amber-700 hover:border-amber-300"
+            }`}
           >
-            <Settings className="w-3.5 h-3.5" />
+            <Settings className={`w-3.5 h-3.5 ${bulkModalOpen ? "text-white" : "text-amber-600"}`} />
             <span className="truncate">Availability</span>
           </button>
         </div>
       </div>
 
       {/* Metrics Counter Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-3 select-none">
         <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Total Bookings</div>
           <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.total}</div>
@@ -1029,6 +1099,16 @@ export default function AdminBookingsPage() {
           <div className="text-[10px] font-bold text-sky-800 uppercase tracking-wider">Today&apos;s Visit</div>
           <div className="text-lg sm:text-xl font-black text-sky-900 mt-0.5">{metrics.todaysVisit}</div>
         </div>
+
+        {/* Today's Follow up Box after Today's Visit */}
+        <div className="bg-amber-100/70 border border-amber-300 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
+          <div className="text-[10px] font-black text-amber-900 uppercase tracking-wider flex items-center justify-between">
+            <span>Today&apos;s Follow up</span>
+            <Clock className="w-3 h-3 text-amber-700" />
+          </div>
+          <div className="text-lg sm:text-xl font-black text-amber-950 mt-0.5">{metrics.todaysFollowup}</div>
+        </div>
+
         <div className="bg-rose-50/70 border border-rose-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider">Today&apos;s Bookings</div>
           <div className="text-lg sm:text-xl font-black text-rose-900 mt-0.5">{metrics.todayCount}</div>
@@ -1104,10 +1184,11 @@ export default function AdminBookingsPage() {
         <div className="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 shadow-xs space-y-4">
           {/* Table Top Bar */}
           <div className="border-b border-slate-100 pb-4 space-y-3">
-            {/* Header: Title + Dynamic Counter Pill + Reset Button */}
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Ticket className="w-5 h-5 text-blue-600" />
+            {/* Row 1: Header (Title, Dynamic Counter Pill, Reset Button) + All Filters in ONE line on Desktop */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              {/* Header: Title + Dynamic Counter Pill + Reset Button */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <Ticket className="w-5 h-5 text-blue-600 shrink-0" />
                 <h3 className="font-bold text-slate-900 text-sm sm:text-base tracking-tight whitespace-nowrap">
                   Booking Records
                 </h3>
@@ -1119,54 +1200,28 @@ export default function AdminBookingsPage() {
                     {filteredBookings.length}
                   </span>
                 </div>
-              </div>
 
-              {(bookingStartDate || bookingEndDate || agentFilter !== "all" || statusFilter !== "all" || searchTerm) && (
-                <button
-                  onClick={() => {
-                    setBookingStartDate("");
-                    setBookingEndDate("");
-                    setAgentFilter("all");
-                    setStatusFilter("all");
-                    setSearchTerm("");
-                    setCurrentPage(1);
-                  }}
-                  className="px-2.5 py-1 sm:px-3 sm:py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs whitespace-nowrap"
-                  title="Reset all filters"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  <span>Reset</span>
-                </button>
-              )}
-            </div>
-
-            {/* Filter Controls: Single line on desktop, clean responsive grid on mobile */}
-            <div className="flex flex-col xl:flex-row xl:items-center gap-2.5 w-full">
-              {/* Search Bar */}
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => {
-                    setSearchTerm(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                  placeholder="Search by IP / IW name, phone, or agent..."
-                  className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none focus:bg-white focus:border-blue-400 transition-all shadow-2xs"
-                />
-                {searchTerm && (
+                {(bookingStartDate || bookingEndDate || agentFilter !== "all" || statusFilter !== "all" || searchTerm) && (
                   <button
-                    onClick={() => setSearchTerm("")}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                    onClick={() => {
+                      setBookingStartDate("");
+                      setBookingEndDate("");
+                      setAgentFilter("all");
+                      setStatusFilter("all");
+                      setSearchTerm("");
+                      setCurrentPage(1);
+                    }}
+                    className="px-2.5 py-1 sm:px-3 sm:py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs whitespace-nowrap"
+                    title="Reset all filters"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Reset</span>
                   </button>
                 )}
               </div>
 
-              {/* Filter Dropdowns: 2x2 grid on mobile, inline on desktop */}
-              <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 shrink-0">
+              {/* Right side: All Filter Dropdowns in ONE line on Desktop, Clean 2x2 Grid on Mobile */}
+              <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full lg:w-auto">
                 <label
                   htmlFor="admin-filter-from-date"
                   onClick={(e) => {
@@ -1245,11 +1300,35 @@ export default function AdminBookingsPage() {
                 >
                   <option value="all">Status: All</option>
                   <option value="todays_visit">Status: Today&apos;s Visit</option>
+                  <option value="todays_followup">Status: Today&apos;s Follow up</option>
                   <option value="upcoming">Status: Upcoming</option>
-                  <option value="followup">Status: Follow up</option>
                   <option value="visited">Status: Visited</option>
                 </select>
               </div>
+            </div>
+
+            {/* Row 2: Full-width Responsive Search Bar directly below filters */}
+            <div className="relative w-full">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="Search by IP / IW name, phone, or agent..."
+                className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none focus:bg-white focus:border-blue-400 transition-all shadow-2xs"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -1312,6 +1391,7 @@ export default function AdminBookingsPage() {
                   <th className="p-4">IP / IW Name</th>
                   <th className="p-4">Phone Number</th>
                   <th className="p-4">Scheduled Date</th>
+                  <th className="p-4">Follow up Date</th>
                   <th className="p-4">Booked On</th>
                   <th className="p-4 text-center">Status</th>
                   <th className="p-4 text-right">Actions</th>
@@ -1320,7 +1400,7 @@ export default function AdminBookingsPage() {
               <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
                 {paginatedBookings.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-12 text-slate-400">
+                    <td colSpan={9} className="text-center py-12 text-slate-400">
                       No bookings match search or filters.
                     </td>
                   </tr>
@@ -1328,6 +1408,7 @@ export default function AdminBookingsPage() {
                   paginatedBookings.map((b, idx) => {
                     const rowKey = `${b.dateKey}___${b.timestamp}___${b.agentEmail}`;
                     const isChecked = selectedBookingKeys.has(rowKey);
+                    const followUpInfo = getFollowUpInfo(b.dateKey);
 
                     return (
                       <tr key={rowKey} className="hover:bg-slate-50/70 transition-colors">
@@ -1380,7 +1461,13 @@ export default function AdminBookingsPage() {
                             )}
                           </div>
                         </td>
-                        <td className="p-4 text-slate-800">{b.dateKey}</td>
+                        <td className="p-4 text-slate-800 font-medium">{b.dateKey}</td>
+                        <td className="p-4">
+                          <span className="font-semibold text-amber-800 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-lg text-[11px] whitespace-nowrap inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-amber-600" />
+                            {followUpInfo.formatted}
+                          </span>
+                        </td>
                         <td className="p-4 text-slate-400">
                           {new Date(b.timestamp).toLocaleDateString("en-US", {
                             month: "short",
@@ -1404,19 +1491,19 @@ export default function AdminBookingsPage() {
                                 </span>
                               );
                             }
+                            if (followUpInfo.key === todayKey) {
+                              return (
+                                <span className="bg-amber-100 text-amber-900 border border-amber-300 font-black px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 whitespace-nowrap animate-pulse">
+                                  <Clock className="w-3 h-3 text-amber-700" /> Today&apos;s Follow up
+                                </span>
+                              );
+                            }
                             const schedDate = new Date(b.dateKey);
                             schedDate.setHours(0, 0, 0, 0);
                             if (schedDate < istMidnight) {
-                              const [y, m, d] = b.dateKey.split("-").map(Number);
-                              const foDate = new Date(y, m - 1, d);
-                              foDate.setDate(foDate.getDate() + 8);
-                              const foStr = foDate.toLocaleDateString("en-US", {
-                                month: "short",
-                                day: "numeric",
-                              });
                               return (
                                 <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 whitespace-nowrap">
-                                  <Clock className="w-3 h-3 text-amber-600" /> Follow up on {foStr}
+                                  <Clock className="w-3 h-3 text-amber-600" /> Follow up on {followUpInfo.formatted}
                                 </span>
                               );
                             }
@@ -1497,6 +1584,7 @@ export default function AdminBookingsPage() {
                 const schedDate = new Date(b.dateKey);
                 schedDate.setHours(0, 0, 0, 0);
 
+                const followUpInfo = getFollowUpInfo(b.dateKey);
                 const isDelayed = !b.visited && schedDate < istMidnight;
 
                 const bookedOnDateStr = new Date(b.timestamp).toLocaleDateString("en-US", {
@@ -1564,21 +1652,14 @@ export default function AdminBookingsPage() {
                           <span className="bg-sky-50 text-sky-800 border border-sky-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
                             <Clock className="w-3 h-3 text-sky-600" /> Today&apos;s Visit
                           </span>
+                        ) : followUpInfo.key === todayKey ? (
+                          <span className="bg-amber-100 text-amber-900 border border-amber-300 font-black px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 whitespace-nowrap animate-pulse">
+                            <Clock className="w-3 h-3 text-amber-700" /> Today&apos;s Follow up
+                          </span>
                         ) : isDelayed ? (
-                          (() => {
-                            const [y, m, d] = b.dateKey.split("-").map(Number);
-                            const foDate = new Date(y, m - 1, d);
-                            foDate.setDate(foDate.getDate() + 8);
-                            const foStr = foDate.toLocaleDateString("en-US", {
-                              month: "short",
-                              day: "numeric",
-                            });
-                            return (
-                              <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
-                                <Clock className="w-3 h-3 text-amber-600" /> Follow up ({foStr})
-                              </span>
-                            );
-                          })()
+                          <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-amber-600" /> Follow up ({followUpInfo.formatted})
+                          </span>
                         ) : (
                           <span className="bg-blue-50 text-blue-700 border border-blue-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
                             <Clock className="w-3 h-3" /> Upcoming
@@ -1587,7 +1668,7 @@ export default function AdminBookingsPage() {
                       </div>
                     </div>
 
-                    {/* Details in clean 2 columns without nested box */}
+                    {/* Details in clean 3 columns without nested box */}
                     <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
                       <div>
                         <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
@@ -1595,6 +1676,15 @@ export default function AdminBookingsPage() {
                         </span>
                         <span className={`font-bold ${b.dateKey === todayKey ? "text-sky-700 font-extrabold" : "text-slate-800"}`}>
                           {schedDateStr}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                          Follow up Date
+                        </span>
+                        <span className="font-bold text-amber-800 inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-amber-600" />
+                          {followUpInfo.formatted}
                         </span>
                       </div>
                       <div>
@@ -1620,10 +1710,14 @@ export default function AdminBookingsPage() {
                           )}
                         </div>
                       </div>
-                    </div>
-
-                    <div className="text-[11px] text-slate-400">
-                      <span>Booked: {bookedOnDateStr}</span>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                          Booked On
+                        </span>
+                        <span className="text-slate-500 font-medium">
+                          {bookedOnDateStr}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Actions Bar */}
@@ -1884,7 +1978,7 @@ export default function AdminBookingsPage() {
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
               <History className="w-5 h-5 text-purple-600" />
-              <span>Reschedule Audit Trail</span>
+              <span>Reschedule Logs</span>
             </h3>
             <button
               onClick={() => setActiveView("main")}

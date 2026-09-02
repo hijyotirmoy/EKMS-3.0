@@ -9,6 +9,9 @@ import {
   arrayUnion,
   arrayRemove,
   setDoc,
+  updateDoc,
+  increment,
+  getDoc,
   deleteDoc,
   query,
   where,
@@ -18,7 +21,7 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord } from "@/lib/types";
-import { getISTMidnight } from "@/lib/utils";
+import { getISTMidnight, getFollowUpInfo } from "@/lib/utils";
 import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createNotification, notifyAdmins } from "@/lib/notificationService";
@@ -52,10 +55,16 @@ export default function AgentBookingPage() {
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [maskIpInfo, setMaskIpInfo] = useState(false);
 
+  const isAdmin =
+    userProfile?.role?.toLowerCase().includes("admin") ||
+    userProfile?.role?.toLowerCase().includes("master") ||
+    false;
+
   // Views & Filters
   const [tableView, setTableView] = useState<"all" | "my">("all");
   const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "todays_visit" | "upcoming" | "followup" | "visited">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "todays_visit" | "todays_followup" | "upcoming" | "followup" | "visited">("all");
+  const [scheduleDateFilter, setScheduleDateFilter] = useState<string>("");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
 
@@ -158,7 +167,7 @@ export default function AgentBookingPage() {
   const { allBookings, myBookings, metrics } = useMemo(() => {
     const all: FlattenedBooking[] = [];
     const my: FlattenedBooking[] = [];
-    const myEmail = user?.email?.toLowerCase() || "";
+    const myEmail = user?.email?.toLowerCase().trim() || "";
 
     const todayObj = new Date();
     const todayKey = todayObj.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
@@ -166,16 +175,15 @@ export default function AgentBookingPage() {
     const currentMonth = todayObj.getMonth();
     const currentDay = todayObj.getDate();
 
-    const nextMonth = currentMonth === 11 ? 0 : currentMonth + 1;
-    const nextMonthYear = currentMonth === 11 ? currentYear + 1 : currentYear;
-
     let totalMy = 0;
-    let monthMy = 0;
-    let nextMonthMy = 0;
-    let todaysVisitMy = 0;
     let todayMy = 0;
+    let monthMy = 0;
     let visitedMy = 0;
-    let delayedMy = 0;
+
+    let todaysVisitAll = 0;
+    let todayAll = 0;
+    let todaysFollowupAll = 0;
+    let visitedAll = 0;
 
     Object.keys(liveBookings).forEach((dateKey) => {
       const dayData = liveBookings[dateKey];
@@ -196,31 +204,34 @@ export default function AgentBookingPage() {
 
           all.push(flatItem);
 
+          const bookedTime = new Date(record.timestamp);
+          const isBookedToday =
+            bookedTime.getFullYear() === currentYear &&
+            bookedTime.getMonth() === currentMonth &&
+            bookedTime.getDate() === currentDay;
+
+          const isBookedThisMonth =
+            bookedTime.getFullYear() === currentYear &&
+            bookedTime.getMonth() === currentMonth;
+
+          const isTodaySchedule = dateKey === todayKey;
+          const followUpInfo = getFollowUpInfo(dateKey);
+          const isFollowUpToday = followUpInfo.key === todayKey;
+
+          // Agent Personal Metrics (Mine)
           if (isMine) {
             my.push(flatItem);
             totalMy++;
-
-            if (y === currentYear && m - 1 === currentMonth) monthMy++;
-            if (y === nextMonthYear && m - 1 === nextMonth) nextMonthMy++;
-            if (dateKey === todayKey) todaysVisitMy++;
-
-            const bookedTime = new Date(record.timestamp);
-            if (
-              bookedTime.getFullYear() === currentYear &&
-              bookedTime.getMonth() === currentMonth &&
-              bookedTime.getDate() === currentDay
-            ) {
-              todayMy++;
-            }
-
-            if (record.visited) {
-              visitedMy++;
-            } else {
-              const schedDate = new Date(dateKey);
-              schedDate.setHours(0, 0, 0, 0);
-              if (schedDate < getISTMidnight()) delayedMy++;
-            }
+            if (isBookedToday) todayMy++;
+            if (isBookedThisMonth || (y === currentYear && m - 1 === currentMonth)) monthMy++;
+            if (record.visited) visitedMy++;
           }
+
+          // Overall Team Metrics (All)
+          if (isTodaySchedule && !record.visited) todaysVisitAll++;
+          if (isBookedToday) todayAll++;
+          if (isFollowUpToday && !record.visited) todaysFollowupAll++;
+          if (record.visited) visitedAll++;
         });
       }
     });
@@ -228,20 +239,18 @@ export default function AgentBookingPage() {
     all.sort((a, b) => b.timestamp - a.timestamp);
     my.sort((a, b) => b.timestamp - a.timestamp);
 
-    const rescheduledCount = my.filter((b) => b.rescheduled).length;
-
     return {
       allBookings: all,
       myBookings: my,
       metrics: {
         totalMy,
-        monthMy,
-        nextMonthMy,
-        todaysVisitMy,
         todayMy,
+        monthMy,
         visitedMy,
-        delayedMy,
-        rescheduledByMeCount: rescheduledCount,
+        todaysVisitAll,
+        todayAll,
+        todaysFollowupAll,
+        visitedAll,
       },
     };
   }, [liveBookings, user]);
@@ -252,6 +261,31 @@ export default function AgentBookingPage() {
     const istMidnight = getISTMidnight();
     const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
+    // 1. Single Scheduled Date Filter (Only applied if status is not todays_followup)
+    if (scheduleDateFilter && statusFilter !== "todays_followup" && statusFilter !== "followup") {
+      list = list.filter((b) => b.dateKey === scheduleDateFilter);
+    }
+
+    // 2. Status Filter (Works both standalone AND combined with scheduleDateFilter)
+    if (statusFilter !== "all") {
+      list = list.filter((b) => {
+        if (statusFilter === "todays_visit") return b.dateKey === todayKey && !b.visited;
+        if (statusFilter === "visited") return !!b.visited;
+        if (statusFilter === "todays_followup" || statusFilter === "followup") {
+          const targetFollowUpDate = scheduleDateFilter || todayKey;
+          return getFollowUpInfo(b.dateKey).key === targetFollowUpDate;
+        }
+        if (b.visited) return false;
+
+        const schedDate = new Date(b.dateKey);
+        schedDate.setHours(0, 0, 0, 0);
+
+        if (statusFilter === "upcoming") return schedDate >= istMidnight;
+        return true;
+      });
+    }
+
+    // 3. Search Term Filter
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase().trim();
       list = list.filter(
@@ -262,38 +296,39 @@ export default function AgentBookingPage() {
       );
     }
 
-    if (statusFilter !== "all") {
-      list = list.filter((b) => {
-        if (statusFilter === "todays_visit") return b.dateKey === todayKey;
-        if (statusFilter === "visited") return !!b.visited;
-        if (b.visited) return false;
-
-        const schedDate = new Date(b.dateKey);
-        schedDate.setHours(0, 0, 0, 0);
-
-        if (statusFilter === "followup") return schedDate < istMidnight;
-        if (statusFilter === "upcoming") return schedDate >= istMidnight;
-        return true;
-      });
-    }
-
     return list;
-  }, [tableView, allBookings, myBookings, searchTerm, statusFilter]);
+  }, [tableView, allBookings, myBookings, searchTerm, statusFilter, scheduleDateFilter]);
 
   const agentFilterLabel = useMemo(() => {
+    let statusText = "";
     switch (statusFilter) {
       case "todays_visit":
-        return "Today's Visit";
-      case "upcoming":
-        return "Upcoming";
+        statusText = "Today's Visit";
+        break;
+      case "todays_followup":
       case "followup":
-        return "Follow-up";
+        statusText = "Today's Follow up";
+        break;
+      case "upcoming":
+        statusText = "Upcoming";
+        break;
       case "visited":
-        return "Visited";
+        statusText = "Visited";
+        break;
       default:
-        return "All Bookings";
+        statusText = "All";
+        break;
     }
-  }, [statusFilter]);
+
+    if (scheduleDateFilter) {
+      if (statusFilter === "all") {
+        return `Date: ${scheduleDateFilter}`;
+      }
+      return `${statusText} (${scheduleDateFilter})`;
+    }
+
+    return statusText === "All" ? "All Bookings" : statusText;
+  }, [statusFilter, scheduleDateFilter]);
 
   const totalPages = Math.max(1, Math.ceil(displayedBookings.length / itemsPerPage));
   const paginatedList = useMemo(() => {
@@ -321,23 +356,34 @@ export default function AgentBookingPage() {
     const docRef = doc(db, "bookings", bookModalDate);
 
     try {
-      await runTransaction(db, async (tx) => {
-        const snap = await tx.get(docRef);
-        if (!snap.exists()) throw new Error("Schedule date not found.");
+      const existingDoc = liveBookings[bookModalDate];
+      if (existingDoc && (existingDoc.seats || 0) <= 0) {
+        throw new Error("Sorry, no available seats left on this date.");
+      }
 
-        const currentSeats = snap.data().seats || 0;
-        if (currentSeats <= 0) throw new Error("Sorry, the last seat on this date was just taken!");
+      const newRecord = {
+        agentEmail: user.email?.toLowerCase(),
+        ipName: ipName.trim(),
+        phone: ipPhone.trim(),
+        timestamp: Date.now(),
+      };
 
-        tx.update(docRef, {
-          seats: currentSeats - 1,
-          bookedRecords: arrayUnion({
-            agentEmail: user.email?.toLowerCase(),
-            ipName: ipName.trim(),
-            phone: ipPhone.trim(),
-            timestamp: Date.now(),
-          }),
+      try {
+        await updateDoc(docRef, {
+          seats: increment(-1),
+          bookedRecords: arrayUnion(newRecord),
         });
-      });
+      } catch (upErr: any) {
+        // If document doesn't exist yet, initialize it
+        await setDoc(
+          docRef,
+          {
+            seats: 19,
+            bookedRecords: [newRecord],
+          },
+          { merge: true }
+        );
+      }
 
       logUserActivity(user.email, {
         desc: `Booked verification appointment for ${ipName.trim()} on ${bookModalDate}`,
@@ -355,7 +401,7 @@ export default function AgentBookingPage() {
         try {
           await createNotification({
             title: "🎉 Verification Booking Confirmed",
-            message: `Your verification appointment on **${formattedDate}** has been successfully booked for **${maskIpName(ipName.trim())}**.`,
+            message: `Your verification appointment on **${formattedDate}** has been successfully booked for **${ipName.trim()}** (Phone: **${ipPhone.trim()}**).`,
             type: "booking",
             targetEmail: user.email.toLowerCase().trim(),
             link: "/booking",
@@ -369,11 +415,13 @@ export default function AgentBookingPage() {
           // Notify Admins
           await notifyAdmins({
             title: "📅 New Booking Received",
-            message: `**${userProfile?.displayName || user.email}** booked an appointment for **${maskIpName(ipName.trim())}** on **${formattedDate}**.`,
+            message: `**${userProfile?.displayName || user?.email || "Agent"}** booked an appointment for **${ipName.trim()}** (Phone: **${ipPhone.trim()}**) on **${formattedDate}**.`,
             type: "booking",
             link: "/admin/bookings",
             metadata: {
               ipName: ipName.trim(),
+              phone: ipPhone.trim(),
+              dateKey: bookModalDate,
             },
           });
         } catch (notifErr) {
@@ -406,52 +454,46 @@ export default function AgentBookingPage() {
     const newDocRef = doc(db, "bookings", rsSelectedDate);
 
     try {
-      await runTransaction(db, async (tx) => {
-        const oldSnap = await tx.get(oldDocRef);
-        const newSnap = await tx.get(newDocRef);
+      const target = rescheduleData.record;
 
-        if (!newSnap.exists() || (newSnap.data().seats || 0) <= 0) {
-          throw new Error("No available seats on the selected date.");
-        }
-        if (!oldSnap.exists()) throw new Error("Original booking date not found.");
+      // 1. Remove from old & return seat
+      await updateDoc(oldDocRef, {
+        seats: increment(1),
+        bookedRecords: arrayRemove(target),
+      });
 
-        const oldRecords: BookingRecord[] = oldSnap.data().bookedRecords || [];
-        const target = oldRecords.find(
-          (r) =>
-            r.timestamp === rescheduleData.record.timestamp &&
-            r.agentEmail?.toLowerCase() === rescheduleData.record.agentEmail?.toLowerCase()
-        );
-
-        if (!target) throw new Error("Original booking record was not found.");
-
-        // 1. Remove from old & return seat
-        tx.update(oldDocRef, {
-          seats: (oldSnap.data().seats || 0) + 1,
-          bookedRecords: arrayRemove(target),
-        });
-
-        // 2. Add to new & take seat
-        tx.update(newDocRef, {
-          seats: (newSnap.data().seats || 0) - 1,
+      // 2. Add to new & take seat
+      try {
+        await updateDoc(newDocRef, {
+          seats: increment(-1),
           bookedRecords: arrayUnion({
             ...target,
             rescheduled: true,
           }),
         });
+      } catch (newDocErr) {
+        await setDoc(
+          newDocRef,
+          {
+            seats: 19,
+            bookedRecords: [{ ...target, rescheduled: true }],
+          },
+          { merge: true }
+        );
+      }
 
-        // 3. Add to rescheduleLogs
-        const logRef = doc(collection(db, "rescheduleLogs"));
-        tx.set(logRef, {
-          ipName: target.ipName,
-          seatOwner: target.agentEmail,
-          originalDate: rescheduleData.oldDateKey,
-          newDate: rsSelectedDate,
-          actionBy: user.email?.toLowerCase(),
-          timestamp: Date.now(),
-        });
+      // 3. Add to rescheduleLogs
+      const logRef = doc(collection(db, "rescheduleLogs"));
+      await setDoc(logRef, {
+        ipName: target.ipName,
+        seatOwner: target.agentEmail,
+        originalDate: rescheduleData.oldDateKey,
+        newDate: rsSelectedDate,
+        actionBy: user?.email?.toLowerCase() || "agent",
+        timestamp: Date.now(),
       });
 
-      logUserActivity(user.email, {
+      logUserActivity(user?.email, {
         desc: `Rescheduled booking for IP: ${rescheduleData.record.ipName || "Beneficiary"} from ${rescheduleData.oldDateKey} to ${rsSelectedDate}`,
         type: "booking",
       });
@@ -479,7 +521,7 @@ export default function AgentBookingPage() {
           // Notify Admins
           await notifyAdmins({
             title: "🔄 Booking Rescheduled",
-            message: `**${userProfile?.displayName || user.email}** rescheduled booking for **${rescheduleData.record.ipName}** from **${oldFmt}** to **${newFmt}**.`,
+            message: `**${userProfile?.displayName || user?.email || "Agent"}** rescheduled booking for **${rescheduleData.record.ipName}** from **${oldFmt}** to **${newFmt}**.`,
             type: "booking",
             link: "/admin/bookings",
           });
@@ -499,40 +541,54 @@ export default function AgentBookingPage() {
     }
   };
 
-  // --- 7. CANCEL TRANSACTION ---
+  // --- 7. CANCEL / DELETE BOOKING ---
   const handleExecuteCancel = async () => {
     if (!cancelData || !user) return;
-    setCancelLoading(true);
 
+    const myEmail = (user?.email || "").toLowerCase().trim();
+    const recordOwner = (cancelData.record.agentEmail || "").toLowerCase().trim();
+
+    // Security check: Agent can only delete their own booking
+    if (!isAdmin && recordOwner !== myEmail) {
+      toast.error("You are only allowed to delete your own bookings.");
+      setCancelData(null);
+      return;
+    }
+
+    setCancelLoading(true);
     const docRef = doc(db, "bookings", cancelData.dateKey);
 
     try {
-      await runTransaction(db, async (tx) => {
-        const snap = await tx.get(docRef);
-        if (!snap.exists()) throw new Error("Schedule not found.");
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) throw new Error("Booking schedule date not found.");
 
-        const records: BookingRecord[] = snap.data().bookedRecords || [];
-        const target = records.find(
-          (r) =>
-            r.timestamp === cancelData.record.timestamp &&
-            r.agentEmail?.toLowerCase() === cancelData.record.agentEmail?.toLowerCase()
-        );
+      const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
+      const matchIndex = rawRecords.findIndex(
+        (r) =>
+          r.timestamp === cancelData.record.timestamp &&
+          (r.agentEmail || "").toLowerCase().trim() === recordOwner
+      );
 
-        if (target) {
-          tx.update(docRef, {
-            seats: (snap.data().seats || 0) + 1,
-            bookedRecords: arrayRemove(target),
-          });
-        }
+      if (matchIndex === -1) {
+        throw new Error("This booking record was not found or was already removed.");
+      }
+
+      // Remove the exact record from the array
+      const updatedRecords = [...rawRecords];
+      updatedRecords.splice(matchIndex, 1);
+
+      // Atomically update Firestore
+      await updateDoc(docRef, {
+        seats: increment(1),
+        bookedRecords: updatedRecords,
       });
 
-      // Automatically delete related reschedule logs for this cancelled booking
+      // ONLY AFTER successful deletion in Firestore, clean up rescheduleLogs
       try {
-        const ownerEmail = cancelData.record.agentEmail?.toLowerCase();
-        const ip = cancelData.record.ipName?.toLowerCase()?.trim();
-        if (ownerEmail) {
+        const ip = (cancelData.record.ipName || "").toLowerCase().trim();
+        if (recordOwner) {
           const logsSnap = await getDocs(
-            query(collection(db, "rescheduleLogs"), where("seatOwner", "==", ownerEmail))
+            query(collection(db, "rescheduleLogs"), where("seatOwner", "==", recordOwner))
           );
           logsSnap.forEach((lDoc) => {
             const l = lDoc.data();
@@ -550,8 +606,43 @@ export default function AgentBookingPage() {
         console.warn("Could not cleanup rescheduleLogs:", e);
       }
 
-      logUserActivity(user.email, {
-        desc: `Deleted / Cancelled booking for IP: ${cancelData.record.ipName || "Beneficiary"} on ${cancelData.dateKey}`,
+      // Send notifications ONLY after deletion succeeds
+      try {
+        await notifyAdmins({
+          title: "🗑️ Booking Cancelled",
+          message: `**${userProfile?.displayName || user?.email || "Agent"}** cancelled the appointment for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.dateKey}**.`,
+          type: "booking",
+          link: "/admin/bookings",
+          metadata: {
+            ipName: cancelData.record.ipName,
+            phone: cancelData.record.phone,
+            dateKey: cancelData.dateKey,
+          },
+        });
+
+        if (
+          recordOwner &&
+          recordOwner !== myEmail
+        ) {
+          await createNotification({
+            title: "🗑️ Booking Cancelled",
+            message: `Your booking for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.dateKey}** was cancelled by **${userProfile?.displayName || user?.email || "Admin"}**.`,
+            type: "booking",
+            targetEmail: recordOwner,
+            link: "/booking",
+            metadata: {
+              ipName: cancelData.record.ipName,
+              phone: cancelData.record.phone,
+              dateKey: cancelData.dateKey,
+            },
+          });
+        }
+      } catch (notifErr) {
+        console.error("Cancel notification error:", notifErr);
+      }
+
+      logUserActivity(user?.email, {
+        desc: `Deleted / Cancelled booking for IP: ${cancelData.record.ipName || "Beneficiary"} (Phone: ${cancelData.record.phone || "N/A"}) on ${cancelData.dateKey}`,
         type: "delete",
       });
 
@@ -587,22 +678,61 @@ export default function AgentBookingPage() {
 
     const docRef = doc(db, "bookings", b.dateKey);
     try {
-      await runTransaction(db, async (tx) => {
-        const snap = await tx.get(docRef);
-        if (!snap.exists()) throw new Error("Schedule not found.");
-
-        const records: BookingRecord[] = snap.data().bookedRecords || [];
-        const index = records.findIndex(
-          (r) =>
+      const dayData = liveBookings[b.dateKey];
+      if (dayData && dayData.bookedRecords) {
+        const updated = dayData.bookedRecords.map((r) => {
+          if (
             r.timestamp === b.timestamp &&
             r.agentEmail?.toLowerCase() === b.agentEmail?.toLowerCase()
-        );
+          ) {
+            return { ...r, visited: !b.visited };
+          }
+          return r;
+        });
+        await updateDoc(docRef, { bookedRecords: updated });
+      }
 
-        if (index !== -1) {
-          const updated = [...records];
-          updated[index] = { ...updated[index], visited: !b.visited };
-          tx.update(docRef, { bookedRecords: updated });
+      // Send notifications for visit update
+      try {
+        const isNowVisited = !b.visited;
+        const actionText = isNowVisited ? "marked as visited" : "unmarked and reverted to active";
+        const notifTitle = isNowVisited ? "🏥 Hospital Visit Completed" : "🔄 Visit Status Reverted";
+
+        // Notify Admins
+        await notifyAdmins({
+          title: notifTitle,
+          message: `**${userProfile?.displayName || user?.email || "Agent"}** ${actionText} the appointment for **${b.ipName}** (Phone: **${b.phone}**) scheduled on **${b.dateKey}**.`,
+          type: "booking",
+          link: "/admin/bookings",
+          metadata: {
+            ipName: b.ipName,
+            phone: b.phone,
+            dateKey: b.dateKey,
+          },
+        });
+
+        // Notify Agent
+        if (b.agentEmail) {
+          await createNotification({
+            title: notifTitle,
+            message: `Appointment for **${b.ipName}** (Phone: **${b.phone}**) on **${b.dateKey}** was ${actionText}.`,
+            type: "booking",
+            targetEmail: b.agentEmail.toLowerCase().trim(),
+            link: "/booking",
+            metadata: {
+              ipName: b.ipName,
+              phone: b.phone,
+              dateKey: b.dateKey,
+            },
+          });
         }
+      } catch (notifErr) {
+        console.error("Visit notification error:", notifErr);
+      }
+
+      logUserActivity(user?.email, {
+        desc: `${!b.visited ? "Marked as Visited" : "Unmarked Visited"} for IP: ${b.ipName || "Beneficiary"} (Phone: ${b.phone || "N/A"}) on ${b.dateKey}`,
+        type: "booking",
       });
 
       toast.success(b.visited ? "Booking marked as active." : "Booking marked as visited.");
@@ -740,39 +870,57 @@ export default function AgentBookingPage() {
         </div>
       </div>
 
-      {/* 8 Metric KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 sm:gap-3">
+      {/* 8 Metric KPI Cards: 4 Personal (Mine) + 4 Overall (All) */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 sm:gap-3 select-none">
+        {/* 1. Total (Mine) */}
         <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Total (Mine)</div>
           <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.totalMy}</div>
         </div>
-        <div className="bg-blue-50/70 border border-blue-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
-          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider truncate">This Month</div>
-          <div className="text-lg sm:text-xl font-black text-blue-900 mt-0.5">{metrics.monthMy}</div>
-        </div>
-        <div className="bg-sky-50/70 border border-sky-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
-          <div className="text-[10px] font-bold text-sky-800 uppercase tracking-wider truncate">Today&apos;s Visit</div>
-          <div className="text-lg sm:text-xl font-black text-sky-900 mt-0.5">{metrics.todaysVisitMy}</div>
-        </div>
+
+        {/* 2. Today's Bookings (Mine) */}
         <div className="bg-emerald-50/70 border border-emerald-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
-          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Today&apos;s Bookings</div>
+          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Today Booking (Mine)</div>
           <div className="text-lg sm:text-xl font-black text-emerald-900 mt-0.5">{metrics.todayMy}</div>
         </div>
-        <div className="bg-indigo-50/70 border border-indigo-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
-          <div className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider truncate">Next Month</div>
-          <div className="text-lg sm:text-xl font-black text-indigo-900 mt-0.5">{metrics.nextMonthMy}</div>
+
+        {/* 3. This Month (Mine) */}
+        <div className="bg-blue-50/70 border border-blue-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
+          <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider truncate">This Month (Mine)</div>
+          <div className="text-lg sm:text-xl font-black text-blue-900 mt-0.5">{metrics.monthMy}</div>
         </div>
-        <div className="bg-emerald-50/70 border border-emerald-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
-          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider truncate">Visited</div>
-          <div className="text-lg sm:text-xl font-black text-emerald-900 mt-0.5">{metrics.visitedMy}</div>
+
+        {/* 4. Visited (Mine) */}
+        <div className="bg-teal-50/70 border border-teal-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
+          <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider truncate">Visited (Mine)</div>
+          <div className="text-lg sm:text-xl font-black text-teal-900 mt-0.5">{metrics.visitedMy}</div>
         </div>
-        <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
-          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider truncate">Follow-ups</div>
-          <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.delayedMy}</div>
+
+        {/* 5. Today's Visit (All) */}
+        <div className="bg-sky-50/70 border border-sky-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
+          <div className="text-[10px] font-bold text-sky-800 uppercase tracking-wider truncate">Today&apos;s Visit (All)</div>
+          <div className="text-lg sm:text-xl font-black text-sky-900 mt-0.5">{metrics.todaysVisitAll}</div>
         </div>
+
+        {/* 6. Today's Bookings (All) */}
+        <div className="bg-rose-50/70 border border-rose-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
+          <div className="text-[10px] font-bold text-rose-800 uppercase tracking-wider truncate">Today&apos;s Bookings (All)</div>
+          <div className="text-lg sm:text-xl font-black text-rose-900 mt-0.5">{metrics.todayAll}</div>
+        </div>
+
+        {/* 7. Today's Follow up (All) */}
+        <div className="bg-amber-100/70 border border-amber-300 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
+          <div className="text-[10px] font-extrabold text-amber-900 uppercase tracking-wider truncate flex items-center justify-between">
+            <span className="truncate">Today&apos;s Follow up (All)</span>
+            <Clock className="w-3 h-3 text-amber-700 shrink-0 ml-1" />
+          </div>
+          <div className="text-lg sm:text-xl font-black text-amber-950 mt-0.5">{metrics.todaysFollowupAll}</div>
+        </div>
+
+        {/* 8. Visited (All) */}
         <div className="bg-purple-50/70 border border-purple-200 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
-          <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider truncate">Rescheduled</div>
-          <div className="text-lg sm:text-xl font-black text-purple-900 mt-0.5">{metrics.rescheduledByMeCount}</div>
+          <div className="text-[10px] font-bold text-purple-800 uppercase tracking-wider truncate">Visited (All)</div>
+          <div className="text-lg sm:text-xl font-black text-purple-900 mt-0.5">{metrics.visitedAll}</div>
         </div>
       </div>
 
@@ -820,10 +968,11 @@ export default function AgentBookingPage() {
       <div className="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 shadow-xs space-y-4">
         {/* Table Top Bar */}
         <div className="border-b border-slate-100 pb-4 space-y-3">
-          {/* Header: Title + Dynamic Counter Pill */}
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2">
-              <Ticket className="w-5 h-5 text-blue-600" />
+          {/* Row 1: Top Bar with Title, Dynamic Counter Badge, Reset Button, All Filters & Segmented Switcher in ONE line on Desktop */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            {/* Header: Title + Dynamic Counter Pill + Reset Button */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <Ticket className="w-5 h-5 text-blue-600 shrink-0" />
               <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight whitespace-nowrap">
                 Booking Records
               </h2>
@@ -835,89 +984,94 @@ export default function AgentBookingPage() {
                   {displayedBookings.length}
                 </span>
               </div>
-            </div>
 
-            {/* Segmented View Switcher on Desktop/Tablet inline */}
-            <div className="hidden sm:flex items-center bg-slate-100 p-1 rounded-xl">
-              <button
-                onClick={() => {
-                  setTableView("all");
-                  setCurrentPage(1);
-                }}
-                className={`px-3 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  tableView === "all"
-                    ? "bg-white text-blue-600 shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                All ({allBookings.length})
-              </button>
-              <button
-                onClick={() => {
-                  setTableView("my");
-                  setCurrentPage(1);
-                }}
-                className={`px-3 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                  tableView === "my"
-                    ? "bg-white text-blue-600 shadow-xs"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                My ({myBookings.length})
-              </button>
-            </div>
-          </div>
-
-          {/* Controls on Mobile & Desktop */}
-          <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 w-full">
-            {/* Search Bar */}
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search by IP / IW name, phone, or agent..."
-                value={searchTerm}
-                onChange={(e) => {
-                  setSearchTerm(e.target.value);
-                  setCurrentPage(1);
-                }}
-                className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none focus:bg-white focus:border-blue-400 transition-all shadow-2xs"
-              />
-              {searchTerm && (
+              {/* Reset Filters Button */}
+              {(scheduleDateFilter || statusFilter !== "all" || searchTerm) && (
                 <button
-                  onClick={() => setSearchTerm("")}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                  onClick={() => {
+                    setScheduleDateFilter("");
+                    setStatusFilter("all");
+                    setSearchTerm("");
+                    setCurrentPage(1);
+                  }}
+                  className="px-2.5 py-1 sm:px-3 sm:py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs whitespace-nowrap"
+                  title="Reset all filters"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Reset</span>
                 </button>
               )}
             </div>
 
-            {/* Filter & View Controls on Mobile */}
-            <div className="flex items-center gap-2 w-full lg:w-auto">
+            {/* Right side: All Filter Dropdowns + Segmented Switcher */}
+            <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full lg:w-auto">
+              {/* Single Scheduled Date Filter */}
+              <label
+                htmlFor="agent-filter-schedule-date"
+                onClick={(e) => {
+                  const input = e.currentTarget.querySelector('input') as HTMLInputElement;
+                  if (input && typeof input.showPicker === 'function') {
+                    try { input.showPicker(); } catch (err) {}
+                  }
+                }}
+                className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100/80 active:bg-slate-200 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs cursor-pointer select-none w-full sm:w-auto"
+                title="Filter by Scheduled Date"
+              >
+                <CalendarIcon className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                <span className="text-[10px] font-bold text-slate-400 uppercase shrink-0">Date:</span>
+                <input
+                  id="agent-filter-schedule-date"
+                  type="date"
+                  value={scheduleDateFilter}
+                  onChange={(e) => {
+                    setScheduleDateFilter(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  onClick={(e) => {
+                    try { (e.target as any).showPicker?.(); } catch (err) {}
+                  }}
+                  className="bg-transparent outline-none text-slate-800 text-xs font-bold cursor-pointer w-full min-w-0"
+                />
+                {scheduleDateFilter && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setScheduleDateFilter("");
+                      setCurrentPage(1);
+                    }}
+                    className="text-slate-400 hover:text-slate-600 p-0.5 shrink-0"
+                    title="Clear date filter"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </label>
+
+              {/* Status Filter */}
               <select
                 value={statusFilter}
                 onChange={(e) => {
                   setStatusFilter(e.target.value as any);
                   setCurrentPage(1);
                 }}
-                className="px-3 py-2 text-xs font-bold bg-slate-50 border border-slate-200 rounded-xl text-blue-600 outline-none cursor-pointer focus:bg-white focus:border-blue-400 transition-all shadow-2xs flex-1 sm:flex-none"
+                className="px-2.5 py-1.5 text-xs font-bold bg-slate-50 border border-slate-200 rounded-xl text-blue-600 outline-none cursor-pointer focus:bg-white focus:border-blue-400 transition-all shadow-2xs w-full sm:w-auto"
               >
                 <option value="all">Status: All</option>
                 <option value="todays_visit">Status: Today&apos;s Visit</option>
+                <option value="todays_followup">Status: Today&apos;s Follow up</option>
                 <option value="upcoming">Status: Upcoming</option>
-                <option value="followup">Status: Follow up</option>
                 <option value="visited">Status: Visited</option>
               </select>
 
-              {/* Mobile Only Segmented Switcher */}
-              <div className="flex sm:hidden items-center bg-slate-100 p-1 rounded-xl shrink-0">
+              {/* Segmented View Switcher (Desktop & Mobile) */}
+              <div className="flex items-center bg-slate-100 p-1 rounded-xl col-span-2 sm:col-span-1 justify-center sm:justify-start shrink-0">
                 <button
                   onClick={() => {
                     setTableView("all");
                     setCurrentPage(1);
                   }}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                     tableView === "all"
                       ? "bg-white text-blue-600 shadow-xs"
                       : "text-slate-600 hover:text-slate-900"
@@ -930,7 +1084,7 @@ export default function AgentBookingPage() {
                     setTableView("my");
                     setCurrentPage(1);
                   }}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                     tableView === "my"
                       ? "bg-white text-blue-600 shadow-xs"
                       : "text-slate-600 hover:text-slate-900"
@@ -940,6 +1094,30 @@ export default function AgentBookingPage() {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Row 2: Full-width Responsive Search Bar directly below filters */}
+          <div className="relative w-full">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="Search by IP / IW name, phone, or agent..."
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none focus:bg-white focus:border-blue-400 transition-all shadow-2xs"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                title="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -952,6 +1130,7 @@ export default function AgentBookingPage() {
                 <th className="p-3.5">IP / IW Name</th>
                 <th className="p-3.5">Phone Number</th>
                 <th className="p-3.5">Scheduled Date</th>
+                <th className="p-3.5">Follow up Date</th>
                 <th className="p-3.5">Booked On</th>
                 <th className="p-3.5 text-center">Status</th>
                 <th className="p-3.5 text-right">Actions</th>
@@ -961,7 +1140,7 @@ export default function AgentBookingPage() {
               {paginatedList.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={tableView === "all" ? 7 : 6}
+                    colSpan={tableView === "all" ? 8 : 7}
                     className="text-center py-12 text-slate-400"
                   >
                     No bookings found matching criteria.
@@ -974,6 +1153,7 @@ export default function AgentBookingPage() {
                   const schedDate = new Date(b.dateKey);
                   schedDate.setHours(0, 0, 0, 0);
 
+                  const followUpInfo = getFollowUpInfo(b.dateKey);
                   const isDelayed = !b.visited && schedDate < istMidnight;
                   const isUpcoming = !b.visited && schedDate >= istMidnight;
 
@@ -1031,7 +1211,13 @@ export default function AgentBookingPage() {
                           )}
                         </div>
                       </td>
-                      <td className="p-3.5 text-slate-800">{schedDateStr}</td>
+                      <td className="p-3.5 text-slate-800 font-medium">{schedDateStr}</td>
+                      <td className="p-3.5">
+                        <span className="font-semibold text-amber-800 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-lg text-[11px] whitespace-nowrap inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-amber-600" />
+                          {followUpInfo.formatted}
+                        </span>
+                      </td>
                       <td className="p-3.5 text-slate-400">{bookedOnDateStr}</td>
                       <td className="p-3.5 text-center">
                         {b.visited ? (
@@ -1042,21 +1228,14 @@ export default function AgentBookingPage() {
                           <span className="bg-sky-50 text-sky-800 border border-sky-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
                             <Clock className="w-3 h-3 text-sky-600" /> Today&apos;s Visit
                           </span>
+                        ) : followUpInfo.key === todayKey ? (
+                          <span className="bg-amber-100 text-amber-900 border border-amber-300 font-black px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 whitespace-nowrap animate-pulse">
+                            <Clock className="w-3 h-3 text-amber-700" /> Today&apos;s Follow up
+                          </span>
                         ) : isDelayed ? (
-                          (() => {
-                            const [y, m, d] = b.dateKey.split("-").map(Number);
-                            const foDate = new Date(y, m - 1, d);
-                            foDate.setDate(foDate.getDate() + 8);
-                            const foStr = foDate.toLocaleDateString("en-US", {
-                              month: "short",
-                              day: "numeric",
-                            });
-                            return (
-                              <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 whitespace-nowrap">
-                                <Clock className="w-3 h-3 text-amber-600" /> Follow up on {foStr}
-                              </span>
-                            );
-                          })()
+                          <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 whitespace-nowrap">
+                            <Clock className="w-3 h-3 text-amber-600" /> Follow up on {followUpInfo.formatted}
+                          </span>
                         ) : (
                           <span className="bg-blue-50 text-blue-700 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
                             <Clock className="w-3 h-3" /> Upcoming
@@ -1105,14 +1284,16 @@ export default function AgentBookingPage() {
                             <span>Reschedule</span>
                           </button>
 
-                          {/* Cancel / Release Seat Button */}
-                          <button
-                            onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
-                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
-                            title="Cancel Booking & Release Seat"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {/* Cancel / Release Seat Button - Only shown if owner or admin */}
+                          {((b.agentEmail || "").toLowerCase().trim() === (user?.email || "").toLowerCase().trim() || isAdmin) && (
+                            <button
+                              onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
+                              title="Cancel Booking & Release Seat"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1136,6 +1317,7 @@ export default function AgentBookingPage() {
               const schedDate = new Date(b.dateKey);
               schedDate.setHours(0, 0, 0, 0);
 
+              const followUpInfo = getFollowUpInfo(b.dateKey);
               const isDelayed = !b.visited && schedDate < istMidnight;
               const isUpcoming = !b.visited && schedDate >= istMidnight;
 
@@ -1151,6 +1333,9 @@ export default function AgentBookingPage() {
                 month: "short",
                 day: "numeric",
               });
+
+              const isOwnerOrAdmin =
+                (b.agentEmail || "").toLowerCase().trim() === (user?.email || "").toLowerCase().trim() || isAdmin;
 
               return (
                 <div
@@ -1193,21 +1378,14 @@ export default function AgentBookingPage() {
                         <span className="bg-sky-50 text-sky-800 border border-sky-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
                           <Clock className="w-3 h-3 text-sky-600" /> Today&apos;s Visit
                         </span>
+                      ) : followUpInfo.key === todayKey ? (
+                        <span className="bg-amber-100 text-amber-900 border border-amber-300 font-black px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 whitespace-nowrap animate-pulse">
+                          <Clock className="w-3 h-3 text-amber-700" /> Today&apos;s Follow up
+                        </span>
                       ) : isDelayed ? (
-                        (() => {
-                          const [y, m, d] = b.dateKey.split("-").map(Number);
-                          const foDate = new Date(y, m - 1, d);
-                          foDate.setDate(foDate.getDate() + 8);
-                          const foStr = foDate.toLocaleDateString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                          });
-                          return (
-                            <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
-                              <Clock className="w-3 h-3 text-amber-600" /> Follow up ({foStr})
-                            </span>
-                          );
-                        })()
+                        <span className="bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-amber-600" /> Follow up ({followUpInfo.formatted})
+                        </span>
                       ) : (
                         <span className="bg-blue-50 text-blue-700 border border-blue-200 font-bold px-2.5 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1">
                           <Clock className="w-3 h-3" /> Upcoming
@@ -1216,7 +1394,7 @@ export default function AgentBookingPage() {
                     </div>
                   </div>
 
-                  {/* Scheduled Date, Phone Number & Booked On Details (Clean, no sub-boxes) */}
+                  {/* Scheduled Date, Follow up Date, Phone Number & Booked On Details */}
                   <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
                     <div>
                       <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
@@ -1224,6 +1402,15 @@ export default function AgentBookingPage() {
                       </span>
                       <span className={`font-bold ${b.dateKey === todayKey ? "text-sky-700 font-extrabold" : "text-slate-800"}`}>
                         {schedDateStr}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                        Follow up Date
+                      </span>
+                      <span className="font-bold text-amber-800 inline-flex items-center gap-1">
+                        <Clock className="w-3 h-3 text-amber-600" />
+                        {followUpInfo.formatted}
                       </span>
                     </div>
                     <div>
@@ -1248,6 +1435,14 @@ export default function AgentBookingPage() {
                           </button>
                         )}
                       </div>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                        Booked On
+                      </span>
+                      <span className="text-slate-500 font-medium">
+                        {bookedOnDateStr}
+                      </span>
                     </div>
                   </div>
 
@@ -1289,13 +1484,15 @@ export default function AgentBookingPage() {
                       <span>Reschedule</span>
                     </button>
 
-                    <button
-                      onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
-                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
-                      title="Cancel Booking"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {isOwnerOrAdmin && (
+                      <button
+                        onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
+                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                        title="Cancel Booking"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               );

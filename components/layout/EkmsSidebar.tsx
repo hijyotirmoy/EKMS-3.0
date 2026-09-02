@@ -27,10 +27,12 @@ import {
   User,
   Flag,
   ExternalLink,
-  Bell,
-  Database,
   Sparkles,
+  Lock,
+  Database,
+  Bell,
 } from "lucide-react";
+import { isPageRestricted } from "@/lib/pageAccess";
 
 interface EkmsSidebarProps {
   isOpen: boolean;
@@ -270,6 +272,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
           {miniLinks.map((item) => {
             const isActive = pathname === item.href;
             const Icon = item.icon;
+            const isRestricted = !item.isExternal && isPageRestricted(item.href, userProfile);
 
             if (item.isExternal) {
               return (
@@ -302,17 +305,21 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     ? "bg-slate-100 text-slate-900 font-bold"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                 }`}
-                title={item.label}
+                title={isRestricted ? `${item.label} (Access Restricted)` : item.label}
               >
                 <div className="relative">
                   <Icon
                     className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
                   />
-                  {item.badge !== undefined && item.badge > 0 && (
+                  {isRestricted ? (
+                    <span className="absolute -top-1 -right-2 bg-rose-600 text-white text-[8px] font-bold p-0.5 rounded-full ring-2 ring-white">
+                      <Lock className="w-2.5 h-2.5" />
+                    </span>
+                  ) : item.badge !== undefined && item.badge > 0 ? (
                     <span className="absolute -top-1 -right-2 bg-rose-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full ring-2 ring-white">
                       {item.badge > 99 ? "99+" : item.badge}
                     </span>
-                  )}
+                  ) : null}
                 </div>
                 <span className="text-[10px] font-semibold leading-tight truncate w-full">
                   {item.label}
@@ -337,6 +344,8 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
             {primaryLinks.map((item) => {
               const isActive = pathname === item.href;
               const Icon = item.icon;
+              const isRestricted = isPageRestricted(item.href, userProfile);
+
               return (
                 <Link
                   key={item.href}
@@ -355,11 +364,16 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     />
                     <span>{item.label}</span>
                   </div>
-                  {item.badge !== undefined && item.badge > 0 && (
+                  {isRestricted ? (
+                    <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" />
+                      <span>Locked</span>
+                    </span>
+                  ) : item.badge !== undefined && item.badge > 0 ? (
                     <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
                       {item.badge > 99 ? "99+" : item.badge}
                     </span>
-                  )}
+                  ) : null}
                 </Link>
               );
             })}
@@ -373,6 +387,8 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
             {quickLinks.map((item) => {
               const isActive = pathname === item.href;
               const Icon = item.icon;
+              const isRestricted = isPageRestricted(item.href, userProfile);
+
               return (
                 <Link
                   key={item.href}
@@ -391,11 +407,16 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     />
                     <span>{item.label}</span>
                   </div>
-                  {item.badge !== undefined && item.badge > 0 && (
+                  {isRestricted ? (
+                    <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" />
+                      <span>Locked</span>
+                    </span>
+                  ) : item.badge !== undefined && item.badge > 0 ? (
                     <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
                       {item.badge > 99 ? "99+" : item.badge}
                     </span>
-                  )}
+                  ) : null}
                 </Link>
               );
             })}
@@ -413,6 +434,8 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
               {adminLinks.map((item) => {
                 const isActive = pathname === item.href;
                 const Icon = item.icon;
+                const isRestricted = isPageRestricted(item.href, userProfile);
+
                 return (
                   <Link
                     key={item.href}
@@ -431,11 +454,16 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                       />
                       <span className="truncate">{item.label}</span>
                     </div>
-                    {item.badge !== undefined && item.badge > 0 && (
+                    {isRestricted ? (
+                      <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
+                        <Lock className="w-2.5 h-2.5" />
+                        <span>Locked</span>
+                      </span>
+                    ) : item.badge !== undefined && item.badge > 0 ? (
                       <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
                         {item.badge > 99 ? "99+" : item.badge}
                       </span>
-                    )}
+                    ) : null}
                   </Link>
                 );
               })}
@@ -450,6 +478,8 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
             {exploreLinks.map((item) => {
               const isActive = pathname === item.href;
               const Icon = item.icon;
+              const isRestricted = isPageRestricted(item.href, userProfile);
+
               return (
                 <Link
                   key={item.href}
@@ -468,11 +498,16 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     />
                     <span>{item.label}</span>
                   </div>
-                  {item.badge !== undefined && item.badge > 0 && (
+                  {isRestricted ? (
+                    <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
+                      <Lock className="w-2.5 h-2.5" />
+                      <span>Locked</span>
+                    </span>
+                  ) : item.badge !== undefined && item.badge > 0 ? (
                     <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
                       {item.badge > 99 ? "99+" : item.badge}
                     </span>
-                  )}
+                  ) : null}
                 </Link>
               );
             })}

@@ -8,12 +8,13 @@ import {
   onSnapshot,
   orderBy,
   limit,
+  doc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { AppNotification, Announcement, UserProfile } from "@/lib/types";
 import { parseMarkdownLinks } from "@/lib/utils";
-import { maskNotificationMessage } from "@/lib/maskUtils";
+import { formatNotificationMessage } from "@/lib/maskUtils";
 import {
   formatNotificationTime,
   markNotificationRead,
@@ -57,6 +58,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [activeTab, setActiveTab] = useState<"all" | "live" | "closed">("all");
   const [loading, setLoading] = useState(true);
+  const [maskIpInfo, setMaskIpInfo] = useState(false);
   const [localReadIds, setLocalReadIds] = useState<string[]>(() =>
     userEmail ? getLocalReadNotifications(userEmail) : []
   );
@@ -156,6 +158,17 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
       }
     );
 
+    // C. Real-time System Mask Setting Listener
+    const unsubStatus = onSnapshot(
+      doc(db, "system", "status"),
+      (snap) => {
+        if (snap.exists()) {
+          setMaskIpInfo(!!snap.data().maskIpInfo);
+        }
+      },
+      (err) => console.warn("Status listener error:", err)
+    );
+
     return () => {
       try {
         unsubNotifs();
@@ -163,14 +176,24 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
       try {
         unsubAnn();
       } catch (e) {}
+      try {
+        unsubStatus();
+      } catch (e) {}
     };
   }, []);
 
-  // Birthday notifications check
+  // Birthday notifications check: runs at most once per session per day to conserve Firestore quota
   useEffect(() => {
     if (isOpen) {
+      const todayStr = new Date().toDateString();
+      const lastCheck = typeof window !== "undefined" ? sessionStorage.getItem("ekms_last_bday_check") : null;
+      if (lastCheck === todayStr) return;
+
       const checkBirthdays = async () => {
         try {
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("ekms_last_bday_check", todayStr);
+          }
           const usersSnap = await import("firebase/firestore").then((f) =>
             f.getDocs(f.collection(db, "users"))
           );
@@ -482,7 +505,12 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
                           }`}
                           dangerouslySetInnerHTML={{
                             __html: parseMarkdownLinks(
-                              maskNotificationMessage(item.title, (item.metadata as any)?.ipName)
+                              formatNotificationMessage(
+                                item.title,
+                                maskIpInfo,
+                                (item.metadata as any)?.ipName,
+                                (item.metadata as any)?.phone
+                              )
                             ),
                           }}
                         />
@@ -495,7 +523,12 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
                         className="text-xs text-slate-600 leading-relaxed break-words line-clamp-3"
                         dangerouslySetInnerHTML={{
                           __html: parseMarkdownLinks(
-                            maskNotificationMessage(item.message, (item.metadata as any)?.ipName)
+                            formatNotificationMessage(
+                              item.message,
+                              maskIpInfo,
+                              (item.metadata as any)?.ipName,
+                              (item.metadata as any)?.phone
+                            )
                           ),
                         }}
                       />

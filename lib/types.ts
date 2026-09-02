@@ -30,6 +30,7 @@ export interface UserProfile {
   failedAttempts?: number;
   lastFailedAttempt?: number;
   lockReason?: string;
+  restrictedPages?: string[];
 }
 
 export interface BookingRecord {

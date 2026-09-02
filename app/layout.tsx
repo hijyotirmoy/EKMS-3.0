@@ -7,6 +7,7 @@ import LoginModal from "@/components/auth/LoginModal";
 import MaintenanceModal from "@/components/common/MaintenanceModal";
 import AppLoader from "@/components/common/AppLoader";
 import ActivityTracker from "@/components/common/ActivityTracker";
+import PageAccessGuard from "@/components/auth/PageAccessGuard";
 
 const roboto = Roboto({
   weight: ["300", "400", "500", "700", "900"],
@@ -35,7 +36,9 @@ export default function RootLayout({
           <AuthProvider>
             <AppLoader />
             <ActivityTracker />
-            {children}
+            <PageAccessGuard>
+              {children}
+            </PageAccessGuard>
             <LoginModal />
             <MaintenanceModal />
           </AuthProvider>

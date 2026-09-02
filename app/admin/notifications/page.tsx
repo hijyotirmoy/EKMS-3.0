@@ -13,7 +13,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { AppNotification, NotificationType, NotificationTargetRole } from "@/lib/types";
 import { parseMarkdownLinks } from "@/lib/utils";
-import { maskNotificationMessage } from "@/lib/maskUtils";
+import { formatNotificationMessage } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createNotification, formatNotificationTime } from "@/lib/notificationService";
 import {
@@ -62,6 +62,7 @@ export default function AdminAnnouncementsPage() {
   // Modals
   const [viewItem, setViewItem] = useState<AppNotification | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [maskIpInfo, setMaskIpInfo] = useState(false);
 
   // Form State for New Notification / Broadcast
   const [title, setTitle] = useState("");
@@ -140,9 +141,21 @@ export default function AdminAnnouncementsPage() {
       (err) => console.warn("announcements sync notice:", err)
     );
 
+    // C. Listen to System Status for Masking Policy
+    const unsubStatus = onSnapshot(
+      doc(db, "system", "status"),
+      (snap) => {
+        if (snap.exists()) {
+          setMaskIpInfo(!!snap.data().maskIpInfo);
+        }
+      },
+      (err) => console.warn("status sync notice:", err)
+    );
+
     return () => {
       try { unsubNotifs(); } catch (e) {}
       try { unsubAnn(); } catch (e) {}
+      try { unsubStatus(); } catch (e) {}
     };
   }, []);
 
@@ -730,7 +743,12 @@ export default function AdminAnnouncementsPage() {
                           className="font-bold text-slate-900 leading-snug line-clamp-1"
                           dangerouslySetInnerHTML={{
                             __html: parseMarkdownLinks(
-                              maskNotificationMessage(item.title, (item.metadata as any)?.ipName)
+                              formatNotificationMessage(
+                                item.title,
+                                maskIpInfo,
+                                (item.metadata as any)?.ipName,
+                                (item.metadata as any)?.phone
+                              )
                             ),
                           }}
                         />
@@ -745,7 +763,12 @@ export default function AdminAnnouncementsPage() {
                           className="text-slate-700 line-clamp-2 leading-relaxed text-xs"
                           dangerouslySetInnerHTML={{
                             __html: parseMarkdownLinks(
-                              maskNotificationMessage(item.message, (item.metadata as any)?.ipName)
+                              formatNotificationMessage(
+                                item.message,
+                                maskIpInfo,
+                                (item.metadata as any)?.ipName,
+                                (item.metadata as any)?.phone
+                              )
                             ),
                           }}
                         />
@@ -849,7 +872,12 @@ export default function AdminAnnouncementsPage() {
                   className="font-bold text-slate-900 p-2.5 bg-slate-50 rounded-xl border border-slate-200"
                   dangerouslySetInnerHTML={{
                     __html: parseMarkdownLinks(
-                      maskNotificationMessage(viewItem.title, (viewItem.metadata as any)?.ipName)
+                      formatNotificationMessage(
+                        viewItem.title,
+                        maskIpInfo,
+                        (viewItem.metadata as any)?.ipName,
+                        (viewItem.metadata as any)?.phone
+                      )
                     ),
                   }}
                 />
@@ -864,7 +892,12 @@ export default function AdminAnnouncementsPage() {
                   className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 leading-relaxed whitespace-pre-wrap"
                   dangerouslySetInnerHTML={{
                     __html: parseMarkdownLinks(
-                      maskNotificationMessage(viewItem.message, (viewItem.metadata as any)?.ipName)
+                      formatNotificationMessage(
+                        viewItem.message,
+                        maskIpInfo,
+                        (viewItem.metadata as any)?.ipName,
+                        (viewItem.metadata as any)?.phone
+                      )
                     ),
                   }}
                 />
