@@ -110,6 +110,8 @@ export default function AdminBookingsPage() {
 
   // Copy feedback
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [followUpDays, setFollowUpDays] = useState<number>(8);
+  const [modalFollowUpDays, setModalFollowUpDays] = useState<number>(8);
 
   // 1. Live Bookings Listener
   useEffect(() => {
@@ -151,6 +153,10 @@ export default function AdminBookingsPage() {
         if (snap.exists()) {
           const data = snap.data();
           setMaskIpInfo(!!data.maskIpInfo);
+          if (data.followUpDays && typeof data.followUpDays === "number") {
+            setFollowUpDays(data.followUpDays);
+            setModalFollowUpDays(data.followUpDays);
+          }
         }
       },
       (err) => {
@@ -252,8 +258,8 @@ export default function AdminBookingsPage() {
           if (y === nextMonthYear && mIdx === nextMonth) nextMonthCount++;
           if (dateKey === todayKey && !record.visited) todaysVisit++;
 
-          const followUpInfo = getFollowUpInfo(dateKey);
-          if (followUpInfo.key === todayKey && !record.visited) {
+          const followUpInfo = getFollowUpInfo(dateKey, followUpDays);
+          if (!record.visited) {
             todaysFollowup++;
           }
 
@@ -326,7 +332,7 @@ export default function AdminBookingsPage() {
         rescheduled: rescheduledCount,
       },
     };
-  }, [liveBookings, userProfiles, rescheduleLogs]);
+  }, [liveBookings, userProfiles, rescheduleLogs, followUpDays]);
 
   // Unique Agents for filter dropdown
   const uniqueAgents = useMemo(() => {
@@ -362,7 +368,7 @@ export default function AdminBookingsPage() {
         if (statusFilter === "todays_visit") return b.dateKey === todayKey && !b.visited;
         if (statusFilter === "visited") return !!b.visited;
         if (statusFilter === "todays_followup" || statusFilter === "followup" || statusFilter === "delayed") {
-          return getFollowUpInfo(b.dateKey).key === todayKey;
+          return !b.visited;
         }
         if (b.visited) return false;
 
@@ -386,7 +392,7 @@ export default function AdminBookingsPage() {
     }
 
     return result;
-  }, [allBookings, agentFilter, searchTerm, statusFilter, bookingStartDate, bookingEndDate]);
+  }, [allBookings, agentFilter, searchTerm, statusFilter, bookingStartDate, bookingEndDate, followUpDays]);
 
   const totalPages = Math.max(1, Math.ceil(filteredBookings.length / itemsPerPage));
   const paginatedBookings = useMemo(() => {
@@ -401,7 +407,7 @@ export default function AdminBookingsPage() {
       case "todays_followup":
       case "followup":
       case "delayed":
-        return "Today's Follow up";
+        return "Follow up";
       case "upcoming":
         return "Upcoming";
       case "visited":
@@ -1064,7 +1070,10 @@ export default function AdminBookingsPage() {
           </button>
 
           <button
-            onClick={() => setBulkModalOpen(true)}
+            onClick={() => {
+              setModalFollowUpDays(followUpDays);
+              setBulkModalOpen(true);
+            }}
             className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
               bulkModalOpen
                 ? "bg-amber-500 text-white border-amber-500 shadow-2xs"
@@ -1100,10 +1109,10 @@ export default function AdminBookingsPage() {
           <div className="text-lg sm:text-xl font-black text-sky-900 mt-0.5">{metrics.todaysVisit}</div>
         </div>
 
-        {/* Today's Follow up Box after Today's Visit */}
+        {/* Follow up Box after Today's Visit */}
         <div className="bg-amber-100/70 border border-amber-300 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-black text-amber-900 uppercase tracking-wider flex items-center justify-between">
-            <span>Today&apos;s Follow up</span>
+            <span>Follow up</span>
             <Clock className="w-3 h-3 text-amber-700" />
           </div>
           <div className="text-lg sm:text-xl font-black text-amber-950 mt-0.5">{metrics.todaysFollowup}</div>
@@ -1124,10 +1133,6 @@ export default function AdminBookingsPage() {
         <div className="bg-cyan-50/70 border border-cyan-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
           <div className="text-[10px] font-bold text-cyan-800 uppercase tracking-wider">Upcoming</div>
           <div className="text-lg sm:text-xl font-black text-cyan-900 mt-0.5">{metrics.upcoming}</div>
-        </div>
-        <div className="bg-amber-50/70 border border-amber-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs">
-          <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Total Follow-ups</div>
-          <div className="text-lg sm:text-xl font-black text-amber-900 mt-0.5">{metrics.delayed}</div>
         </div>
         <div className="bg-blue-50/70 border border-blue-200 p-3 sm:p-3.5 rounded-2xl shadow-2xs col-span-2 sm:col-span-1">
           <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Rescheduled</div>
@@ -1300,7 +1305,7 @@ export default function AdminBookingsPage() {
                 >
                   <option value="all">Status: All</option>
                   <option value="todays_visit">Status: Today&apos;s Visit</option>
-                  <option value="todays_followup">Status: Today&apos;s Follow up</option>
+                  <option value="todays_followup">Status: Follow up</option>
                   <option value="upcoming">Status: Upcoming</option>
                   <option value="visited">Status: Visited</option>
                 </select>
@@ -1408,7 +1413,7 @@ export default function AdminBookingsPage() {
                   paginatedBookings.map((b, idx) => {
                     const rowKey = `${b.dateKey}___${b.timestamp}___${b.agentEmail}`;
                     const isChecked = selectedBookingKeys.has(rowKey);
-                    const followUpInfo = getFollowUpInfo(b.dateKey);
+                    const followUpInfo = getFollowUpInfo(b.dateKey, followUpDays);
 
                     return (
                       <tr key={rowKey} className="hover:bg-slate-50/70 transition-colors">
@@ -1584,7 +1589,7 @@ export default function AdminBookingsPage() {
                 const schedDate = new Date(b.dateKey);
                 schedDate.setHours(0, 0, 0, 0);
 
-                const followUpInfo = getFollowUpInfo(b.dateKey);
+                const followUpInfo = getFollowUpInfo(b.dateKey, followUpDays);
                 const isDelayed = !b.visited && schedDate < istMidnight;
 
                 const bookedOnDateStr = new Date(b.timestamp).toLocaleDateString("en-US", {

@@ -254,18 +254,19 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
               </button>
 
               <Link href="/" className="flex items-center gap-2.5 group">
-                <div className="relative w-8 h-8 flex-shrink-0">
+                <div className="w-8 h-8 flex-shrink-0 relative">
                   <Image
                     src="/logo.png"
                     alt="EKMS Logo"
-                    fill
-                    className="object-contain rounded-full shadow-xs group-hover:scale-105 transition-transform"
+                    width={32}
+                    height={32}
+                    className="w-8 h-8 object-contain rounded-full shadow-xs group-hover:scale-105 transition-transform"
                     priority
                   />
                 </div>
                 <div className="flex flex-col">
                   <span className="text-base font-extrabold text-slate-900 tracking-tight leading-none group-hover:text-blue-600 transition-colors">
-                    ESIC KMS
+                    EKMS
                   </span>
                   <span className="text-[9px] uppercase tracking-wider font-semibold text-blue-600 hidden md:block mt-0.5">
                     Knowledge Management System

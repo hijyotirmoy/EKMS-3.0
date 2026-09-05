@@ -223,8 +223,8 @@ export function getISTMidnight(): Date {
   return istToday;
 }
 
-// Calculate 8th day after scheduled date (dateKey: "YYYY-MM-DD")
-export function getFollowUpInfo(dateKey: string) {
+// Calculate follow-up date after scheduled date (dateKey: "YYYY-MM-DD", offsetDays: default 8)
+export function getFollowUpInfo(dateKey: string, offsetDays: number = 8) {
   if (!dateKey) return { key: "", formatted: "N/A" };
   const parts = dateKey.split("-").map(Number);
   if (parts.length !== 3 || parts.some(isNaN)) {
@@ -232,7 +232,7 @@ export function getFollowUpInfo(dateKey: string) {
   }
   const [y, m, d] = parts;
   const date = new Date(y, m - 1, d);
-  date.setDate(date.getDate() + 8);
+  date.setDate(date.getDate() + (offsetDays > 0 ? offsetDays : 8));
 
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");

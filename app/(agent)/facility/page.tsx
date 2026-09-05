@@ -239,13 +239,13 @@ export default function FacilityPage() {
           </button>
 
           <a
-            href="https://facility.ekms.in/"
+            href="https://map.ekms.in/"
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl shadow-sm transition-colors"
           >
             <MapPinned className="w-4 h-4" />
-            <span>Interactive Map</span>
+            <span>EKMS Map</span>
             <ExternalLink className="w-3 h-3 opacity-80" />
           </a>
         </div>

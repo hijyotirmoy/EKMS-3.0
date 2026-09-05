@@ -58,7 +58,9 @@ export default function AdminSettingsPage() {
 
   // Mask IP Info Policy
   const [maskIpInfo, setMaskIpInfo] = useState(false);
+  const [followUpDays, setFollowUpDays] = useState<number>(8);
   const [savingMaskIp, setSavingMaskIp] = useState(false);
+  const [savingFollowUp, setSavingFollowUp] = useState(false);
 
   // Page Access Control State
   const [usersList, setUsersList] = useState<UserProfile[]>([]);
@@ -93,6 +95,9 @@ export default function AdminSettingsPage() {
           const data = docSnap.data();
           if (data.maskIpInfo !== undefined) {
             setMaskIpInfo(!!data.maskIpInfo);
+          }
+          if (data.followUpDays !== undefined) {
+            setFollowUpDays(Number(data.followUpDays));
           }
           if (data.sessionTimeoutEnabled !== undefined) {
             setSessionTimeoutEnabled(!!data.sessionTimeoutEnabled);
@@ -286,7 +291,7 @@ export default function AdminSettingsPage() {
         { merge: true }
       );
       logUserActivity(userProfile?.email, {
-        desc: `Updated IP Data Masking Policy: ${maskIpInfo ? "ENABLED" : "DISABLED"}`,
+        desc: `Updated IP Privacy Policy: Masking ${maskIpInfo ? "ENABLED" : "DISABLED"}`,
         type: "settings",
       });
       toast.success(
@@ -298,6 +303,31 @@ export default function AdminSettingsPage() {
       toast.error("Save failed: " + e.message);
     } finally {
       setSavingMaskIp(false);
+    }
+  };
+
+  // Save Follow-Up Schedule Policy
+  const handleSaveFollowUp = async () => {
+    setSavingFollowUp(true);
+    try {
+      const validFollowUpDays = Number(followUpDays) > 0 ? Number(followUpDays) : 8;
+      await setDoc(
+        doc(db, "system", "status"),
+        {
+          followUpDays: validFollowUpDays,
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      );
+      logUserActivity(userProfile?.email, {
+        desc: `Updated Follow-Up Schedule Offset: ${validFollowUpDays} days`,
+        type: "settings",
+      });
+      toast.success(`Follow-Up schedule offset updated to ${validFollowUpDays} days!`);
+    } catch (e: any) {
+      toast.error("Save failed: " + e.message);
+    } finally {
+      setSavingFollowUp(false);
     }
   };
 
@@ -405,12 +435,9 @@ export default function AdminSettingsPage() {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-200">
+    <div className="space-y-6 animate-in fade-in duration-200">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Settings & Policies</h1>
-        <p className="text-xs text-slate-500 mt-1">
-          Manage system-wide security, IP privacy protection, and individual page access controls.
-        </p>
+        <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Settings</h1>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -507,47 +534,89 @@ export default function AdminSettingsPage() {
               </div>
 
               <div className="space-y-5">
-                {/* Main Toggle Card */}
-                <div className="flex items-center justify-between p-4 sm:p-5 bg-slate-50 border border-slate-200 rounded-2xl">
-                  <div className="space-y-1 max-w-lg">
-                    <h4 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <span>Enable IP Info Masking</span>
-                      {maskIpInfo ? (
-                        <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-                          ACTIVE
-                        </span>
-                      ) : (
-                        <span className="bg-slate-200 text-slate-600 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
-                          DISABLED
-                        </span>
-                      )}
-                    </h4>
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      When toggled ON, IP names show only the first 3 letters and last 3 letters (e.g. <strong>RAM*** ***ESH</strong>), and phone numbers show only the last 4 digits (e.g. <strong>******4821</strong>).
-                    </p>
+                {/* 1. Mask IP Info Toggle Card & Save Button */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1 max-w-lg">
+                      <h4 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
+                        <span>Enable IP Info Masking</span>
+                        {maskIpInfo ? (
+                          <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                            ACTIVE
+                          </span>
+                        ) : (
+                          <span className="bg-slate-200 text-slate-600 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                            DISABLED
+                          </span>
+                        )}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        When toggled ON, IP names show only the first 3 letters and last 3 letters (e.g. <strong>RAM*** ***ESH</strong>), and phone numbers show only the last 4 digits (e.g. <strong>******4821</strong>).
+                      </p>
+                    </div>
+
+                    <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
+                      <input
+                        type="checkbox"
+                        checked={maskIpInfo}
+                        onChange={(e) => setMaskIpInfo(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-12 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
                   </div>
 
-                  <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
-                    <input
-                      type="checkbox"
-                      checked={maskIpInfo}
-                      onChange={(e) => setMaskIpInfo(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-12 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                  </label>
+                  <div className="pt-3 border-t border-slate-200/60 flex justify-end">
+                    <button
+                      onClick={handleSaveMaskIp}
+                      disabled={savingMaskIp}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>{savingMaskIp ? "Saving Mask IP Policy..." : "Save Mask IP Policy"}</span>
+                    </button>
+                  </div>
                 </div>
 
-                {/* Save Button */}
-                <div className="pt-3 border-t border-slate-100 flex justify-end">
-                  <button
-                    onClick={handleSaveMaskIp}
-                    disabled={savingMaskIp}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
-                  >
-                    <Save className="w-4 h-4" />
-                    <span>{savingMaskIp ? "Saving Policy..." : "Save Mask IP Policy"}</span>
-                  </button>
+                {/* 2. Follow-Up Days Card & Save Button */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1 max-w-lg">
+                      <h4 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-amber-500" />
+                        <span>Follow-Up Schedule Offset</span>
+                        <span className="bg-amber-100 text-amber-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                          {followUpDays} DAYS
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        Configures how many days after a scheduled booking date a follow-up appointment is automatically calculated across agent and admin tables (Default: 8 days).
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 ml-4">
+                      <input
+                        type="number"
+                        min={1}
+                        max={90}
+                        value={followUpDays}
+                        onChange={(e) => setFollowUpDays(Math.max(1, Number(e.target.value)))}
+                        className="w-24 px-3 py-2 text-xs border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 font-bold bg-white text-slate-900"
+                      />
+                      <span className="text-xs text-slate-600 font-semibold">days</span>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-200/60 flex justify-end">
+                    <button
+                      onClick={handleSaveFollowUp}
+                      disabled={savingFollowUp}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>{savingFollowUp ? "Saving Schedule..." : "Save Follow-Up Schedule"}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

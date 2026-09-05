@@ -220,10 +220,11 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
   const connectedSites = [
     {
-      href: "https://facility.ekms.in/",
-      label: "EKMS Facility",
-      domain: "facility.ekms.in",
+      href: "https://map.ekms.in/",
+      label: "EKMS Map",
+      domain: "map.ekms.in",
       icon: MapPin,
+      imageSrc: "/map-logo.png",
       color: "text-emerald-600",
     },
     {
@@ -251,7 +252,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     { href: "/quiz", label: "Quizzes", icon: Gamepad2, color: "text-purple-600", isExternal: false, badge: pendingQuizzesCount },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500", isExternal: false },
     { href: "/data", label: "Data", icon: Database, color: "text-teal-600", isExternal: false },
-    { href: "https://facility.ekms.in/", label: "Facility Map", icon: MapPin, color: "text-emerald-600", isExternal: true },
+    { href: "https://map.ekms.in/", label: "EKMS Map", icon: MapPin, color: "text-emerald-600", isExternal: true },
   ];
 
   return (
@@ -566,7 +567,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
         {/* Footer */}
         <div className="p-4 border-t border-slate-100 bg-slate-50/50 text-[11px] text-slate-500 leading-relaxed">
-          <div>© 2026 ESIC KMS</div>
+          <div>© 2026 EKMS</div>
           <div className="text-[10px] text-slate-400 mt-0.5">
             Designed & Developed by{" "}
             <a

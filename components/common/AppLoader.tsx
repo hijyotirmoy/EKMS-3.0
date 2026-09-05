@@ -9,7 +9,7 @@ export default function AppLoader() {
   const [stepIndex, setStepIndex] = useState(0);
 
   const steps = [
-    { text: "Connecting to ESIC Knowledge Base...", icon: ShieldCheck },
+    { text: "Connecting to EKMS Knowledge Base...", icon: ShieldCheck },
     { text: "Authenticating security credentials & roles...", icon: ShieldCheck },
     { text: "Synchronizing offline guidance caches...", icon: Database },
     { text: "Workspace verified & ready!", icon: Sparkles },
@@ -49,7 +49,7 @@ export default function AppLoader() {
         {/* Title without logo */}
         <div className="space-y-1.5">
           <h1 className="text-3xl font-black text-white tracking-tight">
-            ESIC KMS 3.0
+            EKMS 3.0
           </h1>
           <p className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
             Knowledge Management System

@@ -376,7 +376,7 @@ export default function AdminQAPage() {
           // Dispatch ONE summary notification for the bulk upload
           await createNotification({
             title: `📚 ${count} New Guidance Articles Published`,
-            message: `**${count} new Q&A articles** have been added to the ESIC KMS knowledge base. Search or explore them on the guidance portal!`,
+            message: `**${count} new Q&A articles** have been added to the EKMS knowledge base. Search or explore them on the guidance portal!`,
             type: "qna",
             targetEmail: "all",
             link: "/",

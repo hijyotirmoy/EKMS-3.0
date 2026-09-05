@@ -100,6 +100,7 @@ export default function AgentBookingPage() {
   // Copy indicator
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [rescheduledByMeCount, setRescheduledByMeCount] = useState(0);
+  const [followUpDays, setFollowUpDays] = useState<number>(8);
 
   // 1. Live Snapshot Listener with cache-first instant render
   useEffect(() => {
@@ -136,6 +137,9 @@ export default function AgentBookingPage() {
         if (snap.exists()) {
           const data = snap.data();
           setMaskIpInfo(!!data.maskIpInfo);
+          if (data.followUpDays && typeof data.followUpDays === "number") {
+            setFollowUpDays(data.followUpDays);
+          }
         }
       },
       (err) => console.warn("System status snapshot error:", err)
@@ -215,7 +219,7 @@ export default function AgentBookingPage() {
             bookedTime.getMonth() === currentMonth;
 
           const isTodaySchedule = dateKey === todayKey;
-          const followUpInfo = getFollowUpInfo(dateKey);
+          const followUpInfo = getFollowUpInfo(dateKey, followUpDays);
           const isFollowUpToday = followUpInfo.key === todayKey;
 
           // Agent Personal Metrics (Mine)
@@ -230,7 +234,7 @@ export default function AgentBookingPage() {
           // Overall Team Metrics (All)
           if (isTodaySchedule && !record.visited) todaysVisitAll++;
           if (isBookedToday) todayAll++;
-          if (isFollowUpToday && !record.visited) todaysFollowupAll++;
+          if (!record.visited) todaysFollowupAll++;
           if (record.visited) visitedAll++;
         });
       }
@@ -253,7 +257,7 @@ export default function AgentBookingPage() {
         visitedAll,
       },
     };
-  }, [liveBookings, user]);
+  }, [liveBookings, user, followUpDays]);
 
   // 4. Filtered Table Data
   const displayedBookings = useMemo(() => {
@@ -272,8 +276,10 @@ export default function AgentBookingPage() {
         if (statusFilter === "todays_visit") return b.dateKey === todayKey && !b.visited;
         if (statusFilter === "visited") return !!b.visited;
         if (statusFilter === "todays_followup" || statusFilter === "followup") {
-          const targetFollowUpDate = scheduleDateFilter || todayKey;
-          return getFollowUpInfo(b.dateKey).key === targetFollowUpDate;
+          if (scheduleDateFilter) {
+            return getFollowUpInfo(b.dateKey, followUpDays).key === scheduleDateFilter && !b.visited;
+          }
+          return !b.visited;
         }
         if (b.visited) return false;
 
@@ -297,7 +303,7 @@ export default function AgentBookingPage() {
     }
 
     return list;
-  }, [tableView, allBookings, myBookings, searchTerm, statusFilter, scheduleDateFilter]);
+  }, [tableView, allBookings, myBookings, searchTerm, statusFilter, scheduleDateFilter, followUpDays]);
 
   const agentFilterLabel = useMemo(() => {
     let statusText = "";
@@ -307,7 +313,7 @@ export default function AgentBookingPage() {
         break;
       case "todays_followup":
       case "followup":
-        statusText = "Today's Follow up";
+        statusText = "Follow up";
         break;
       case "upcoming":
         statusText = "Upcoming";
@@ -908,10 +914,10 @@ export default function AgentBookingPage() {
           <div className="text-lg sm:text-xl font-black text-rose-900 mt-0.5">{metrics.todayAll}</div>
         </div>
 
-        {/* 7. Today's Follow up (All) */}
+        {/* 7. Follow up (All) */}
         <div className="bg-amber-100/70 border border-amber-300 p-3 sm:p-3.5 rounded-2xl flex flex-col justify-between shadow-2xs">
           <div className="text-[10px] font-extrabold text-amber-900 uppercase tracking-wider truncate flex items-center justify-between">
-            <span className="truncate">Today&apos;s Follow up (All)</span>
+            <span className="truncate">Follow up (All)</span>
             <Clock className="w-3 h-3 text-amber-700 shrink-0 ml-1" />
           </div>
           <div className="text-lg sm:text-xl font-black text-amber-950 mt-0.5">{metrics.todaysFollowupAll}</div>
@@ -1059,7 +1065,7 @@ export default function AgentBookingPage() {
               >
                 <option value="all">Status: All</option>
                 <option value="todays_visit">Status: Today&apos;s Visit</option>
-                <option value="todays_followup">Status: Today&apos;s Follow up</option>
+                <option value="todays_followup">Status: Follow up</option>
                 <option value="upcoming">Status: Upcoming</option>
                 <option value="visited">Status: Visited</option>
               </select>
@@ -1153,7 +1159,7 @@ export default function AgentBookingPage() {
                   const schedDate = new Date(b.dateKey);
                   schedDate.setHours(0, 0, 0, 0);
 
-                  const followUpInfo = getFollowUpInfo(b.dateKey);
+                  const followUpInfo = getFollowUpInfo(b.dateKey, followUpDays);
                   const isDelayed = !b.visited && schedDate < istMidnight;
                   const isUpcoming = !b.visited && schedDate >= istMidnight;
 
@@ -1317,7 +1323,7 @@ export default function AgentBookingPage() {
               const schedDate = new Date(b.dateKey);
               schedDate.setHours(0, 0, 0, 0);
 
-              const followUpInfo = getFollowUpInfo(b.dateKey);
+              const followUpInfo = getFollowUpInfo(b.dateKey, followUpDays);
               const isDelayed = !b.visited && schedDate < istMidnight;
               const isUpcoming = !b.visited && schedDate >= istMidnight;
 

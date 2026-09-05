@@ -16,7 +16,7 @@ const roboto = Roboto({
 });
 
 export const metadata: Metadata = {
-  title: "ESIC KMS — Knowledge Management & Operations Portal",
+  title: "EKMS | Knowledge Management & Operations Portal",
   description:
     "Enterprise knowledge base, assessment platform, and appointment booking portal for ESIC insurance agents.",
   icons: {
