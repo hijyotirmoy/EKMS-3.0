@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { Course, CourseUserProgress } from "./types";
+import { Course, CourseUserProgress, DayAvailability, BookingRecord } from "./types";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -247,3 +247,47 @@ export function getFollowUpInfo(dateKey: string, offsetDays: number = 8) {
 
   return { key, formatted };
 }
+
+// Merge booking records from two databases (main db and bookingDb)
+export function mergeBookingData(
+  mainData: Record<string, DayAvailability>,
+  secondaryData: Record<string, DayAvailability>
+): Record<string, DayAvailability> {
+  const merged: Record<string, DayAvailability> = {};
+
+  // Copy all main db dates
+  for (const [dateKey, dayObj] of Object.entries(mainData || {})) {
+    merged[dateKey] = { ...dayObj, bookedRecords: [...(dayObj.bookedRecords || [])] };
+  }
+
+  // Merge secondary db dates
+  for (const [dateKey, secObj] of Object.entries(secondaryData || {})) {
+    if (!merged[dateKey]) {
+      merged[dateKey] = { ...secObj, bookedRecords: [...(secObj.bookedRecords || [])] };
+    } else {
+      const existingRecords = merged[dateKey].bookedRecords || [];
+      const secRecords = secObj.bookedRecords || [];
+
+      const recordMap = new Map<string, BookingRecord>();
+      existingRecords.forEach((r) => {
+        const key = `${r.timestamp}_${r.phone || r.ipName}_${r.agentEmail}`;
+        recordMap.set(key, r);
+      });
+      secRecords.forEach((r) => {
+        const key = `${r.timestamp}_${r.phone || r.ipName}_${r.agentEmail}`;
+        recordMap.set(key, r);
+      });
+
+      merged[dateKey] = {
+        ...merged[dateKey],
+        ...secObj,
+        seats: secObj.seats !== undefined ? secObj.seats : merged[dateKey].seats,
+        text: secObj.text || merged[dateKey].text,
+        bookedRecords: Array.from(recordMap.values()),
+      };
+    }
+  }
+
+  return merged;
+}
+

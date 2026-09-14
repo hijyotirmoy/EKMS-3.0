@@ -94,8 +94,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 2. Auth State & Live Profile Listener
   useEffect(() => {
     let unsubProfile: (() => void) | null = null;
+    let safetyTimer: NodeJS.Timeout | null = setTimeout(() => {
+      setLoading(false);
+    }, 2500);
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (safetyTimer) {
+        clearTimeout(safetyTimer);
+        safetyTimer = null;
+      }
       setUser(currentUser);
       if (currentUser && currentUser.email) {
         if (unsubProfile) unsubProfile();
@@ -103,9 +110,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const email = currentUser.email.toLowerCase();
         const userDocRef = doc(db, "users", email);
 
+        const snapTimeout = setTimeout(() => {
+          setLoading(false);
+        }, 2000);
+
         unsubProfile = onSnapshot(
           userDocRef,
           (snap) => {
+            clearTimeout(snapTimeout);
             if (snap.exists()) {
               setUserProfile(snap.data() as UserProfile);
             } else {
@@ -122,6 +134,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setLoading(false);
           },
           (err) => {
+            clearTimeout(snapTimeout);
             console.error("User profile live sync error:", err);
             setLoading(false);
           }
@@ -137,6 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
+      if (safetyTimer) clearTimeout(safetyTimer);
       unsubscribe();
       if (unsubProfile) unsubProfile();
     };

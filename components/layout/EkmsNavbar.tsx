@@ -5,8 +5,9 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { getCachedData, setCachedData } from "@/lib/firestoreCache";
 import {
   Menu,
   Search,
@@ -32,6 +33,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
   const [isSearchActiveMobile, setIsSearchActiveMobile] = useState(false);
   const [notificationCount, setNotificationCount] = useState(0);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [notifTrigger, setNotifTrigger] = useState(0);
 
   const [readOverrideIds, setReadOverrideIds] = useState<Set<string>>(() => {
     return new Set(user?.email ? getLocalReadNotifications(user.email) : []);
@@ -49,7 +51,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
     }
   }, [user?.email]);
 
-  // Listen to instant read events
+  // Listen to instant read and creation events
   useEffect(() => {
     const handleReadUpdate = (e: any) => {
       if (e.detail?.ids) {
@@ -61,9 +63,19 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       }
     };
 
+    const handleNotifCreated = () => {
+      try {
+        sessionStorage.removeItem("navbar_notifications");
+        sessionStorage.removeItem("navbar_announcements");
+      } catch (e) {}
+      setNotifTrigger((prev) => prev + 1);
+    };
+
     window.addEventListener("ekms-notification-read-update", handleReadUpdate);
+    window.addEventListener("ekms-notification-created", handleNotifCreated);
     return () => {
       window.removeEventListener("ekms-notification-read-update", handleReadUpdate);
+      window.removeEventListener("ekms-notification-created", handleNotifCreated);
     };
   }, []);
 
@@ -74,6 +86,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       return;
     }
 
+    let isMounted = true;
     const userEmail = user.email.toLowerCase().trim();
     let rawNotifs: any[] = [];
     let rawAnn: any[] = [];
@@ -121,19 +134,31 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       setNotificationCount(unread);
     };
 
-    const unsubNotifs = onSnapshot(
-      collection(db, "notifications"),
-      (snap) => {
+    const TTL = 3 * 60 * 1000;
+
+    // Fetch Notifications (cached 3 mins unless triggered)
+    const cachedNotifs = notifTrigger === 0 ? getCachedData<any[]>("navbar_notifications", TTL) : null;
+    if (cachedNotifs !== null) {
+      rawNotifs = cachedNotifs;
+      calculateUnread();
+    } else {
+      getDocs(collection(db, "notifications")).then((snap) => {
+        if (!isMounted) return;
         rawNotifs = [];
         snap.forEach((d) => rawNotifs.push({ id: d.id, ...d.data() }));
+        setCachedData("navbar_notifications", rawNotifs);
         calculateUnread();
-      },
-      (err) => {}
-    );
+      }).catch(() => {});
+    }
 
-    const unsubAnn = onSnapshot(
-      collection(db, "announcements"),
-      (snap) => {
+    // Fetch Announcements (cached 3 mins unless triggered)
+    const cachedAnn = notifTrigger === 0 ? getCachedData<any[]>("navbar_announcements", TTL) : null;
+    if (cachedAnn !== null) {
+      rawAnn = cachedAnn;
+      calculateUnread();
+    } else {
+      getDocs(collection(db, "announcements")).then((snap) => {
+        if (!isMounted) return;
         const list: any[] = [];
         snap.forEach((d) => {
           const data = d.data() as any;
@@ -154,20 +179,15 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
           }
         });
         rawAnn = list;
+        setCachedData("navbar_announcements", rawAnn);
         calculateUnread();
-      },
-      (err) => {}
-    );
+      }).catch(() => {});
+    }
 
     return () => {
-      try {
-        unsubNotifs();
-      } catch (e) {}
-      try {
-        unsubAnn();
-      } catch (e) {}
+      isMounted = false;
     };
-  }, [isLoggedIn, user, isAdmin, readOverrideIds]);
+  }, [isLoggedIn, user, isAdmin, readOverrideIds, notifTrigger]);
 
   const handleSearchChange = (val: string) => {
     setSearchTerm(val);

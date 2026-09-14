@@ -567,7 +567,7 @@ export default function AdminOverviewPage() {
     }
   };
 
-  // 3. Drilldown report fetch with low Firestore reads (using getCountFromServer)
+  // 3. Drilldown report fetch with low Firestore reads
   const handleOpenDrilldown = async (email: string, targetDate?: string) => {
     const activeDate = targetDate || dateFilter;
     setDrilldownEmail(email);
@@ -575,25 +575,54 @@ export default function AdminOverviewPage() {
 
     try {
       const cleanEmail = email.toLowerCase().trim();
-      const [userSnap, activitySnap, doubtsCountSnap, reportsSnap] = await Promise.all([
-        getDoc(doc(db, "users", cleanEmail)),
-        getDoc(doc(db, "daily_activity", `${cleanEmail}_${activeDate}`)),
-        getCountFromServer(query(collection(db, "doubts"), where("authorEmail", "==", cleanEmail))),
-        getDocs(query(collection(db, "reports"), where("reporterEmail", "==", cleanEmail))),
-      ]);
 
-      const profile = userSnap.exists() ? userSnap.data() : null;
+      // Fetch User Profile
+      let profile: any = null;
+      try {
+        const userSnap = await getDoc(doc(db, "users", cleanEmail));
+        if (userSnap.exists()) profile = userSnap.data();
+      } catch (err) {
+        console.warn("Drilldown profile fetch error:", err);
+      }
+
+      // Fetch Daily Activity for target date
+      let activity: DailyActivityLog | null = null;
+      try {
+        const activitySnap = await getDoc(doc(db, "daily_activity", `${cleanEmail}_${activeDate}`));
+        if (activitySnap.exists()) activity = activitySnap.data() as DailyActivityLog;
+      } catch (err) {
+        console.warn("Drilldown activity fetch error:", err);
+      }
+
+      // Fetch Doubts Count safely
+      let doubtsCount = 0;
+      try {
+        const doubtsCountSnap = await getCountFromServer(query(collection(db, "doubts"), where("authorEmail", "==", cleanEmail)));
+        doubtsCount = doubtsCountSnap.data().count;
+      } catch (err) {
+        try {
+          const dSnap = await getDocs(query(collection(db, "doubts"), where("authorEmail", "==", cleanEmail)));
+          doubtsCount = dSnap.size;
+        } catch (e) {}
+      }
+
+      // Fetch User Reports safely
+      let allUserReports: any[] = [];
+      try {
+        const reportsSnap = await getDocs(query(collection(db, "reports"), where("reporterEmail", "==", cleanEmail)));
+        reportsSnap.forEach((r) => allUserReports.push({ id: r.id, ...r.data() }));
+      } catch (err) {
+        console.warn("Reports fetch error:", err);
+      }
+      allUserReports.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setAgentReports(allUserReports);
+
       const quizDone = profile?.quizCompleted?.length || 0;
       const courseDone =
         profile?.coursesCompleted?.length ||
         (profile?.courseProgress
           ? Object.values(profile.courseProgress).filter((c: any) => c.status === "completed").length
           : 0);
-
-      const allUserReports: any[] = [];
-      reportsSnap.forEach((r) => allUserReports.push({ id: r.id, ...r.data() }));
-      allUserReports.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      setAgentReports(allUserReports);
 
       const dailyReportsCount = allUserReports.filter((r) => {
         if (!r.createdAt) return false;
@@ -604,7 +633,7 @@ export default function AdminOverviewPage() {
 
       setAgentExtraStats({
         totalBookings: profile?.bookingsCount || 0,
-        doubtsCount: doubtsCountSnap.data().count,
+        doubtsCount,
         reportsCount: allUserReports.length,
         dailyReportsCount,
         coursesCompleted: courseDone,
@@ -612,11 +641,15 @@ export default function AdminOverviewPage() {
       });
 
       setDrilldownData({
-        profile: profile,
-        activity: activitySnap.exists() ? (activitySnap.data() as DailyActivityLog) : null,
+        profile: profile || { email: cleanEmail, displayName: cleanEmail.split("@")[0] },
+        activity: activity,
       });
     } catch (e) {
       console.error("Drilldown fetch error:", e);
+      setDrilldownData({
+        profile: { email: email, displayName: email.split("@")[0] },
+        activity: null,
+      });
     } finally {
       setDrilldownLoading(false);
     }

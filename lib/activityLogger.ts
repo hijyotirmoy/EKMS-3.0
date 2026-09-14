@@ -108,9 +108,14 @@ export async function logUserActivity(
     }
   }
 
-  // Update last active in users collection
-  try {
-    const userDocRef = doc(db, "users", cleanEmail);
-    await setDoc(userDocRef, { lastActive: now, isOnline: true }, { merge: true });
-  } catch {}
+  // Update last active in users collection (Throttled to once every 10 mins per session to save writes)
+  const lastUserDocWriteKey = `last_user_write_${cleanEmail}`;
+  const lastWriteTime = (globalThis as any)[lastUserDocWriteKey] || 0;
+  if (now - lastWriteTime > 10 * 60 * 1000) {
+    (globalThis as any)[lastUserDocWriteKey] = now;
+    try {
+      const userDocRef = doc(db, "users", cleanEmail);
+      await setDoc(userDocRef, { lastActive: now, isOnline: true }, { merge: true });
+    } catch {}
+  }
 }

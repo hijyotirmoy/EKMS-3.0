@@ -5,8 +5,9 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { getCachedData, setCachedData } from "@/lib/firestoreCache";
 import {
   Home,
   Folder,
@@ -77,47 +78,78 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       return;
     }
 
-    // 1. Doubts badge (only fetch unresolved to save reads)
-    const qDoubts = query(collection(db, "doubts"), where("status", "in", ["pending", "waiting"]));
-    const unsubscribeDoubts = onSnapshot(qDoubts, (snap) => {
-      setUnresolvedDoubtsCount(snap.size);
-    });
+    let isMounted = true;
+    const TTL = 5 * 60 * 1000; // 5 minutes cache
 
-    // 2. Active Courses listener for agent pending courses count
-    const unsubCourses = onSnapshot(collection(db, "onboardings"), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setCourses(list);
-    });
+    // 1. Doubts badge
+    const cachedDoubtsCount = getCachedData<number>("sidebar_unresolved_doubts", TTL);
+    if (cachedDoubtsCount !== null) {
+      setUnresolvedDoubtsCount(cachedDoubtsCount);
+    } else {
+      const qDoubts = query(collection(db, "doubts"), where("status", "in", ["pending", "waiting"]));
+      getDocs(qDoubts).then((snap) => {
+        if (!isMounted) return;
+        setUnresolvedDoubtsCount(snap.size);
+        setCachedData("sidebar_unresolved_doubts", snap.size);
+      }).catch(() => {});
+    }
 
-    // 3. Active Quizzes listener for agent pending quizzes count
-    const unsubQuizzes = onSnapshot(collection(db, "quizzes"), (snap) => {
-      const list: any[] = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setQuizzes(list);
-    });
+    // 2. Active Courses for pending count
+    const cachedCourses = getCachedData<any[]>("sidebar_courses", TTL);
+    if (cachedCourses !== null) {
+      setCourses(cachedCourses);
+    } else {
+      getDocs(collection(db, "onboardings")).then((snap) => {
+        if (!isMounted) return;
+        const list: any[] = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        setCourses(list);
+        setCachedData("sidebar_courses", list);
+      }).catch(() => {});
+    }
 
-    // 4. Reports & Missing badges only if Admin
-    let unsubscribeReports = () => {};
-    let unsubscribeMissing = () => {};
+    // 3. Active Quizzes for pending count
+    const cachedQuizzes = getCachedData<any[]>("sidebar_quizzes", TTL);
+    if (cachedQuizzes !== null) {
+      setQuizzes(cachedQuizzes);
+    } else {
+      getDocs(collection(db, "quizzes")).then((snap) => {
+        if (!isMounted) return;
+        const list: any[] = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        setQuizzes(list);
+        setCachedData("sidebar_quizzes", list);
+      }).catch(() => {});
+    }
 
+    // 4. Admin Reports & Missing badges
     if (isAdmin) {
-      const qReports = query(collection(db, "reports"), where("status", "==", "pending"));
-      unsubscribeReports = onSnapshot(qReports, (snap) => {
-        setPendingReportsCount(snap.size);
-      });
+      const cachedReports = getCachedData<number>("sidebar_pending_reports", TTL);
+      if (cachedReports !== null) {
+        setPendingReportsCount(cachedReports);
+      } else {
+        const qReports = query(collection(db, "reports"), where("status", "==", "pending"));
+        getDocs(qReports).then((snap) => {
+          if (!isMounted) return;
+          setPendingReportsCount(snap.size);
+          setCachedData("sidebar_pending_reports", snap.size);
+        }).catch(() => {});
+      }
 
-      unsubscribeMissing = onSnapshot(collection(db, "missing_searches"), (snap) => {
-        setMissingContentCount(snap.size);
-      });
+      const cachedMissing = getCachedData<number>("sidebar_missing_content", TTL);
+      if (cachedMissing !== null) {
+        setMissingContentCount(cachedMissing);
+      } else {
+        getDocs(collection(db, "missing_searches")).then((snap) => {
+          if (!isMounted) return;
+          setMissingContentCount(snap.size);
+          setCachedData("sidebar_missing_content", snap.size);
+        }).catch(() => {});
+      }
     }
 
     return () => {
-      unsubscribeDoubts();
-      unsubCourses();
-      unsubQuizzes();
-      unsubscribeReports();
-      unsubscribeMissing();
+      isMounted = false;
     };
   }, [isLoggedIn, isAdmin]);
 

@@ -42,6 +42,8 @@ export interface BookingRecord {
   visited?: boolean;
   rescheduled?: boolean;
   isRescheduled?: boolean;
+  rescheduledDate?: string;
+  originalScheduledDate?: string;
   dateKey?: string;
 }
 
@@ -55,6 +57,8 @@ export interface RescheduleLog {
   id?: string;
   ipName: string;
   seatOwner: string;
+  agentName?: string;
+  phone?: string;
   originalDate: string;
   newDate: string;
   actionBy: string;

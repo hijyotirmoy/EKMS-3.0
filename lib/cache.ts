@@ -15,7 +15,7 @@ interface SystemMetadata {
 // In-memory cache for metadata to prevent repeated metadata reads during a single browser session
 let cachedMetadata: SystemMetadata | null = null;
 let lastMetadataFetch = 0;
-const METADATA_TTL = 2 * 60 * 1000; // 2 minutes in-memory TTL
+const METADATA_TTL = 5 * 60 * 1000; // 5 minutes in-memory TTL
 
 /**
  * Fetch or get cached system metadata (1 single document read)

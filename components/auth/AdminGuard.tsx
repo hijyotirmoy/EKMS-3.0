@@ -8,17 +8,25 @@ import { ShieldAlert, Loader2 } from "lucide-react";
 export default function AdminGuard({ children }: { children: React.ReactNode }) {
   const { role, loading, openLoginModal } = useAuth();
   const router = useRouter();
+  const [timedOut, setTimedOut] = React.useState(false);
 
   const isAdmin = role === "Admin" || role === "Master Admin";
 
   useEffect(() => {
-    if (!loading && !isAdmin) {
+    const timer = setTimeout(() => {
+      setTimedOut(true);
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if ((!loading || timedOut) && !isAdmin) {
       router.push("/");
       openLoginModal();
     }
-  }, [isAdmin, loading, router, openLoginModal]);
+  }, [isAdmin, loading, timedOut, router, openLoginModal]);
 
-  if (loading) {
+  if (loading && !timedOut) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 gap-3">
         <Loader2 className="w-8 h-8 animate-spin text-blue-600" />

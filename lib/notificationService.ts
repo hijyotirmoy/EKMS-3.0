@@ -90,6 +90,15 @@ export async function createNotification(
     });
 
     await Promise.allSettled([p1, p2]);
+
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.removeItem("navbar_notifications");
+        sessionStorage.removeItem("navbar_announcements");
+        window.dispatchEvent(new CustomEvent("ekms-notification-created"));
+      } catch (e) {}
+    }
+
     return docId;
   } catch (error) {
     console.error("Failed to create notification:", error);
