@@ -1,5 +1,15 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import {
+  doc,
+  getDoc,
+  updateDoc,
+  getDocs,
+  collection,
+  query,
+  where,
+  deleteDoc,
+} from "firebase/firestore";
 import { Course, CourseUserProgress, DayAvailability, BookingRecord } from "./types";
 
 export function cn(...inputs: ClassValue[]) {
@@ -289,5 +299,138 @@ export function mergeBookingData(
   }
 
   return merged;
+}
+
+export interface DeleteBookingParams {
+  timestamp?: number;
+  agentEmail: string;
+  ipName?: string;
+  phone?: string;
+  dateKey?: string;
+  rescheduledDate?: string;
+  originalScheduledDate?: string;
+}
+
+/**
+ * Completely removes a booking record from BOTH databases (bookingDb & db)
+ * across ALL potential date documents (b.dateKey, b.rescheduledDate, b.originalScheduledDate,
+ * and scanning all date docs in both databases if needed), and cleans up all related rescheduleLogs.
+ */
+export async function deleteBookingRecordCompletely(
+  b: DeleteBookingParams,
+  primaryDb: any,
+  secondaryDb: any
+): Promise<number> {
+  const agentEmailLower = (b.agentEmail || "").toLowerCase().trim();
+  const ipLower = (b.ipName || "").toLowerCase().trim();
+  const phoneClean = (b.phone || "").trim();
+
+  // Candidate dates to check
+  const candidateDates = new Set<string>();
+  if (b.dateKey) candidateDates.add(b.dateKey);
+  if (b.rescheduledDate) candidateDates.add(b.rescheduledDate);
+  if (b.originalScheduledDate) candidateDates.add(b.originalScheduledDate);
+
+  let totalRemovedCount = 0;
+  const databases = [primaryDb, secondaryDb].filter(Boolean);
+
+  const isMatch = (r: BookingRecord) => {
+    const rEmail = (r.agentEmail || "").toLowerCase().trim();
+    const rIp = (r.ipName || "").toLowerCase().trim();
+    const rPhone = (r.phone || "").trim();
+
+    // Primary match: timestamp & agentEmail
+    if (b.timestamp && r.timestamp === b.timestamp && rEmail === agentEmailLower) {
+      return true;
+    }
+    // Secondary match: same agentEmail + same ipName + same phone
+    if (agentEmailLower && rEmail === agentEmailLower && ipLower && rIp === ipLower && phoneClean && rPhone === phoneClean) {
+      return true;
+    }
+    return false;
+  };
+
+  const cleanDocInDb = async (firestoreInstance: any, dateKeyStr: string) => {
+    try {
+      const docRef = doc(firestoreInstance, "bookings", dateKeyStr);
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) return 0;
+
+      const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
+      const remainingRecords = rawRecords.filter((r) => !isMatch(r));
+      const removedCount = rawRecords.length - remainingRecords.length;
+
+      if (removedCount > 0) {
+        const currentSeats = snap.data().seats !== undefined ? snap.data().seats : 20;
+        await updateDoc(docRef, {
+          seats: Math.min(20, currentSeats + removedCount),
+          bookedRecords: remainingRecords,
+        });
+        return removedCount;
+      }
+    } catch (err) {
+      console.warn(`Error cleaning date ${dateKeyStr}:`, err);
+    }
+    return 0;
+  };
+
+  // 1. Check candidate dates across both databases
+  for (const dateStr of Array.from(candidateDates)) {
+    for (const dbInst of databases) {
+      const removed = await cleanDocInDb(dbInst, dateStr);
+      totalRemovedCount += removed;
+    }
+  }
+
+  // 2. Fallback: Full scan of all date documents if candidate dates didn't catch it
+  if (totalRemovedCount === 0) {
+    for (const dbInst of databases) {
+      try {
+        const allDocsSnap = await getDocs(collection(dbInst, "bookings"));
+        for (const docSnap of allDocsSnap.docs) {
+          const rawRecords: BookingRecord[] = docSnap.data().bookedRecords || [];
+          const remainingRecords = rawRecords.filter((r) => !isMatch(r));
+          const removedCount = rawRecords.length - remainingRecords.length;
+
+          if (removedCount > 0) {
+            const currentSeats = docSnap.data().seats !== undefined ? docSnap.data().seats : 20;
+            await updateDoc(docSnap.ref, {
+              seats: Math.min(20, currentSeats + removedCount),
+              bookedRecords: remainingRecords,
+            });
+            totalRemovedCount += removedCount;
+          }
+        }
+      } catch (err) {
+        console.warn("Error scanning bookings collection:", err);
+      }
+    }
+  }
+
+  // 3. Clean up related rescheduleLogs from BOTH databases
+  for (const dbInst of databases) {
+    try {
+      if (agentEmailLower) {
+        const logsSnap = await getDocs(
+          query(collection(dbInst, "rescheduleLogs"), where("seatOwner", "==", agentEmailLower))
+        );
+        logsSnap.forEach((lDoc) => {
+          const l = lDoc.data();
+          const logIp = (l.ipName || "").toLowerCase().trim();
+          const logPhone = (l.phone || "").trim();
+          const matchesIpOrPhone = (ipLower && logIp === ipLower) || (phoneClean && logPhone === phoneClean);
+          const matchesDate = candidateDates.has(l.newDate) || candidateDates.has(l.originalDate);
+
+          if (matchesIpOrPhone || matchesDate) {
+            deleteDoc(doc(dbInst, "rescheduleLogs", lDoc.id)).catch(() => {});
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("Error deleting rescheduleLogs:", e);
+    }
+  }
+
+  return totalRemovedCount;
 }
 

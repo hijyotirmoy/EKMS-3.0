@@ -62,6 +62,7 @@ export default function ReportsPage() {
   // Modals
   const [viewReport, setViewReport] = useState<AppReport | null>(null);
   const [solveReport, setSolveReport] = useState<AppReport | null>(null);
+  const [solveRemarks, setSolveRemarks] = useState("");
   const [solveLoading, setSolveLoading] = useState(false);
 
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -138,46 +139,70 @@ export default function ReportsPage() {
     return list;
   }, [allReports, statusFilter, searchQuery]);
 
-  // 4. Mark Report Solved
-  const handleExecuteSolve = async (report: AppReport) => {
+  // 4. Mark Report Solved with Admin Remarks Modal
+  const handleOpenSolveModal = (report: AppReport) => {
     if (!isAdmin) return;
+    setSolveReport(report);
+    setSolveRemarks("");
+  };
 
-    const confirmed = await showConfirm({
-      title: "Resolve Report?",
-      message: "Mark this report as solved and move it to resolved history?",
-      confirmText: "Yes, Mark Solved",
-    });
-    if (!confirmed) return;
+  const handleConfirmSolveReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdmin || !solveReport) return;
+
+    if (!solveRemarks.trim()) {
+      toast.error("Please enter resolution remarks before marking as solved.");
+      return;
+    }
 
     setSolveLoading(true);
     try {
-      const docRef = doc(db, "reports", report.id);
+      const adminName = userProfile?.displayName || userProfile?.name || user?.email?.split("@")[0] || "Admin";
+      const remarksText = solveRemarks.trim();
+      const docRef = doc(db, "reports", solveReport.id);
+
       await updateDoc(docRef, {
         status: "solved",
         resolvedAt: Date.now(),
-        resolvedBy: userProfile?.displayName || user?.email?.split("@")[0] || "Admin",
+        resolvedBy: adminName,
+        adminRemarks: remarksText,
       });
+
       logUserActivity(user?.email, {
-        desc: `Marked ${report.type || "System"} report as solved: "${(report.message || "").substring(0, 40)}..."`,
+        desc: `Marked ${solveReport.type || "System"} report as solved with remarks: "${remarksText.substring(0, 40)}..."`,
         type: "report",
       });
 
-      // Notify the user who reported the issue
-      if (report.reporterEmail) {
+      // Notify the agent who reported the issue with Admin Remarks
+      if (solveReport.reporterEmail) {
         await createNotification({
           title: "✅ Reported Issue Resolved",
-          message: `Your report regarding **${report.targetCode || report.type || "Feedback"}** has been reviewed and marked as **Solved** by Admin (${userProfile?.displayName || "Admin"}). Thank you for helping improve EKMS!`,
+          message: `Your report regarding **${solveReport.targetCode || solveReport.type || "Feedback"}** has been marked as **Solved** by Admin (${adminName}).\n\n**Admin Remarks:** ${remarksText}`,
           type: "report",
-          targetEmail: report.reporterEmail,
+          targetEmail: solveReport.reporterEmail.toLowerCase().trim(),
           link: "/reports",
         });
       }
 
-      setViewReport(null);
-      toast.success("Report marked as solved and archived.");
+      setSolveReport(null);
+      setSolveRemarks("");
+      if (viewReport?.id === solveReport.id) {
+        setViewReport((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "solved",
+                resolvedBy: adminName,
+                resolvedAt: Date.now(),
+                adminRemarks: remarksText,
+              }
+            : null
+        );
+      }
+      toast.success("Report marked as solved with remarks.");
     } catch (e: any) {
       console.error(e);
-      toast.error("Failed to update status.");
+      toast.error("Failed to solve report.");
     } finally {
       setSolveLoading(false);
     }
@@ -686,7 +711,7 @@ export default function ReportsPage() {
 
                           {isAdmin && !isSolved && (
                             <button
-                              onClick={() => handleExecuteSolve(report)}
+                              onClick={() => handleOpenSolveModal(report)}
                               className="flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-2xs transition-colors"
                             >
                               <Check className="w-3.5 h-3.5" />
@@ -755,14 +780,31 @@ export default function ReportsPage() {
               </div>
 
               {viewReport.status === "solved" && (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800">
-                  <div className="font-bold text-xs">Status: Resolved</div>
-                  <div className="text-[11px] text-emerald-700">
-                    Solved by {viewReport.resolvedBy || "Admin"} on{" "}
-                    {viewReport.resolvedAt
-                      ? new Date(viewReport.resolvedAt).toLocaleString()
-                      : "—"}
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs flex items-center gap-1.5 text-emerald-800">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      Status: Resolved
+                    </span>
+                    <span className="text-[10px] text-emerald-700">
+                      {viewReport.resolvedAt
+                        ? new Date(viewReport.resolvedAt).toLocaleString()
+                        : "—"}
+                    </span>
                   </div>
+                  <div className="text-[11px] text-emerald-800">
+                    <span className="font-semibold">Resolved by:</span> {viewReport.resolvedBy || "Admin"}
+                  </div>
+                  {viewReport.adminRemarks && (
+                    <div className="pt-2 border-t border-emerald-200/60">
+                      <span className="font-bold text-xs text-emerald-900 block mb-1">
+                        Admin Remarks:
+                      </span>
+                      <p className="text-xs text-emerald-950 bg-white/80 p-2.5 rounded-lg border border-emerald-200/80 leading-relaxed whitespace-pre-wrap">
+                        {viewReport.adminRemarks}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -792,7 +834,7 @@ export default function ReportsPage() {
                 {isAdmin && viewReport.status !== "solved" && (
                   <button
                     type="button"
-                    onClick={() => handleExecuteSolve(viewReport)}
+                    onClick={() => handleOpenSolveModal(viewReport)}
                     disabled={solveLoading}
                     className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1 transition-colors"
                   >
@@ -807,8 +849,71 @@ export default function ReportsPage() {
       )}
 
       {/* ====================================================
-          MODAL 2: CREATE NEW REPORT (UPDATED CATEGORIES)
+          MODAL 2: SOLVE REPORT & ENTER REMARKS (ADMIN)
           ==================================================== */}
+      {solveReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white max-w-md w-full rounded-3xl shadow-2xl p-6 border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                <span>Mark Report as Solved</span>
+              </h3>
+              <button
+                onClick={() => setSolveReport(null)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmSolveReport} className="space-y-4">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
+                <div className="font-bold text-slate-800 flex items-center justify-between">
+                  <span>Report from {solveReport.reporterName}</span>
+                  <span className="text-[10px] text-slate-500">{solveReport.reporterEmail}</span>
+                </div>
+                <p className="text-slate-600 line-clamp-2 italic">"{solveReport.message}"</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Admin Remarks / Resolution Details *
+                </label>
+                <textarea
+                  value={solveRemarks}
+                  onChange={(e) => setSolveRemarks(e.target.value)}
+                  placeholder="Enter remarks explaining how the issue was resolved..."
+                  required
+                  rows={4}
+                  className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500 leading-relaxed font-sans resize-none"
+                />
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  These remarks will be attached to the report and sent as a notification to the reporting agent.
+                </span>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setSolveReport(null)}
+                  className="px-4 py-2 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={solveLoading}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs flex items-center gap-1.5 transition-colors"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{solveLoading ? "Resolving..." : "Confirm & Solve"}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
       {addModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
           <div className="bg-white max-w-md w-full rounded-3xl shadow-2xl p-6 border border-slate-100 space-y-4">

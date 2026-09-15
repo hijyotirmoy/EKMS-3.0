@@ -16,12 +16,13 @@ import {
   query,
   where,
   getDocs,
+  writeBatch,
 } from "firebase/firestore";
 import { db, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord, RescheduleLog } from "@/lib/types";
-import { getISTMidnight, getFollowUpInfo, mergeBookingData } from "@/lib/utils";
+import { getISTMidnight, getFollowUpInfo, mergeBookingData, deleteBookingRecordCompletely } from "@/lib/utils";
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
@@ -43,6 +44,7 @@ import {
   Check,
   Trash2,
   Lock,
+  Edit3,
 } from "lucide-react";
 
 interface FlattenedBooking extends BookingRecord {
@@ -98,6 +100,12 @@ export default function AgentBookingPage() {
     record: BookingRecord;
   } | null>(null);
   const [visitLoading, setVisitLoading] = useState(false);
+
+  // Edit Modal State
+  const [editBookingItem, setEditBookingItem] = useState<FlattenedBooking | null>(null);
+  const [editIpName, setEditIpName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
 
   // Copy indicator
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -282,13 +290,6 @@ export default function AgentBookingPage() {
 
           const latestLog = latestRescheduleMap.get(key);
           const initialLog = initialRescheduleMap.get(key);
-
-          // If this booking has been rescheduled, the ONLY active date is latestLog.newDate.
-          // Skip any record on an obsolete date.
-          if (latestLog && dateKey !== latestLog.newDate) {
-            return;
-          }
-
           const isMine = emailLower === myEmail;
           const cleanName = record.agentEmail
             ? record.agentEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
@@ -498,42 +499,28 @@ export default function AgentBookingPage() {
         timestamp: Date.now(),
       };
 
-      try {
-        await updateDoc(docRef, {
-          seats: increment(-1),
-          bookedRecords: arrayUnion(newRecord),
-        });
-      } catch (upErr: any) {
-        const initialSeats = existingDoc?.seats !== undefined ? existingDoc.seats - 1 : 19;
+      const initialSeats = existingDoc?.seats !== undefined ? Math.max(0, existingDoc.seats - 1) : 19;
+
+      const writeToDb = async (firestoreInstance: any) => {
+        const targetRef = doc(firestoreInstance, "bookings", bookModalDate);
         try {
+          await updateDoc(targetRef, {
+            seats: increment(-1),
+            bookedRecords: arrayUnion(newRecord),
+          });
+        } catch {
           await setDoc(
-            docRef,
+            targetRef,
             {
               seats: initialSeats,
               bookedRecords: [newRecord],
             },
             { merge: true }
           );
-        } catch (secDbErr: any) {
-          console.warn("Secondary DB write fallback to main DB:", secDbErr);
-          const primaryRef = doc(db, "bookings", bookModalDate);
-          try {
-            await updateDoc(primaryRef, {
-              seats: increment(-1),
-              bookedRecords: arrayUnion(newRecord),
-            });
-          } catch {
-            await setDoc(
-              primaryRef,
-              {
-                seats: initialSeats,
-                bookedRecords: [newRecord],
-              },
-              { merge: true }
-            );
-          }
         }
-      }
+      };
+
+      await Promise.allSettled([writeToDb(bookingDb), writeToDb(db)]);
 
       logUserActivity(user.email, {
         desc: `Booked verification appointment for ${ipName.trim()} on ${bookModalDate}`,
@@ -591,6 +578,120 @@ export default function AgentBookingPage() {
     }
   };
 
+  // --- EDIT BOOKING HANDLER ---
+  const handleSaveEditBooking = async () => {
+    if (!editBookingItem) return;
+    const isOwnerOrAdmin =
+      (editBookingItem.agentEmail || "").toLowerCase().trim() === (user?.email || "").toLowerCase().trim() || isAdmin;
+
+    if (!isOwnerOrAdmin) {
+      toast.error("You can only edit your own booking details.");
+      return;
+    }
+
+    const trimmedName = editIpName.trim();
+    const trimmedPhone = editPhone.trim();
+
+    if (!trimmedName) {
+      toast.error("Please enter IP / IW Name.");
+      return;
+    }
+    if (!trimmedPhone) {
+      toast.error("Please enter Phone Number.");
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      const candidateDates = Array.from(
+        new Set(
+          [
+            editBookingItem.dateKey,
+            editBookingItem.rescheduledDate,
+            editBookingItem.originalScheduledDate,
+          ].filter(Boolean) as string[]
+        )
+      );
+
+      for (const dateStr of candidateDates) {
+        const updateRecordsInDb = async (firestoreInstance: any) => {
+          try {
+            const docRef = doc(firestoreInstance, "bookings", dateStr);
+            const snap = await getDoc(docRef);
+            if (snap.exists()) {
+              const currentRecords: BookingRecord[] = snap.data()?.bookedRecords || [];
+              let updated = false;
+              const updatedRecords = currentRecords.map((r) => {
+                if (
+                  (r.timestamp === editBookingItem.timestamp &&
+                    (r.agentEmail || "").toLowerCase().trim() === (editBookingItem.agentEmail || "").toLowerCase().trim()) ||
+                  ((r.agentEmail || "").toLowerCase().trim() === (editBookingItem.agentEmail || "").toLowerCase().trim() &&
+                    (r.ipName || "").toLowerCase().trim() === (editBookingItem.ipName || "").toLowerCase().trim() &&
+                    r.phone === editBookingItem.phone)
+                ) {
+                  updated = true;
+                  return {
+                    ...r,
+                    ipName: trimmedName,
+                    phone: trimmedPhone,
+                  };
+                }
+                return r;
+              });
+              if (updated) {
+                await updateDoc(docRef, { bookedRecords: updatedRecords });
+              }
+            }
+          } catch (e) {
+            console.warn("Edit update error in DB:", e);
+          }
+        };
+
+        await Promise.allSettled([updateRecordsInDb(bookingDb), updateRecordsInDb(db)]);
+      }
+
+        // Update matching reschedule logs as well for consistency
+        const updateLogsInDb = async (firestoreInstance: any) => {
+          try {
+            const q = query(
+              collection(firestoreInstance, "rescheduleLogs"),
+              where("timestamp", "==", editBookingItem.timestamp)
+            );
+            const logsSnap = await getDocs(q);
+            const batch = writeBatch(firestoreInstance);
+            let hasUpdates = false;
+            logsSnap.forEach((logDoc) => {
+              batch.update(logDoc.ref, {
+                ipName: trimmedName,
+                phone: trimmedPhone,
+              });
+              hasUpdates = true;
+            });
+            if (hasUpdates) {
+              await batch.commit();
+            }
+          } catch (e) {
+            console.warn("Could not sync reschedule logs:", e);
+          }
+        };
+
+        await Promise.allSettled([updateLogsInDb(db), updateLogsInDb(bookingDb)]);
+
+        logUserActivity(user?.email, {
+          desc: `Updated booking details for ${trimmedName} (${editBookingItem.dateKey})`,
+          type: "edit",
+        });
+
+        toast.success("Booking details updated successfully!");
+        setEditBookingItem(null);
+    } catch (error: any) {
+      console.error("Edit booking error:", error);
+      toast.error(error.message || "Failed to update booking details.");
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   // --- 6. RESCHEDULE TRANSACTION ---
   const handleExecuteReschedule = async () => {
     if (!rescheduleData || !rsSelectedDate || !user) return;
@@ -607,75 +708,102 @@ export default function AgentBookingPage() {
     try {
       const target = rescheduleData.record;
 
-      // 1. Remove from old & return seat (supports both secondary and primary DBs)
-      let targetRef = oldSecRef;
-      let snap = await getDoc(oldSecRef);
-      if (!snap.exists()) {
-        snap = await getDoc(oldPriRef);
-        targetRef = oldPriRef;
-      }
+      // 1. Remove from all old date candidate documents in BOTH databases to prevent duplicates
+      const candidateOldDates = Array.from(
+        new Set(
+          [
+            rescheduleData.oldDateKey,
+            target.rescheduledDate,
+            target.originalScheduledDate,
+          ].filter(Boolean) as string[]
+        )
+      );
 
-      if (snap.exists()) {
-        const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
-        const matchIdx = rawRecords.findIndex(
-          (r) =>
-            r.timestamp === target.timestamp &&
-            (r.agentEmail || "").toLowerCase().trim() === (target.agentEmail || "").toLowerCase().trim()
-        );
+      for (const dateStr of candidateOldDates) {
+        for (const firestoreInstance of [bookingDb, db]) {
+          try {
+            const oldRef = doc(firestoreInstance, "bookings", dateStr);
+            const snap = await getDoc(oldRef);
+            if (snap.exists()) {
+              const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
+              const matchIdx = rawRecords.findIndex(
+                (r) =>
+                  (r.timestamp === target.timestamp &&
+                    (r.agentEmail || "").toLowerCase().trim() === (target.agentEmail || "").toLowerCase().trim()) ||
+                  ((r.agentEmail || "").toLowerCase().trim() === (target.agentEmail || "").toLowerCase().trim() &&
+                    (r.ipName || "").toLowerCase().trim() === (target.ipName || "").toLowerCase().trim() &&
+                    r.phone === target.phone)
+              );
 
-        if (matchIdx !== -1) {
-          const updatedRecords = [...rawRecords];
-          updatedRecords.splice(matchIdx, 1);
-          await updateDoc(targetRef, {
-            seats: increment(1),
-            bookedRecords: updatedRecords,
-          });
+              if (matchIdx !== -1) {
+                const updatedRecords = [...rawRecords];
+                updatedRecords.splice(matchIdx, 1);
+                const currentSeats = snap.data().seats !== undefined ? snap.data().seats : 20;
+                await updateDoc(oldRef, {
+                  seats: Math.min(20, currentSeats + 1),
+                  bookedRecords: updatedRecords,
+                });
+              }
+            }
+          } catch (e) {
+            console.warn("Error removing old record:", e);
+          }
         }
       }
 
       const origDate = target.originalScheduledDate || rescheduleData.oldDateKey;
 
-      // Clean new record object without undefined fields
-      const cleanNewRecord = {
-        agentEmail: target.agentEmail,
-        ipName: target.ipName,
-        phone: target.phone,
-        timestamp: target.timestamp,
+      const cleanNewRecord: BookingRecord = JSON.parse(JSON.stringify({
+        agentEmail: target.agentEmail || "",
+        ipName: target.ipName || "",
+        phone: target.phone || "",
+        timestamp: target.timestamp || Date.now(),
         visited: !!target.visited,
         rescheduled: true,
         originalScheduledDate: origDate,
         rescheduledDate: rsSelectedDate,
+      }));
+
+      // 2. Add to new date in BOTH databases
+      const addNewRecord = async (firestoreInstance: any) => {
+        const newRef = doc(firestoreInstance, "bookings", rsSelectedDate);
+        try {
+          await updateDoc(newRef, {
+            seats: increment(-1),
+            bookedRecords: arrayUnion(cleanNewRecord),
+          });
+        } catch {
+          await setDoc(
+            newRef,
+            {
+              seats: 19,
+              bookedRecords: [cleanNewRecord],
+            },
+            { merge: true }
+          );
+        }
       };
 
-      // 2. Add to new & take seat
-      try {
-        await updateDoc(newDocRef, {
-          seats: increment(-1),
-          bookedRecords: arrayUnion(cleanNewRecord),
-        });
-      } catch (newDocErr) {
-        await setDoc(
-          newDocRef,
-          {
-            seats: 19,
-            bookedRecords: [cleanNewRecord],
-          },
-          { merge: true }
-        );
-      }
+      await Promise.allSettled([addNewRecord(bookingDb), addNewRecord(db)]);
 
-      // 3. Add to rescheduleLogs
-      const logRef = doc(collection(bookingDb, "rescheduleLogs"));
-      await setDoc(logRef, {
-        ipName: target.ipName,
-        seatOwner: target.agentEmail,
-        agentName: target.agentName || target.agentEmail,
+      // 3. Add to rescheduleLogs in BOTH databases
+      const logRefId = `${Date.now()}_${target.timestamp}`;
+      const logPayload = JSON.parse(JSON.stringify({
+        ipName: target.ipName || "",
+        seatOwner: target.agentEmail || "",
+        agentName: target.agentName || target.agentEmail || "",
         phone: target.phone || "",
         originalDate: rescheduleData.oldDateKey,
         newDate: rsSelectedDate,
         actionBy: user?.email?.toLowerCase() || "agent",
+        actionByName: userProfile?.displayName || user?.displayName || user?.email?.split("@")[0] || user?.email || "Agent",
         timestamp: Date.now(),
-      });
+      }));
+
+      await Promise.allSettled([
+        setDoc(doc(bookingDb, "rescheduleLogs", logRefId), logPayload, { merge: true }),
+        setDoc(doc(db, "rescheduleLogs", logRefId), logPayload, { merge: true }),
+      ]);
 
       logUserActivity(user?.email, {
         desc: `Rescheduled booking for IP: ${rescheduleData.record.ipName || "Beneficiary"} from ${rescheduleData.oldDateKey} to ${rsSelectedDate}`,
@@ -740,67 +868,30 @@ export default function AgentBookingPage() {
     }
 
     setCancelLoading(true);
-    const secRef = doc(bookingDb, "bookings", cancelData.dateKey);
-    const priRef = doc(db, "bookings", cancelData.dateKey);
-
     try {
-      let targetRef = secRef;
-      let snap = await getDoc(secRef);
-      if (!snap.exists()) {
-        snap = await getDoc(priRef);
-        targetRef = priRef;
-      }
-      if (!snap.exists()) throw new Error("Booking schedule date not found.");
-
-      const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
-      const matchIndex = rawRecords.findIndex(
-        (r) =>
-          r.timestamp === cancelData.record.timestamp &&
-          (r.agentEmail || "").toLowerCase().trim() === recordOwner
+      const removedCount = await deleteBookingRecordCompletely(
+        {
+          timestamp: cancelData.record.timestamp,
+          agentEmail: cancelData.record.agentEmail || recordOwner,
+          ipName: cancelData.record.ipName,
+          phone: cancelData.record.phone,
+          dateKey: cancelData.dateKey,
+          rescheduledDate: cancelData.record.rescheduledDate,
+          originalScheduledDate: cancelData.record.originalScheduledDate,
+        },
+        db,
+        bookingDb
       );
 
-      if (matchIndex === -1) {
+      if (removedCount === 0) {
         throw new Error("This booking record was not found or was already removed.");
-      }
-
-      // Remove the exact record from the array
-      const updatedRecords = [...rawRecords];
-      updatedRecords.splice(matchIndex, 1);
-
-      // Atomically update Firestore
-      await updateDoc(targetRef, {
-        seats: increment(1),
-        bookedRecords: updatedRecords,
-      });
-
-      // ONLY AFTER successful deletion in Firestore, clean up rescheduleLogs
-      try {
-        const ip = (cancelData.record.ipName || "").toLowerCase().trim();
-        if (recordOwner) {
-          const logsSnap = await getDocs(
-            query(collection(bookingDb, "rescheduleLogs"), where("seatOwner", "==", recordOwner))
-          );
-          logsSnap.forEach((lDoc) => {
-            const l = lDoc.data();
-            const logIp = (l.ipName || "").toLowerCase().trim();
-            if (
-              (ip && logIp === ip) ||
-              l.newDate === cancelData.dateKey ||
-              l.originalDate === cancelData.dateKey
-            ) {
-              deleteDoc(doc(bookingDb, "rescheduleLogs", lDoc.id)).catch(() => {});
-            }
-          });
-        }
-      } catch (e) {
-        console.warn("Could not cleanup rescheduleLogs:", e);
       }
 
       // Send notifications ONLY after deletion succeeds
       try {
         await notifyAdmins({
           title: "🗑️ Booking Cancelled",
-          message: `**${userProfile?.displayName || user?.email || "Agent"}** cancelled the appointment for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.dateKey}**.`,
+          message: `**${userProfile?.displayName || user?.email || "Agent"}** cancelled the appointment for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.record.rescheduledDate || cancelData.dateKey}**.`,
           type: "booking",
           link: "/admin/bookings",
           metadata: {
@@ -810,13 +901,10 @@ export default function AgentBookingPage() {
           },
         });
 
-        if (
-          recordOwner &&
-          recordOwner !== myEmail
-        ) {
+        if (recordOwner && recordOwner !== myEmail) {
           await createNotification({
             title: "🗑️ Booking Cancelled",
-            message: `Your booking for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.dateKey}** was cancelled by **${userProfile?.displayName || user?.email || "Admin"}**.`,
+            message: `Your booking for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.record.rescheduledDate || cancelData.dateKey}** was cancelled by **${userProfile?.displayName || user?.email || "Admin"}**.`,
             type: "booking",
             targetEmail: recordOwner,
             link: "/booking",
@@ -869,24 +957,44 @@ export default function AgentBookingPage() {
     const secRef = doc(bookingDb, "bookings", b.dateKey);
     const priRef = doc(db, "bookings", b.dateKey);
 
-    try {
-      const dayData = liveBookings[b.dateKey];
-      if (dayData && dayData.bookedRecords) {
-        const updated = dayData.bookedRecords.map((r) => {
-          if (
-            r.timestamp === b.timestamp &&
-            r.agentEmail?.toLowerCase() === b.agentEmail?.toLowerCase()
-          ) {
-            return { ...r, visited: !b.visited };
-          }
-          return r;
-        });
+    const candidateDates = Array.from(
+      new Set(
+        [b.dateKey, b.rescheduledDate, b.originalScheduledDate].filter(Boolean) as string[]
+      )
+    );
 
-        try {
-          await updateDoc(secRef, { bookedRecords: updated });
-        } catch {
-          await updateDoc(priRef, { bookedRecords: updated });
-        }
+    try {
+      for (const dateStr of candidateDates) {
+        const updateVisitedInDb = async (firestoreInstance: any) => {
+          try {
+            const targetRef = doc(firestoreInstance, "bookings", dateStr);
+            const snap = await getDoc(targetRef);
+            if (snap.exists()) {
+              const records: BookingRecord[] = snap.data()?.bookedRecords || [];
+              let updated = false;
+              const updatedRecords = records.map((r) => {
+                if (
+                  (r.timestamp === b.timestamp &&
+                    (r.agentEmail || "").toLowerCase().trim() === (b.agentEmail || "").toLowerCase().trim()) ||
+                  ((r.agentEmail || "").toLowerCase().trim() === (b.agentEmail || "").toLowerCase().trim() &&
+                    (r.ipName || "").toLowerCase().trim() === (b.ipName || "").toLowerCase().trim() &&
+                    r.phone === b.phone)
+                ) {
+                  updated = true;
+                  return { ...r, visited: !b.visited };
+                }
+                return r;
+              });
+              if (updated) {
+                await updateDoc(targetRef, { bookedRecords: updatedRecords });
+              }
+            }
+          } catch (e) {
+            console.warn("Visited update error:", e);
+          }
+        };
+
+        await Promise.allSettled([updateVisitedInDb(bookingDb), updateVisitedInDb(db)]);
       }
 
       // Send notifications for visit update
@@ -1508,15 +1616,28 @@ export default function AgentBookingPage() {
                             <span>Reschedule</span>
                           </button>
 
-                          {/* Cancel / Release Seat Button - Only shown if owner or admin */}
+                          {/* Edit Booking Button - Only shown if owner or admin */}
                           {((b.agentEmail || "").toLowerCase().trim() === (user?.email || "").toLowerCase().trim() || isAdmin) && (
-                            <button
-                              onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
-                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
-                              title="Cancel Booking & Release Seat"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <>
+                              <button
+                                onClick={() => {
+                                  setEditBookingItem(b);
+                                  setEditIpName(b.ipName || "");
+                                  setEditPhone(b.phone || "");
+                                }}
+                                className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                                title="Edit Booking Details"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
+                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
+                                title="Cancel Booking & Release Seat"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -1709,13 +1830,26 @@ export default function AgentBookingPage() {
                     </button>
 
                     {isOwnerOrAdmin && (
-                      <button
-                        onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
-                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
-                        title="Cancel Booking"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <>
+                        <button
+                          onClick={() => {
+                            setEditBookingItem(b);
+                            setEditIpName(b.ipName || "");
+                            setEditPhone(b.phone || "");
+                          }}
+                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors cursor-pointer"
+                          title="Edit Booking Details"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setCancelData({ dateKey: b.dateKey, record: b })}
+                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                          title="Cancel Booking"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -2007,6 +2141,88 @@ export default function AgentBookingPage() {
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-sm"
               >
                 {visitLoading ? "Updating..." : "Confirm Visited"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- EDIT BOOKING MODAL --- */}
+      {editBookingItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white max-w-md w-full rounded-2xl shadow-2xl p-6 border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-slate-900 font-bold">
+                <Edit3 className="w-5 h-5 text-blue-600" />
+                <h3 className="text-base">Edit Booking Details</h3>
+              </div>
+              <button
+                onClick={() => setEditBookingItem(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
+              <div>
+                Booked By: <strong className="text-blue-600">{editBookingItem.agentName || editBookingItem.agentEmail}</strong>
+              </div>
+              <div>
+                Scheduled Date: <strong className="text-slate-800">{editBookingItem.dateKey}</strong>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  IP / IW Name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={editIpName}
+                  onChange={(e) => setEditIpName(e.target.value)}
+                  placeholder="Enter IP / IW Name"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Phone Number <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="Enter Phone Number"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditBookingItem(null)}
+                className="px-4 py-2 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEditBooking}
+                disabled={editSaving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {editSaving ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <span>Save Changes</span>
+                )}
               </button>
             </div>
           </div>

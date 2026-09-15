@@ -62,6 +62,7 @@ export interface RescheduleLog {
   originalDate: string;
   newDate: string;
   actionBy: string;
+  actionByName?: string;
   timestamp: number;
 }
 
@@ -211,6 +212,7 @@ export interface AppReport {
   createdAt: number;
   resolvedAt?: number;
   resolvedBy?: string;
+  adminRemarks?: string;
 }
 
 export interface Announcement {

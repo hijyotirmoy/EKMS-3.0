@@ -22,7 +22,7 @@ import { db, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord, RescheduleLog } from "@/lib/types";
-import { getISTMidnight, getFollowUpInfo, mergeBookingData } from "@/lib/utils";
+import { getISTMidnight, getFollowUpInfo, mergeBookingData, deleteBookingRecordCompletely } from "@/lib/utils";
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
@@ -51,6 +51,7 @@ import {
   AlertTriangle,
   Clock,
   EyeOff,
+  Edit3,
 } from "lucide-react";
 
 interface AdminBookingRecord extends BookingRecord {
@@ -104,6 +105,12 @@ export default function AdminBookingsPage() {
   const [rsMonthDate, setRsMonthDate] = useState(new Date());
   const [rsSelectedDate, setRsSelectedDate] = useState<string | null>(null);
   const [rsLoading, setRsLoading] = useState(false);
+
+  // Edit Booking Modal State
+  const [editBookingItem, setEditBookingItem] = useState<AdminBookingRecord | null>(null);
+  const [editIpName, setEditIpName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
 
   // Bulk Selection for Bookings Table
   const [selectedBookingKeys, setSelectedBookingKeys] = useState<Set<string>>(new Set());
@@ -235,7 +242,7 @@ export default function AdminBookingsPage() {
   }, []);
 
   // 2. Flatten Bookings & Compute 13 Metrics
-  const { allBookings, activeRescheduleLogs, metrics } = useMemo(() => {
+  const { allBookings, activeRescheduleLogs, rescheduleCountMap, metrics } = useMemo(() => {
     const list: AdminBookingRecord[] = [];
     const todayObj = new Date();
     const todayKey = todayObj.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
@@ -254,11 +261,14 @@ export default function AdminBookingsPage() {
     // Map reschedule logs: find latest reschedule event and initial original date per (seatOwner, ipName)
     const latestRescheduleMap = new Map<string, RescheduleLog>();
     const initialRescheduleMap = new Map<string, RescheduleLog>();
+    const rescheduleCountMap = new Map<string, number>();
 
     rescheduleLogs.forEach((l) => {
       const owner = (l.seatOwner || "").toLowerCase().trim();
       const ip = (l.ipName || "").toLowerCase().trim();
       const key = `${owner}___${ip}`;
+
+      rescheduleCountMap.set(key, (rescheduleCountMap.get(key) || 0) + 1);
 
       if (!latestRescheduleMap.has(key)) {
         latestRescheduleMap.set(key, l);
@@ -296,12 +306,6 @@ export default function AdminBookingsPage() {
 
           const latestLog = latestRescheduleMap.get(key);
           const initialLog = initialRescheduleMap.get(key);
-
-          // If this booking has been rescheduled, the ONLY active date is latestLog.newDate.
-          // Skip any record on an obsolete date.
-          if (latestLog && dateKey !== latestLog.newDate) {
-            return;
-          }
 
           total++;
           const cleanName =
@@ -391,6 +395,7 @@ export default function AdminBookingsPage() {
     return {
       allBookings: list,
       activeRescheduleLogs: activeLogs,
+      rescheduleCountMap,
       metrics: {
         total,
         month,
@@ -585,62 +590,30 @@ export default function AdminBookingsPage() {
     });
     if (!confirmed) return;
 
-    const secRef = doc(bookingDb, "bookings", b.dateKey);
-    const priRef = doc(db, "bookings", b.dateKey);
-
     try {
-      let targetRef = secRef;
-      let snap = await getDoc(secRef);
-      if (!snap.exists()) {
-        snap = await getDoc(priRef);
-        targetRef = priRef;
-      }
-      if (!snap.exists()) throw new Error("Booking date not found.");
-
-      const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
-      const matchIndex = rawRecords.findIndex(
-        (r) =>
-          r.timestamp === b.timestamp &&
-          (r.agentEmail || "").toLowerCase().trim() === (b.agentEmail || "").toLowerCase().trim()
+      const removedCount = await deleteBookingRecordCompletely(
+        {
+          timestamp: b.timestamp,
+          agentEmail: b.agentEmail,
+          ipName: b.ipName,
+          phone: b.phone,
+          dateKey: b.dateKey,
+          rescheduledDate: b.rescheduledDate,
+          originalScheduledDate: b.originalScheduledDate,
+        },
+        db,
+        bookingDb
       );
 
-      if (matchIndex === -1) {
+      if (removedCount === 0) {
         throw new Error("This booking record was not found or was already removed.");
-      }
-
-      const updatedRecords = [...rawRecords];
-      updatedRecords.splice(matchIndex, 1);
-
-      await updateDoc(targetRef, {
-        seats: increment(1),
-        bookedRecords: updatedRecords,
-      });
-
-      // Automatically delete related reschedule logs for this deleted booking
-      try {
-        const ownerEmail = b.agentEmail?.toLowerCase();
-        const ip = (b.ipName || "").toLowerCase().trim();
-        if (ownerEmail) {
-          const logsSnap = await getDocs(
-            query(collection(bookingDb, "rescheduleLogs"), where("seatOwner", "==", ownerEmail))
-          );
-          logsSnap.forEach((lDoc) => {
-            const l = lDoc.data();
-            const logIp = (l.ipName || "").toLowerCase().trim();
-            if ((ip && logIp === ip) || l.newDate === b.dateKey || l.originalDate === b.dateKey) {
-              deleteDoc(doc(bookingDb, "rescheduleLogs", lDoc.id)).catch(() => {});
-            }
-          });
-        }
-      } catch (e) {
-        console.warn("Could not delete rescheduleLogs:", e);
       }
 
       // Send notifications for cancellation
       try {
         await notifyAdmins({
           title: "🗑️ Booking Cancelled / Removed",
-          message: `**${userProfile?.displayName || user?.email}** removed the booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}**.`,
+          message: `**${userProfile?.displayName || user?.email}** removed the booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.rescheduledDate || b.dateKey}**.`,
           type: "booking",
           link: "/admin/bookings",
           metadata: {
@@ -653,7 +626,7 @@ export default function AdminBookingsPage() {
         if (b.agentEmail) {
           await createNotification({
             title: "🗑️ Booking Cancelled",
-            message: `Your booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}** was removed by admin.`,
+            message: `Your booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.rescheduledDate || b.dateKey}** was removed by admin.`,
             type: "booking",
             targetEmail: b.agentEmail.toLowerCase().trim(),
             link: "/booking",
@@ -678,6 +651,112 @@ export default function AdminBookingsPage() {
     }
   };
 
+  // Edit Booking Handler
+  const handleSaveEditBooking = async () => {
+    if (!editBookingItem) return;
+    const trimmedName = editIpName.trim();
+    const trimmedPhone = editPhone.trim();
+
+    if (!trimmedName) {
+      toast.error("Please enter IP / IW Name.");
+      return;
+    }
+    if (!trimmedPhone) {
+      toast.error("Please enter Phone Number.");
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      const candidateDates = Array.from(
+        new Set(
+          [
+            editBookingItem.dateKey,
+            editBookingItem.rescheduledDate,
+            editBookingItem.originalScheduledDate,
+          ].filter(Boolean) as string[]
+        )
+      );
+
+      for (const dateStr of candidateDates) {
+        const updateRecordsInDb = async (firestoreInstance: any) => {
+          try {
+            const docRef = doc(firestoreInstance, "bookings", dateStr);
+            const snap = await getDoc(docRef);
+            if (snap.exists()) {
+              const currentRecords: BookingRecord[] = snap.data()?.bookedRecords || [];
+              let updated = false;
+              const updatedRecords = currentRecords.map((r) => {
+                if (
+                  (r.timestamp === editBookingItem.timestamp &&
+                    (r.agentEmail || "").toLowerCase().trim() === (editBookingItem.agentEmail || "").toLowerCase().trim()) ||
+                  ((r.agentEmail || "").toLowerCase().trim() === (editBookingItem.agentEmail || "").toLowerCase().trim() &&
+                    (r.ipName || "").toLowerCase().trim() === (editBookingItem.ipName || "").toLowerCase().trim() &&
+                    r.phone === editBookingItem.phone)
+                ) {
+                  updated = true;
+                  return {
+                    ...r,
+                    ipName: trimmedName,
+                    phone: trimmedPhone,
+                  };
+                }
+                return r;
+              });
+              if (updated) {
+                await updateDoc(docRef, { bookedRecords: updatedRecords });
+              }
+            }
+          } catch (e) {
+            console.warn("Edit update error in DB:", e);
+          }
+        };
+
+        await Promise.allSettled([updateRecordsInDb(bookingDb), updateRecordsInDb(db)]);
+      }
+
+        // Update matching reschedule logs as well for consistency
+        const updateLogsInDb = async (firestoreInstance: any) => {
+          try {
+            const q = query(
+              collection(firestoreInstance, "rescheduleLogs"),
+              where("timestamp", "==", editBookingItem.timestamp)
+            );
+            const logsSnap = await getDocs(q);
+            const batch = writeBatch(firestoreInstance);
+            let hasUpdates = false;
+            logsSnap.forEach((logDoc) => {
+              batch.update(logDoc.ref, {
+                ipName: trimmedName,
+                phone: trimmedPhone,
+              });
+              hasUpdates = true;
+            });
+            if (hasUpdates) {
+              await batch.commit();
+            }
+          } catch (e) {
+            console.warn("Could not sync reschedule logs:", e);
+          }
+        };
+
+        await Promise.allSettled([updateLogsInDb(db), updateLogsInDb(bookingDb)]);
+
+        logUserActivity(user?.email, {
+          desc: `Updated booking details for ${trimmedName} (${editBookingItem.dateKey})`,
+          type: "edit",
+        });
+
+        toast.success("Booking details updated successfully!");
+        setEditBookingItem(null);
+    } catch (error: any) {
+      console.error("Edit booking error:", error);
+      toast.error(error.message || "Failed to update booking details.");
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   // Mark / Unmark Single Booking as Visited
   const handleToggleVisited = async (b: AdminBookingRecord) => {
     const rawIp = b.ipName || "this IP";
@@ -696,24 +775,44 @@ export default function AdminBookingsPage() {
 
     if (!confirmed) return;
 
-    const secRef = doc(bookingDb, "bookings", b.dateKey);
-    const priRef = doc(db, "bookings", b.dateKey);
+    const candidateDates = Array.from(
+      new Set(
+        [b.dateKey, b.rescheduledDate, b.originalScheduledDate].filter(Boolean) as string[]
+      )
+    );
 
     try {
-      const dayData = liveBookings[b.dateKey];
-      if (dayData && dayData.bookedRecords) {
-        const updated = dayData.bookedRecords.map((r) => {
-          if (r.timestamp === b.timestamp && r.agentEmail === b.agentEmail) {
-            return { ...r, visited: !b.visited };
+      for (const dateStr of candidateDates) {
+        const updateVisitedInDb = async (firestoreInstance: any) => {
+          try {
+            const targetRef = doc(firestoreInstance, "bookings", dateStr);
+            const snap = await getDoc(targetRef);
+            if (snap.exists()) {
+              const records: BookingRecord[] = snap.data()?.bookedRecords || [];
+              let updated = false;
+              const updatedRecords = records.map((r) => {
+                if (
+                  (r.timestamp === b.timestamp &&
+                    (r.agentEmail || "").toLowerCase().trim() === (b.agentEmail || "").toLowerCase().trim()) ||
+                  ((r.agentEmail || "").toLowerCase().trim() === (b.agentEmail || "").toLowerCase().trim() &&
+                    (r.ipName || "").toLowerCase().trim() === (b.ipName || "").toLowerCase().trim() &&
+                    r.phone === b.phone)
+                ) {
+                  updated = true;
+                  return { ...r, visited: !b.visited };
+                }
+                return r;
+              });
+              if (updated) {
+                await updateDoc(targetRef, { bookedRecords: updatedRecords });
+              }
+            }
+          } catch (e) {
+            console.warn("Visited update error:", e);
           }
-          return r;
-        });
-        
-        try {
-          await updateDoc(secRef, { bookedRecords: updated });
-        } catch {
-          await updateDoc(priRef, { bookedRecords: updated });
-        }
+        };
+
+        await Promise.allSettled([updateVisitedInDb(bookingDb), updateVisitedInDb(db)]);
       }
 
       // Send notifications for visit status update
@@ -775,14 +874,18 @@ export default function AdminBookingsPage() {
     if (!singleEditDate) return;
     setSingleSaving(true);
     try {
-      await setDoc(
-        doc(bookingDb, "bookings", singleEditDate),
-        {
-          seats: Number(singleSeats),
-          text: singleText.trim(),
-        },
-        { merge: true }
-      );
+      const saveCapacityInDb = async (firestoreInstance: any) => {
+        await setDoc(
+          doc(firestoreInstance, "bookings", singleEditDate),
+          {
+            seats: Number(singleSeats),
+            text: singleText.trim(),
+          },
+          { merge: true }
+        );
+      };
+
+      await Promise.allSettled([saveCapacityInDb(bookingDb), saveCapacityInDb(db)]);
       logUserActivity(user?.email, {
         desc: `Updated verification booking capacity for ${singleEditDate} (${singleSeats} seats)`,
         type: "booking",
@@ -867,7 +970,7 @@ export default function AdminBookingsPage() {
         "Seat Owner": l.seatOwner,
         "Original Date": l.originalDate,
         "New Date": l.newDate,
-        "Action By": l.actionBy,
+        "Action By": l.actionByName || userProfiles[l.actionBy?.toLowerCase()] || (l.actionBy && l.actionBy.includes("@") ? l.actionBy.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : l.actionBy || "-"),
         Timestamp: new Date(l.timestamp).toLocaleString(),
       }))
     );
@@ -892,35 +995,26 @@ export default function AdminBookingsPage() {
     try {
       for (const key of Array.from(selectedBookingKeys)) {
         const [dateKey, timestampStr, email] = key.split("___");
-        const docRef = doc(bookingDb, "bookings", dateKey);
+        const found = allBookings.find(
+          (b) =>
+            b.dateKey === dateKey &&
+            b.timestamp === Number(timestampStr) &&
+            (b.agentEmail || "").toLowerCase().trim() === (email || "").toLowerCase().trim()
+        );
 
-        await runTransaction(bookingDb, async (tx) => {
-          const snap = await tx.get(docRef);
-          if (!snap.exists()) return;
-          const records: BookingRecord[] = snap.data().bookedRecords || [];
-          const target = records.find((r) => r.timestamp === Number(timestampStr) && r.agentEmail === email);
-          if (target) {
-            tx.update(docRef, {
-              seats: (snap.data().seats || 0) + 1,
-              bookedRecords: arrayRemove(target),
-            });
-          }
-        });
-
-        // Cleanup related rescheduleLogs for each bulk deleted key
-        try {
-          if (email) {
-            const logsSnap = await getDocs(
-              query(collection(bookingDb, "rescheduleLogs"), where("seatOwner", "==", email.toLowerCase()))
-            );
-            logsSnap.forEach((lDoc) => {
-              const l = lDoc.data();
-              if (l.newDate === dateKey || l.originalDate === dateKey) {
-                deleteDoc(doc(bookingDb, "rescheduleLogs", lDoc.id)).catch(() => {});
-              }
-            });
-          }
-        } catch (e) {}
+        await deleteBookingRecordCompletely(
+          {
+            timestamp: Number(timestampStr),
+            agentEmail: email,
+            ipName: found?.ipName,
+            phone: found?.phone,
+            dateKey: dateKey,
+            rescheduledDate: found?.rescheduledDate,
+            originalScheduledDate: found?.originalScheduledDate,
+          },
+          db,
+          bookingDb
+        );
       }
 
       logUserActivity(user?.email, {
@@ -937,52 +1031,141 @@ export default function AdminBookingsPage() {
     }
   };
 
-  // --- 6B. SYNC HISTORICAL BOOKINGS FROM OLD DB TO NEW DB ---
+  // --- 6B. FULL BI-DIRECTIONAL DEDUPLICATING DATABASE SYNCHRONIZER ---
   const handleSyncDatabases = async () => {
     setSyncingDb(true);
     try {
-      const mainSnap = await getDocs(collection(db, "bookings"));
-      const secSnap = await getDocs(collection(bookingDb, "bookings"));
+      const [mainSnap, secSnap] = await Promise.all([
+        getDocs(collection(db, "bookings")),
+        getDocs(collection(bookingDb, "bookings")),
+      ]);
 
-      const secMap = new Map<string, BookingRecord[]>();
-      secSnap.forEach((d) => {
-        secMap.set(d.id, d.data().bookedRecords || []);
+      const dateDocsMap = new Map<string, { mainData?: any; secData?: any }>();
+
+      mainSnap.forEach((d) => {
+        if (!dateDocsMap.has(d.id)) dateDocsMap.set(d.id, {});
+        dateDocsMap.get(d.id)!.mainData = d.data();
       });
 
-      let totalSynced = 0;
+      secSnap.forEach((d) => {
+        if (!dateDocsMap.has(d.id)) dateDocsMap.set(d.id, {});
+        dateDocsMap.get(d.id)!.secData = d.data();
+      });
 
-      for (const d of mainSnap.docs) {
-        const dateKey = d.id;
-        const mainRecords: BookingRecord[] = d.data().bookedRecords || [];
-        const secRecords = secMap.get(dateKey) || [];
+      interface RecordLoc {
+        record: BookingRecord;
+        dateKey: string;
+      }
+      const recordLocationsMap = new Map<string, RecordLoc[]>();
 
-        const secSet = new Set(
-          secRecords.map((r) => `${r.timestamp}_${(r.phone || r.ipName || "").trim()}_${(r.agentEmail || "").toLowerCase().trim()}`)
-        );
+      dateDocsMap.forEach((val, dateKey) => {
+        const combinedRaw: BookingRecord[] = [
+          ...(val.mainData?.bookedRecords || []),
+          ...(val.secData?.bookedRecords || []),
+        ];
 
-        const missingRecords = mainRecords.filter(
-          (r) => !secSet.has(`${r.timestamp}_${(r.phone || r.ipName || "").trim()}_${(r.agentEmail || "").toLowerCase().trim()}`)
-        );
+        const uniqueInDate = new Map<string, BookingRecord>();
+        combinedRaw.forEach((r) => {
+          const key = `${r.timestamp}_${(r.agentEmail || "").toLowerCase().trim()}`;
+          if (!uniqueInDate.has(key) || r.rescheduledDate) {
+            uniqueInDate.set(key, r);
+          }
+        });
 
-        if (missingRecords.length > 0) {
-          totalSynced += missingRecords.length;
-          const targetRef = doc(bookingDb, "bookings", dateKey);
-          await setDoc(
-            targetRef,
-            {
-              bookedRecords: arrayUnion(...missingRecords),
-            },
-            { merge: true }
-          );
+        uniqueInDate.forEach((r) => {
+          const key = `${r.timestamp}_${(r.agentEmail || "").toLowerCase().trim()}`;
+          if (!recordLocationsMap.has(key)) recordLocationsMap.set(key, []);
+          recordLocationsMap.get(key)!.push({ record: r, dateKey });
+        });
+      });
+
+      const finalDateRecordsMap = new Map<string, BookingRecord[]>();
+      let duplicatesRemoved = 0;
+
+      recordLocationsMap.forEach((locations) => {
+        let bestLoc = locations[0];
+        if (locations.length > 1) {
+          duplicatesRemoved += locations.length - 1;
+          const targetDateLoc = locations.find((l) => l.record.rescheduledDate && l.record.rescheduledDate === l.dateKey);
+          if (targetDateLoc) {
+            bestLoc = targetDateLoc;
+          } else {
+            bestLoc = locations.reduce((prev, curr) =>
+              curr.record.rescheduledDate === curr.dateKey ? curr : prev
+            );
+          }
         }
+
+        const targetDate = bestLoc.record.rescheduledDate || bestLoc.dateKey;
+        if (!finalDateRecordsMap.has(targetDate)) finalDateRecordsMap.set(targetDate, []);
+
+        const rawCleanRec: BookingRecord = {
+          agentEmail: bestLoc.record.agentEmail || "",
+          ipName: bestLoc.record.ipName || "",
+          phone: bestLoc.record.phone || "",
+          timestamp: bestLoc.record.timestamp || Date.now(),
+          visited: !!bestLoc.record.visited,
+          rescheduled: !!bestLoc.record.rescheduled,
+          originalScheduledDate: bestLoc.record.originalScheduledDate,
+          rescheduledDate: bestLoc.record.rescheduledDate,
+        };
+
+        const cleanRec: BookingRecord = JSON.parse(JSON.stringify(rawCleanRec));
+
+        const existingInTarget = finalDateRecordsMap.get(targetDate)!;
+        if (!existingInTarget.some((e) => e.timestamp === cleanRec.timestamp && (e.agentEmail || "").toLowerCase() === (cleanRec.agentEmail || "").toLowerCase())) {
+          existingInTarget.push(cleanRec);
+        }
+      });
+
+      const allDateKeys = Array.from(new Set([...Array.from(dateDocsMap.keys()), ...Array.from(finalDateRecordsMap.keys())]));
+
+      for (const dateKey of allDateKeys) {
+        const finalRecords = finalDateRecordsMap.get(dateKey) || [];
+        const baseDoc = dateDocsMap.get(dateKey)?.mainData || dateDocsMap.get(dateKey)?.secData || {};
+        const maxSeats = baseDoc.seats !== undefined && finalRecords.length === 0 ? baseDoc.seats : Math.max(0, 20 - finalRecords.length);
+        const publicText = baseDoc.publicText || "";
+
+        const rawPayload = {
+          seats: maxSeats,
+          bookedRecords: finalRecords,
+          ...(publicText ? { publicText } : {}),
+        };
+
+        const payload = JSON.parse(JSON.stringify(rawPayload));
+
+        const refMain = doc(db, "bookings", dateKey);
+        const refSec = doc(bookingDb, "bookings", dateKey);
+
+        await Promise.allSettled([
+          setDoc(refMain, payload, { merge: true }),
+          setDoc(refSec, payload, { merge: true }),
+        ]);
+      }
+
+      // Sync rescheduleLogs between both databases
+      const [mainLogsSnap, secLogsSnap] = await Promise.all([
+        getDocs(collection(db, "rescheduleLogs")),
+        getDocs(collection(bookingDb, "rescheduleLogs")),
+      ]);
+
+      const logsMap = new Map<string, any>();
+      mainLogsSnap.forEach((l) => logsMap.set(l.id, l.data()));
+      secLogsSnap.forEach((l) => logsMap.set(l.id, l.data()));
+
+      for (const [logId, logData] of Array.from(logsMap.entries())) {
+        const cleanLog = JSON.parse(JSON.stringify(logData));
+        await Promise.allSettled([
+          setDoc(doc(db, "rescheduleLogs", logId), cleanLog, { merge: true }),
+          setDoc(doc(bookingDb, "rescheduleLogs", logId), cleanLog, { merge: true }),
+        ]);
       }
 
       toast.success(
-        totalSynced > 0
-          ? `Successfully synchronized ${totalSynced} historical bookings into the new Firebase database!`
-          : "Both databases are already 100% synchronized."
+        `Database Sync Complete! Reconciled ${allDateKeys.length} dates across both Firebase accounts, cleaned ${duplicatesRemoved} duplicate entries, and synchronized all logs.`
       );
     } catch (e: any) {
+      console.error("Full DB Sync Error:", e);
       toast.error("Database sync failed: " + e.message);
     } finally {
       setSyncingDb(false);
@@ -998,79 +1181,103 @@ export default function AdminBookingsPage() {
     }
     setRsLoading(true);
 
-    const oldSecRef = doc(bookingDb, "bookings", rescheduleItem.dateKey);
-    const oldPriRef = doc(db, "bookings", rescheduleItem.dateKey);
-    const newDocRef = doc(bookingDb, "bookings", rsSelectedDate);
-
     try {
-      // 1. Remove from old date & return seat (supports both secondary and primary DBs)
-      let targetRef = oldSecRef;
-      let snap = await getDoc(oldSecRef);
-      if (!snap.exists()) {
-        snap = await getDoc(oldPriRef);
-        targetRef = oldPriRef;
-      }
+      // 1. Remove from all old date candidate documents in BOTH databases to prevent duplicates
+      const candidateOldDates = Array.from(
+        new Set(
+          [
+            rescheduleItem.dateKey,
+            rescheduleItem.rescheduledDate,
+            rescheduleItem.originalScheduledDate,
+          ].filter(Boolean) as string[]
+        )
+      );
 
-      if (snap.exists()) {
-        const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
-        const matchIdx = rawRecords.findIndex(
-          (r) =>
-            r.timestamp === rescheduleItem.timestamp &&
-            (r.agentEmail || "").toLowerCase().trim() === (rescheduleItem.agentEmail || "").toLowerCase().trim()
-        );
+      for (const dateStr of candidateOldDates) {
+        for (const firestoreInstance of [bookingDb, db]) {
+          try {
+            const oldRef = doc(firestoreInstance, "bookings", dateStr);
+            const snap = await getDoc(oldRef);
+            if (snap.exists()) {
+              const rawRecords: BookingRecord[] = snap.data().bookedRecords || [];
+              const matchIdx = rawRecords.findIndex(
+                (r) =>
+                  (r.timestamp === rescheduleItem.timestamp &&
+                    (r.agentEmail || "").toLowerCase().trim() === (rescheduleItem.agentEmail || "").toLowerCase().trim()) ||
+                  ((r.agentEmail || "").toLowerCase().trim() === (rescheduleItem.agentEmail || "").toLowerCase().trim() &&
+                    (r.ipName || "").toLowerCase().trim() === (rescheduleItem.ipName || "").toLowerCase().trim() &&
+                    r.phone === rescheduleItem.phone)
+              );
 
-        if (matchIdx !== -1) {
-          const updatedRecords = [...rawRecords];
-          updatedRecords.splice(matchIdx, 1);
-          await updateDoc(targetRef, {
-            seats: increment(1),
-            bookedRecords: updatedRecords,
-          });
+              if (matchIdx !== -1) {
+                const updatedRecords = [...rawRecords];
+                updatedRecords.splice(matchIdx, 1);
+                const currentSeats = snap.data().seats !== undefined ? snap.data().seats : 20;
+                await updateDoc(oldRef, {
+                  seats: Math.min(20, currentSeats + 1),
+                  bookedRecords: updatedRecords,
+                });
+              }
+            }
+          } catch (e) {
+            console.warn("Error removing old record:", e);
+          }
         }
       }
 
       const origDate = rescheduleItem.originalScheduledDate || rescheduleItem.dateKey;
 
-      const cleanNewRecord = {
-        agentEmail: rescheduleItem.agentEmail,
-        ipName: rescheduleItem.ipName,
-        phone: rescheduleItem.phone,
-        timestamp: rescheduleItem.timestamp,
+      const cleanNewRecord: BookingRecord = JSON.parse(JSON.stringify({
+        agentEmail: rescheduleItem.agentEmail || "",
+        ipName: rescheduleItem.ipName || "",
+        phone: rescheduleItem.phone || "",
+        timestamp: rescheduleItem.timestamp || Date.now(),
         visited: !!rescheduleItem.visited,
         rescheduled: true,
         originalScheduledDate: origDate,
         rescheduledDate: rsSelectedDate,
+      }));
+
+      // 2. Add to new date in BOTH databases
+      const addNewRecord = async (firestoreInstance: any) => {
+        const newRef = doc(firestoreInstance, "bookings", rsSelectedDate);
+        try {
+          await updateDoc(newRef, {
+            seats: increment(-1),
+            bookedRecords: arrayUnion(cleanNewRecord),
+          });
+        } catch {
+          await setDoc(
+            newRef,
+            {
+              seats: 19,
+              bookedRecords: [cleanNewRecord],
+            },
+            { merge: true }
+          );
+        }
       };
 
-      // 2. Add to new date
-      try {
-        await updateDoc(newDocRef, {
-          seats: increment(-1),
-          bookedRecords: arrayUnion(cleanNewRecord),
-        });
-      } catch (newDocErr) {
-        await setDoc(
-          newDocRef,
-          {
-            seats: 19,
-            bookedRecords: [cleanNewRecord],
-          },
-          { merge: true }
-        );
-      }
+      await Promise.allSettled([addNewRecord(bookingDb), addNewRecord(db)]);
 
-      // 3. Log to rescheduleLogs
-      const logRef = doc(collection(bookingDb, "rescheduleLogs"));
-      await setDoc(logRef, {
-        ipName: rescheduleItem.ipName,
-        seatOwner: rescheduleItem.agentEmail,
-        agentName: rescheduleItem.agentName || rescheduleItem.agentEmail,
+      // 3. Log to rescheduleLogs in BOTH databases
+      const logRefId = `${Date.now()}_${rescheduleItem.timestamp}`;
+      const logPayload = JSON.parse(JSON.stringify({
+        ipName: rescheduleItem.ipName || "",
+        seatOwner: rescheduleItem.agentEmail || "",
+        agentName: rescheduleItem.agentName || rescheduleItem.agentEmail || "",
         phone: rescheduleItem.phone || "",
         originalDate: rescheduleItem.dateKey,
         newDate: rsSelectedDate,
-        actionBy: user.email?.toLowerCase(),
+        actionBy: user.email?.toLowerCase() || "",
+        actionByName: userProfile?.displayName || user?.displayName || user.email?.split("@")[0] || user.email || "Admin",
         timestamp: Date.now(),
-      });
+      }));
+
+      await Promise.allSettled([
+        setDoc(doc(bookingDb, "rescheduleLogs", logRefId), logPayload, { merge: true }),
+        setDoc(doc(db, "rescheduleLogs", logRefId), logPayload, { merge: true }),
+      ]);
 
       logUserActivity(user?.email, {
         desc: `Rescheduled booking for IP: ${rescheduleItem.ipName || "Beneficiary"} from ${rescheduleItem.dateKey} to ${rsSelectedDate}`,
@@ -1765,6 +1972,17 @@ export default function AdminBookingsPage() {
                               <span>Reschedule</span>
                             </button>
                             <button
+                              onClick={() => {
+                                setEditBookingItem(b);
+                                setEditIpName(b.ipName || "");
+                                setEditPhone(b.phone || "");
+                              }}
+                              className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-blue-600 rounded-lg transition-colors cursor-pointer"
+                              title="Edit booking details"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
                               onClick={() => handleCancelSingleBooking(b)}
                               className="p-1.5 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg transition-colors"
                               title="Delete booking"
@@ -1964,6 +2182,18 @@ export default function AdminBookingsPage() {
                       >
                         {b.visited && <Lock className="w-3 h-3" />}
                         <span>Reschedule</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setEditBookingItem(b);
+                          setEditIpName(b.ipName || "");
+                          setEditPhone(b.phone || "");
+                        }}
+                        className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors cursor-pointer"
+                        title="Edit Booking"
+                      >
+                        <Edit3 className="w-4 h-4" />
                       </button>
 
                       <button
@@ -2206,7 +2436,7 @@ export default function AdminBookingsPage() {
                 <tr className="bg-purple-50/70 text-purple-900 border-b border-purple-200 uppercase tracking-wider font-semibold">
                   <th className="p-4">Agent Name</th>
                   <th className="p-4">IP / IW Name</th>
-                  <th className="p-4">Phone Number</th>
+                  <th className="p-4 text-center">Reschedule Count</th>
                   <th className="p-4">Scheduled Date</th>
                   <th className="p-4 text-purple-700 font-bold">Rescheduled Date</th>
                   <th className="p-4">Action By</th>
@@ -2223,11 +2453,32 @@ export default function AdminBookingsPage() {
                 ) : (
                   activeRescheduleLogs.map((log) => {
                     const agentClean = log.agentName || (userProfiles[log.seatOwner?.toLowerCase()] || log.seatOwner);
+                    const actionByClean =
+                      log.actionByName ||
+                      userProfiles[log.actionBy?.toLowerCase()] ||
+                      (log.actionBy && log.actionBy.includes("@")
+                        ? log.actionBy.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                        : log.actionBy || "-");
+
+                    const ownerKey = (log.seatOwner || "").toLowerCase().trim();
+                    const ipKey = (log.ipName || "").toLowerCase().trim();
+                    const key = `${ownerKey}___${ipKey}`;
+                    const count = rescheduleCountMap.get(key) || 1;
+
                     return (
                       <tr key={log.id} className="hover:bg-purple-50/50 transition-colors">
                         <td className="p-4 font-bold text-blue-600">{agentClean}</td>
                         <td className="p-4 font-bold text-slate-900">{maskIpInfo ? maskIpName(log.ipName) : log.ipName}</td>
-                        <td className="p-4 font-mono text-slate-600">{maskIpInfo ? maskPhone(log.phone || "") : (log.phone || "-")}</td>
+                        <td className="p-4 text-center">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                            count > 1
+                              ? "bg-purple-100 text-purple-900 border border-purple-300 shadow-2xs"
+                              : "bg-slate-100 text-slate-700 border border-slate-200"
+                          }`}>
+                            <RotateCcw className="w-3 h-3 text-purple-600" />
+                            {count} {count === 1 ? "Time" : "Times"}
+                          </span>
+                        </td>
                         <td className="p-4 font-bold text-slate-800">{log.originalDate}</td>
                         <td className="p-4">
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-100 text-purple-800 border border-purple-300">
@@ -2235,7 +2486,7 @@ export default function AdminBookingsPage() {
                             {log.newDate}
                           </span>
                         </td>
-                        <td className="p-4 text-slate-600">{log.actionBy}</td>
+                        <td className="p-4 font-semibold text-slate-800">{actionByClean}</td>
                         <td className="p-4 text-right text-slate-400">
                           {new Date(log.timestamp).toLocaleString()}
                         </td>
@@ -2656,6 +2907,88 @@ export default function AdminBookingsPage() {
                 className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg shadow-sm"
               >
                 {rsLoading ? "Processing..." : "Confirm Reschedule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- EDIT BOOKING MODAL --- */}
+      {editBookingItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white max-w-md w-full rounded-2xl shadow-2xl p-6 border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-slate-900 font-bold">
+                <Edit3 className="w-5 h-5 text-blue-600" />
+                <h3 className="text-base">Edit Booking Details</h3>
+              </div>
+              <button
+                onClick={() => setEditBookingItem(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
+              <div>
+                Agent Name: <strong className="text-blue-600">{editBookingItem.agentName}</strong>
+              </div>
+              <div>
+                Scheduled Date: <strong className="text-slate-800">{editBookingItem.dateKey}</strong>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  IP / IW Name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={editIpName}
+                  onChange={(e) => setEditIpName(e.target.value)}
+                  placeholder="Enter IP / IW Name"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Phone Number <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="Enter Phone Number"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditBookingItem(null)}
+                className="px-4 py-2 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEditBooking}
+                disabled={editSaving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-sm transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {editSaving ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <span>Save Changes</span>
+                )}
               </button>
             </div>
           </div>
