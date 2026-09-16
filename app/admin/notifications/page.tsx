@@ -7,8 +7,11 @@ import {
   doc,
   deleteDoc,
   writeBatch,
+  query,
+  orderBy,
+  limit,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, logsDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { AppNotification, NotificationType, NotificationTargetRole } from "@/lib/types";
@@ -72,7 +75,7 @@ export default function AdminAnnouncementsPage() {
   const [link, setLink] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // 1. Fetch from BOTH `notifications` and `announcements` Collections in Real Time
+  // 1. Fetch from BOTH `notifications` and `announcements` Collections in logsDb in Real Time
   useEffect(() => {
     let notifsFromDb: AppNotification[] = [];
     let annFromDb: AppNotification[] = [];
@@ -99,9 +102,9 @@ export default function AdminAnnouncementsPage() {
       setLoading(false);
     };
 
-    // A. Listen to notifications collection
+    // A. Listen to notifications collection in logsDb (Limited to 50 newest to prevent read bloat)
     const unsubNotifs = onSnapshot(
-      collection(db, "notifications"),
+      query(collection(logsDb, "notifications"), orderBy("createdAt", "desc"), limit(50)),
       (snapshot) => {
         const list: AppNotification[] = [];
         snapshot.forEach((docSnap) => {
@@ -110,12 +113,12 @@ export default function AdminAnnouncementsPage() {
         notifsFromDb = list;
         syncAll();
       },
-      (err) => console.warn("notifications sync notice:", err)
+      (err) => console.warn("logsDb notifications sync notice:", err)
     );
 
-    // B. Listen to announcements collection
+    // B. Listen to announcements collection in logsDb
     const unsubAnn = onSnapshot(
-      collection(db, "announcements"),
+      collection(logsDb, "announcements"),
       (snapshot) => {
         const list: AppNotification[] = [];
         snapshot.forEach((docSnap) => {
@@ -138,7 +141,7 @@ export default function AdminAnnouncementsPage() {
         annFromDb = list;
         syncAll();
       },
-      (err) => console.warn("announcements sync notice:", err)
+      (err) => console.warn("logsDb announcements sync notice:", err)
     );
 
     // C. Listen to System Status for Masking Policy
@@ -258,12 +261,12 @@ export default function AdminAnnouncementsPage() {
 
     setBulkDeleting(true);
     try {
-      const batch1 = writeBatch(db);
-      const batch2 = writeBatch(db);
+      const batch1 = writeBatch(logsDb);
+      const batch2 = writeBatch(logsDb);
 
       selectedIds.forEach((id) => {
-        batch1.delete(doc(db, "notifications", id));
-        batch2.delete(doc(db, "announcements", id));
+        batch1.delete(doc(logsDb, "notifications", id));
+        batch2.delete(doc(logsDb, "announcements", id));
       });
 
       await Promise.allSettled([batch1.commit(), batch2.commit()]);
@@ -298,8 +301,8 @@ export default function AdminAnnouncementsPage() {
 
     try {
       await Promise.allSettled([
-        deleteDoc(doc(db, "notifications", item.id)),
-        deleteDoc(doc(db, "announcements", item.id)),
+        deleteDoc(doc(logsDb, "notifications", item.id)),
+        deleteDoc(doc(logsDb, "announcements", item.id)),
       ]);
 
       logUserActivity(user?.email, {

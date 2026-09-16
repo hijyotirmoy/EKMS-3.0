@@ -10,7 +10,7 @@ import {
   limit,
   doc,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, logsDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { AppNotification, Announcement, UserProfile } from "@/lib/types";
 import { parseMarkdownLinks } from "@/lib/utils";
@@ -77,15 +77,15 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
     }
   }, [userEmail]);
 
-  // 1. Sync User Notifications & Announcements
+  // 1. Sync User Notifications & Announcements (Reading exclusively from new logsDb account)
   useEffect(() => {
-    let notifsFromDb: AppNotification[] = [];
+    let notifsFromLogsDb: AppNotification[] = [];
     let notifsFromAnn: AppNotification[] = [];
     let announcementsFromDb: Announcement[] = [];
 
     const mergeAndSet = () => {
       const map = new Map<string, AppNotification>();
-      notifsFromDb.forEach((n) => map.set(n.id, n));
+      notifsFromLogsDb.forEach((n) => map.set(n.id, n));
       notifsFromAnn.forEach((a) => {
         if (!map.has(a.id)) {
           map.set(a.id, a);
@@ -106,25 +106,23 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
       setLoading(false);
     };
 
-    // A. Real-time Notifications Query
-    const unsubNotifs = onSnapshot(
-      collection(db, "notifications"),
+    // Real-time Notifications Query from logsDb (Limited to 40 newest)
+    const unsubNotifsLogs = onSnapshot(
+      query(collection(logsDb, "notifications"), orderBy("createdAt", "desc"), limit(40)),
       (snapshot) => {
         const list: AppNotification[] = [];
         snapshot.forEach((docSnap) => {
           list.push({ id: docSnap.id, ...(docSnap.data() as Omit<AppNotification, "id">) });
         });
-        notifsFromDb = list;
+        notifsFromLogsDb = list;
         mergeAndSet();
       },
-      (err) => {
-        console.warn("Notifications collection notice:", err);
-      }
+      (err) => console.warn("logsDb notifications notice:", err)
     );
 
-    // B. Real-time Announcements Query
+    // B. Real-time Announcements Query from logsDb & main db
     const unsubAnn = onSnapshot(
-      collection(db, "announcements"),
+      collection(logsDb, "announcements"),
       (snapshot) => {
         const notifList: AppNotification[] = [];
         const aList: Announcement[] = [];
@@ -153,9 +151,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
         announcementsFromDb = aList;
         mergeAndSet();
       },
-      (err) => {
-        console.warn("Announcements collection notice:", err);
-      }
+      (err) => console.warn("Announcements collection notice:", err)
     );
 
     // C. Real-time System Mask Setting Listener
@@ -171,7 +167,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
 
     return () => {
       try {
-        unsubNotifs();
+        unsubNotifsLogs();
       } catch (e) {}
       try {
         unsubAnn();

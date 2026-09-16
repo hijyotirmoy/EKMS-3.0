@@ -1,11 +1,11 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { doc, getDoc, setDoc, collection, onSnapshot } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { doc, getDoc, setDoc, collection, onSnapshot, query, orderBy, limit, getDocs } from "firebase/firestore";
+import { db, logsDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { logUserActivity } from "@/lib/activityLogger";
+import { logUserActivity, SystemLogDoc, getTodayDateString } from "@/lib/activityLogger";
 import { UserProfile } from "@/lib/types";
 import { ALL_AGENT_PAGES, ALL_ADMIN_PAGES, AppPageDef, isPageRestricted } from "@/lib/pageAccess";
 import {
@@ -47,14 +47,41 @@ import {
   Users2,
   Bell,
   ClipboardCheck,
+  Activity,
+  History,
+  ListFilter,
+  PlusCircle,
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 
 export default function AdminSettingsPage() {
   const { userProfile, isMasterAdmin } = useAuth();
   const { toast } = usePopup();
   const [activeTab, setActiveTab] = useState<
-    "privacy" | "access" | "session" | "maintenance" | "images" | "files"
+    "privacy" | "access" | "session" | "maintenance" | "images" | "files" | "logs"
   >("privacy");
+
+  // System Logs State (Initial load from localStorage for 0-read instant render)
+  const [systemLogs, setSystemLogs] = useState<SystemLogDoc[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = localStorage.getItem("ekms_cached_sys_logs_v1");
+        return cached ? JSON.parse(cached) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+    return [];
+  });
+  const [loadingSystemLogs, setLoadingSystemLogs] = useState(false);
+  const [systemLogsSearch, setSystemLogsSearch] = useState("");
+  const [systemLogsTypeFilter, setSystemLogsTypeFilter] = useState<string>("all");
+
+  // System Logs Pagination (50 logs at a time)
+  const [logsCurrentPage, setLogsCurrentPage] = useState(1);
+  const logsPerPage = 50;
 
   // Mask IP Info Policy
   const [maskIpInfo, setMaskIpInfo] = useState(false);
@@ -85,6 +112,265 @@ export default function AdminSettingsPage() {
   // Image Settings
   const [autoCompress, setAutoCompress] = useState(true);
   const [maxImageSize, setMaxImageSize] = useState(2);
+
+  // Fetch real-time System Activity Logs from logsDb (userActivityLogs & daily_activity)
+  useEffect(() => {
+    if (activeTab !== "logs") return;
+    setLoadingSystemLogs(true);
+
+    // Helper to resolve real user email and format display name cleanly
+    const resolveLogUserDetails = (logId: string, rawEmail?: string, rawUserName?: string) => {
+      let email = (rawEmail || "").toLowerCase().trim();
+      let userName = rawUserName || "";
+
+      // Extract email from document ID if email is missing or unknown
+      // e.g. hist_himangshu.bezbaruah@piramalswasthya.org_2026-09-16_1789555481853_1
+      if ((!email || email === "unknown@piramalswasthya.org") && logId) {
+        const cleanId = logId.replace("hist_", "");
+        const parts = cleanId.split("_");
+        if (parts[0] && parts[0].includes("@")) {
+          email = parts[0].toLowerCase().trim();
+        }
+      }
+
+      if (
+        !userName ||
+        userName === "User" ||
+        userName === "Unknown" ||
+        !rawEmail ||
+        rawEmail === "unknown@piramalswasthya.org"
+      ) {
+        if (email && email !== "unknown@piramalswasthya.org" && email.includes("@")) {
+          const namePart = email.split("@")[0];
+          userName = namePart.replace(/[._]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+        } else {
+          userName = "User";
+          email = "unknown@piramalswasthya.org";
+        }
+      }
+
+      return { email, userName };
+    };
+
+    // Automatic seamless in-app transfer & repair of historical logs & notifications from db -> logsDb using logged-in admin session
+    const syncHistoricalLogsToNewAccount = async () => {
+      try {
+        const syncKey = "ekms_logs_migrated_v2";
+        if (typeof window !== "undefined" && sessionStorage.getItem(syncKey)) return;
+
+        const [dailySnap, notifSnap, annSnap] = await Promise.all([
+          getDocs(collection(db, "daily_activity")),
+          getDocs(collection(db, "notifications")),
+          getDocs(collection(db, "announcements")),
+        ]);
+
+        for (const dSnap of dailySnap.docs) {
+          const data = dSnap.data();
+          const docId = dSnap.id;
+          let emailKey = (data.email || "").toLowerCase().trim();
+
+          // Extract email from docId if missing (e.g. himangshu.bezbaruah@piramalswasthya.org_2026-09-16)
+          if (!emailKey || emailKey === "unknown@piramalswasthya.org") {
+            if (docId.includes("_")) {
+              const potentialEmail = docId.substring(0, docId.lastIndexOf("_"));
+              if (potentialEmail.includes("@")) {
+                emailKey = potentialEmail.toLowerCase().trim();
+              }
+            }
+          }
+
+          if (!emailKey) emailKey = "unknown@piramalswasthya.org";
+          const userName =
+            emailKey !== "unknown@piramalswasthya.org"
+              ? emailKey.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())
+              : "User";
+
+          await setDoc(doc(logsDb, "daily_activity", docId), { ...data, email: emailKey }, { merge: true });
+
+          if (Array.isArray(data.timelineEvents)) {
+            for (let idx = 0; idx < data.timelineEvents.length; idx++) {
+              const ev = data.timelineEvents[idx];
+              const timestamp = ev.time || ev.timestamp || Date.now();
+              const logId = `hist_${docId}_${timestamp}_${idx}`;
+              await setDoc(
+                doc(logsDb, "userActivityLogs", logId),
+                {
+                  id: logId,
+                  email: emailKey,
+                  userName,
+                  desc: ev.desc || "User activity recorded",
+                  type: ev.type || "general",
+                  color: ev.color || "blue",
+                  icon: ev.icon || "Activity",
+                  timestamp,
+                  date: data.date || docId.split("_")[1] || getTodayDateString(),
+                },
+                { merge: true }
+              );
+            }
+          }
+        }
+
+        for (const nSnap of notifSnap.docs) {
+          await setDoc(doc(logsDb, "notifications", nSnap.id), nSnap.data(), { merge: true });
+        }
+        for (const aSnap of annSnap.docs) {
+          await setDoc(doc(logsDb, "announcements", aSnap.id), aSnap.data(), { merge: true });
+        }
+
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem(syncKey, "true");
+        }
+      } catch (e) {
+        console.warn("Auto-sync historical logs notice:", e);
+      }
+    };
+    syncHistoricalLogsToNewAccount();
+
+    let sysLogsFromDb: SystemLogDoc[] = [];
+    let timelineLogsFromDb: SystemLogDoc[] = [];
+
+    const syncLogs = () => {
+      const logMap = new Map<string, SystemLogDoc>();
+      sysLogsFromDb.forEach((l) => logMap.set(l.id, l));
+      timelineLogsFromDb.forEach((l) => {
+        if (!logMap.has(l.id)) logMap.set(l.id, l);
+      });
+      const list = Array.from(logMap.values());
+      list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      setSystemLogs(list);
+      setLoadingSystemLogs(false);
+
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("ekms_cached_sys_logs_v1", JSON.stringify(list.slice(0, 300)));
+        } catch (e) {}
+      }
+    };
+
+    // A. Listen to userActivityLogs collection in logsDb (Limited to 100 newest)
+    const unsubSysLogs = onSnapshot(
+      query(collection(logsDb, "userActivityLogs"), orderBy("timestamp", "desc"), limit(100)),
+      (snap) => {
+        const list: SystemLogDoc[] = [];
+        snap.forEach((dDoc) => {
+          const raw = dDoc.data() as SystemLogDoc;
+          const logId = dDoc.id;
+          const { email, userName } = resolveLogUserDetails(logId, raw.email, raw.userName);
+
+          // If local resolution fixed unknown values, push fix to logsDb asynchronously
+          if (raw.userName === "User" && userName !== "User") {
+            setDoc(doc(logsDb, "userActivityLogs", logId), { email, userName }, { merge: true }).catch(() => {});
+          }
+
+          list.push({
+            ...raw,
+            id: logId,
+            email,
+            userName,
+          });
+        });
+        sysLogsFromDb = list;
+        syncLogs();
+      },
+      (err) => console.warn("userActivityLogs notice:", err)
+    );
+
+    // B. Fallback: Listen to daily_activity collection timelineEvents in logsDb
+    const unsubDailyLogs = onSnapshot(
+      query(collection(logsDb, "daily_activity"), limit(30)),
+      (snap) => {
+        const list: SystemLogDoc[] = [];
+        snap.forEach((dDoc) => {
+          const data = dDoc.data();
+          const logId = dDoc.id;
+          const { email, userName } = resolveLogUserDetails(logId, data.email, undefined);
+
+          if (Array.isArray(data.timelineEvents)) {
+            data.timelineEvents.forEach((ev: any, idx: number) => {
+              const time = ev.time || ev.timestamp || Date.now();
+              const subLogId = `${logId}_${time}_${idx}`;
+              list.push({
+                id: subLogId,
+                email,
+                userName,
+                desc: ev.desc || "User activity recorded",
+                type: ev.type || "general",
+                color: ev.color || "blue",
+                icon: ev.icon || "Activity",
+                timestamp: time,
+                date: data.date || getTodayDateString(),
+              });
+            });
+          }
+        });
+        timelineLogsFromDb = list;
+        syncLogs();
+      },
+      (err) => console.warn("daily_activity fallback notice:", err)
+    );
+
+    return () => {
+      try { unsubSysLogs(); } catch (e) {}
+      try { unsubDailyLogs(); } catch (e) {}
+    };
+  }, [activeTab]);
+
+  // Reset page to 1 when filters or search change
+  useEffect(() => {
+    setLogsCurrentPage(1);
+  }, [systemLogsSearch, systemLogsTypeFilter]);
+
+  // Filtered System Logs
+  const filteredSystemLogs = useMemo(() => {
+    let list = systemLogs;
+    if (systemLogsTypeFilter !== "all") {
+      list = list.filter((l) => l.type === systemLogsTypeFilter);
+    }
+    if (systemLogsSearch.trim()) {
+      const q = systemLogsSearch.toLowerCase().trim();
+      list = list.filter(
+        (l) =>
+          l.userName?.toLowerCase().includes(q) ||
+          l.email?.toLowerCase().includes(q) ||
+          l.desc?.toLowerCase().includes(q) ||
+          l.type?.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [systemLogs, systemLogsTypeFilter, systemLogsSearch]);
+
+  // Paginated System Logs (50 logs at a time)
+  const logsTotalPages = Math.max(1, Math.ceil(filteredSystemLogs.length / logsPerPage));
+  const paginatedSystemLogs = useMemo(() => {
+    const start = (logsCurrentPage - 1) * logsPerPage;
+    return filteredSystemLogs.slice(start, start + logsPerPage);
+  }, [filteredSystemLogs, logsCurrentPage, logsPerPage]);
+
+  // Helper for System Log category badge colors
+  const getLogTypeBadge = (type?: string) => {
+    switch (type) {
+      case "add":
+        return { bg: "bg-emerald-50 text-emerald-800 border-emerald-200", label: "ADD" };
+      case "edit":
+        return { bg: "bg-blue-50 text-blue-800 border-blue-200", label: "EDIT" };
+      case "delete":
+        return { bg: "bg-rose-50 text-rose-800 border-rose-200", label: "DELETE" };
+      case "report":
+        return { bg: "bg-rose-50 text-rose-800 border-rose-200", label: "REPORT" };
+      case "booking":
+        return { bg: "bg-teal-50 text-teal-800 border-teal-200", label: "BOOKING" };
+      case "auth":
+        return { bg: "bg-indigo-50 text-indigo-800 border-indigo-200", label: "LOGIN / AUTH" };
+      case "quiz":
+      case "course":
+        return { bg: "bg-purple-50 text-purple-800 border-purple-200", label: type.toUpperCase() };
+      case "settings":
+        return { bg: "bg-slate-100 text-slate-800 border-slate-300", label: "SETTINGS" };
+      default:
+        return { bg: "bg-slate-50 text-slate-700 border-slate-200", label: (type || "ACTIVITY").toUpperCase() };
+    }
+  };
 
   // 1. Fetch System Settings from Firestore
   useEffect(() => {
@@ -468,6 +754,18 @@ export default function AdminSettingsPage() {
           </button>
 
           <button
+            onClick={() => setActiveTab("logs")}
+            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
+              activeTab === "logs"
+                ? "bg-blue-600 text-white shadow-xs"
+                : "text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            <History className="w-4 h-4 shrink-0" />
+            <span>System Logs</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("session")}
             className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
               activeTab === "session"
@@ -619,6 +917,210 @@ export default function AdminSettingsPage() {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+          {/* ----------------------------------------------------
+              TAB: SYSTEM LOGS (AUDIT TRAIL)
+              ---------------------------------------------------- */}
+          {activeTab === "logs" && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              {/* Header */}
+              <div className="border-b border-slate-100 pb-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                      <History className="w-5 h-5 text-blue-600" />
+                      <span>System Activity & Audit Logs</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Live audit trail recording all agent & admin actions across the portal (Add, Edit, Delete, Post, Bookings, Reports, Settings, etc.).
+                    </p>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <span className="px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full font-bold text-xs flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5 text-blue-600 animate-pulse" />
+                      <span>Live Sync (3rd Account DB)</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Filters & Search Toolbar */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  {/* Search Input */}
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={systemLogsSearch}
+                      onChange={(e) => setSystemLogsSearch(e.target.value)}
+                      placeholder="Search logs by user, email, action or description..."
+                      className="w-full pl-9 pr-8 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs font-medium"
+                    />
+                    {systemLogsSearch && (
+                      <button
+                        onClick={() => setSystemLogsSearch("")}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Log Type Filter Pills */}
+                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar shrink-0">
+                    {[
+                      { id: "all", label: "All Actions" },
+                      { id: "add", label: "➕ Add" },
+                      { id: "edit", label: "✏️ Edit" },
+                      { id: "delete", label: "🗑️ Delete" },
+                      { id: "booking", label: "📅 Booking" },
+                      { id: "report", label: "🚩 Report" },
+                      { id: "settings", label: "⚙️ Settings" },
+                      { id: "auth", label: "🔐 Login" },
+                    ].map((pill) => (
+                      <button
+                        key={pill.id}
+                        onClick={() => setSystemLogsTypeFilter(pill.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap cursor-pointer ${
+                          systemLogsTypeFilter === pill.id
+                            ? "bg-slate-900 text-white shadow-xs"
+                            : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        {pill.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Logs Count & Live Indicator */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
+                <span className="text-xs text-slate-500 font-medium">
+                  Showing{" "}
+                  <strong className="text-slate-800">
+                    {filteredSystemLogs.length === 0
+                      ? 0
+                      : `${(logsCurrentPage - 1) * logsPerPage + 1} - ${Math.min(
+                          logsCurrentPage * logsPerPage,
+                          filteredSystemLogs.length
+                        )}`}
+                  </strong>{" "}
+                  of <strong className="text-slate-800">{filteredSystemLogs.length}</strong> activity logs
+                </span>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  IndexedDB Local Cache • Ultra-Low Reads (50 per page)
+                </span>
+              </div>
+
+              {/* System Activity Logs Table */}
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
+                      <th className="p-3.5 pl-4">User</th>
+                      <th className="p-3.5">Category</th>
+                      <th className="p-3.5">Activity Description</th>
+                      <th className="p-3.5 pr-4 text-right">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+                    {loadingSystemLogs ? (
+                      <tr>
+                        <td colSpan={4} className="text-center py-16 text-slate-400 text-xs">
+                          <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                          <span>Loading system activity logs...</span>
+                        </td>
+                      </tr>
+                    ) : paginatedSystemLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="text-center py-16 text-slate-400 text-xs">
+                          <History className="w-8 h-8 opacity-30 mx-auto mb-2" />
+                          <span>No system activity recorded matching your filters.</span>
+                        </td>
+                      </tr>
+                    ) : (
+                      paginatedSystemLogs.map((log) => {
+                        const badge = getLogTypeBadge(log.type);
+                        const formattedTime = log.timestamp
+                          ? new Date(log.timestamp).toLocaleString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            })
+                          : log.date || "—";
+
+                        return (
+                          <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
+                            {/* User Info */}
+                            <td className="p-3.5 pl-4 min-w-[160px]">
+                              <div className="font-bold text-slate-900 leading-tight">
+                                {log.userName || log.email.split("@")[0]}
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-mono truncate max-w-[150px]">
+                                {log.email}
+                              </div>
+                            </td>
+
+                            {/* Category Badge */}
+                            <td className="p-3.5 whitespace-nowrap">
+                              <span
+                                className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-[10px] font-extrabold border ${badge.bg}`}
+                              >
+                                {badge.label}
+                              </span>
+                            </td>
+
+                            {/* Description */}
+                            <td className="p-3.5 max-w-md">
+                              <div className="text-slate-800 font-medium leading-relaxed">
+                                {log.desc}
+                              </div>
+                            </td>
+
+                            {/* Timestamp */}
+                            <td className="p-3.5 pr-4 text-right whitespace-nowrap text-slate-500 font-mono text-[11px]">
+                              {formattedTime}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination Controls */}
+              {filteredSystemLogs.length > logsPerPage && (
+                <div className="flex items-center justify-between pt-2 px-1">
+                  <button
+                    onClick={() => setLogsCurrentPage((prev) => Math.max(prev - 1, 1))}
+                    disabled={logsCurrentPage === 1}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white text-slate-700 font-bold text-xs rounded-xl shadow-2xs transition-colors cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Previous</span>
+                  </button>
+
+                  <span className="text-xs font-semibold text-slate-600">
+                    Page <strong className="text-slate-900">{logsCurrentPage}</strong> of{" "}
+                    <strong className="text-slate-900">{logsTotalPages}</strong>
+                  </span>
+
+                  <button
+                    onClick={() => setLogsCurrentPage((prev) => Math.min(prev + 1, logsTotalPages))}
+                    disabled={logsCurrentPage >= logsTotalPages}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white text-slate-700 font-bold text-xs rounded-xl shadow-2xs transition-colors cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

@@ -17,6 +17,8 @@ import {
   query,
   where,
   deleteDoc,
+  orderBy,
+  limit,
 } from "firebase/firestore";
 import { db, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
@@ -174,9 +176,9 @@ export default function AdminBookingsPage() {
       (err) => console.warn("Secondary bookings snapshot error:", err)
     );
 
-    // Main Logs
+    // Main Logs (Limited to 50 newest)
     const unsubLogsMain = onSnapshot(
-      collection(db, "rescheduleLogs"),
+      query(collection(db, "rescheduleLogs"), orderBy("timestamp", "desc"), limit(50)),
       (snap) => {
         const logs: RescheduleLog[] = [];
         snap.forEach((d) => logs.push({ id: d.id, ...(d.data() as Omit<RescheduleLog, "id">) }));
@@ -186,9 +188,9 @@ export default function AdminBookingsPage() {
       (err) => console.warn("Main logs snapshot error:", err)
     );
 
-    // Secondary Logs
+    // Secondary Logs (Limited to 50 newest)
     const unsubLogsSec = onSnapshot(
-      collection(bookingDb, "rescheduleLogs"),
+      query(collection(bookingDb, "rescheduleLogs"), orderBy("timestamp", "desc"), limit(50)),
       (snap) => {
         const logs: RescheduleLog[] = [];
         snap.forEach((d) => logs.push({ id: d.id, ...(d.data() as Omit<RescheduleLog, "id">) }));
@@ -1123,7 +1125,17 @@ export default function AdminBookingsPage() {
       for (const dateKey of allDateKeys) {
         const finalRecords = finalDateRecordsMap.get(dateKey) || [];
         const baseDoc = dateDocsMap.get(dateKey)?.mainData || dateDocsMap.get(dateKey)?.secData || {};
-        const maxSeats = baseDoc.seats !== undefined && finalRecords.length === 0 ? baseDoc.seats : Math.max(0, 20 - finalRecords.length);
+        const mainSeats = dateDocsMap.get(dateKey)?.mainData?.seats;
+        const secSeats = dateDocsMap.get(dateKey)?.secData?.seats;
+        let maxSeats: number;
+        if (typeof mainSeats === "number" || typeof secSeats === "number") {
+          maxSeats = Math.min(
+            typeof mainSeats === "number" ? mainSeats : Infinity,
+            typeof secSeats === "number" ? secSeats : Infinity
+          );
+        } else {
+          maxSeats = Math.max(0, 20 - finalRecords.length);
+        }
         const publicText = baseDoc.publicText || "";
 
         const rawPayload = {

@@ -1,5 +1,5 @@
-import { doc, setDoc, updateDoc, arrayUnion, increment } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { doc, setDoc, updateDoc, arrayUnion, increment, collection } from "firebase/firestore";
+import { db, logsDb } from "@/lib/firebase";
 
 export function getTodayDateString(): string {
   const now = new Date();
@@ -31,6 +31,19 @@ export interface ActivityEvent {
     | "general";
   color?: "blue" | "emerald" | "rose" | "amber" | "purple" | "teal" | "slate" | "indigo";
   icon?: string;
+}
+
+export interface SystemLogDoc {
+  id: string;
+  email: string;
+  userName: string;
+  desc: string;
+  type: ActivityEvent["type"];
+  color: ActivityEvent["color"];
+  icon: string;
+  timestamp: number;
+  date: string;
+  extraData?: Record<string, any>;
 }
 
 export async function logUserActivity(
@@ -76,36 +89,61 @@ export async function logUserActivity(
     icon: event.icon || (event.type === "delete" ? "Trash2" : event.type === "add" ? "PlusCircle" : event.type === "edit" ? "Edit" : "Activity"),
   };
 
-  try {
-    const activityDocRef = doc(db, "daily_activity", docId);
-    await updateDoc(activityDocRef, {
-      lastActive: now,
-      timelineEvents: arrayUnion(payloadEvent),
-      ...(event.type === "download" ? { filesDownloaded: increment(1) } : {}),
-      ...(event.type === "quiz" ? { quizzesCompletedCount: increment(1) } : {}),
-      ...(event.extraData || {}),
-    });
-  } catch (err) {
+  // 1. Write to daily_activity in logsDb (primary logs database)
+  const updateDailyActivityInDb = async (firestoreInstance: any) => {
     try {
-      const activityDocRef = doc(db, "daily_activity", docId);
-      await setDoc(
-        activityDocRef,
-        {
-          email: cleanEmail,
-          date: today,
-          loginTime: now,
-          firstLogin: now,
-          lastActive: now,
-          timelineEvents: [payloadEvent],
-          ...(event.type === "download" ? { filesDownloaded: 1 } : {}),
-          ...(event.type === "quiz" ? { quizzesCompletedCount: 1 } : {}),
-          ...(event.extraData || {}),
-        },
-        { merge: true }
-      );
-    } catch (e) {
-      console.error("Activity logging error:", e);
+      const activityDocRef = doc(firestoreInstance, "daily_activity", docId);
+      await updateDoc(activityDocRef, {
+        lastActive: now,
+        timelineEvents: arrayUnion(payloadEvent),
+        ...(event.type === "download" ? { filesDownloaded: increment(1) } : {}),
+        ...(event.type === "quiz" ? { quizzesCompletedCount: increment(1) } : {}),
+        ...(event.extraData || {}),
+      });
+    } catch (err) {
+      try {
+        const activityDocRef = doc(firestoreInstance, "daily_activity", docId);
+        await setDoc(
+          activityDocRef,
+          {
+            email: cleanEmail,
+            date: today,
+            loginTime: now,
+            firstLogin: now,
+            lastActive: now,
+            timelineEvents: [payloadEvent],
+            ...(event.type === "download" ? { filesDownloaded: 1 } : {}),
+            ...(event.type === "quiz" ? { quizzesCompletedCount: 1 } : {}),
+            ...(event.extraData || {}),
+          },
+          { merge: true }
+        );
+      } catch (e) {
+        console.error("Daily activity write error:", e);
+      }
     }
+  };
+
+  await updateDailyActivityInDb(logsDb);
+
+  // 2. Write individual log doc into userActivityLogs collection in logsDb (for System Logs tab)
+  try {
+    const sysLogRef = doc(collection(logsDb, "userActivityLogs"));
+    const userName = cleanEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    await setDoc(sysLogRef, {
+      id: sysLogRef.id,
+      email: cleanEmail,
+      userName,
+      desc: event.desc,
+      type: payloadEvent.type,
+      color: payloadEvent.color,
+      icon: payloadEvent.icon,
+      timestamp: now,
+      date: today,
+      extraData: event.extraData || {},
+    });
+  } catch (e) {
+    console.warn("Write to userActivityLogs notice:", e);
   }
 
   // Update last active in users collection (Throttled to once every 10 mins per session to save writes)

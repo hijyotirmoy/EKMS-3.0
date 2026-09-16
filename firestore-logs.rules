@@ -1,0 +1,27 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Notifications & Broadcast Announcements
+    match /notifications/{document=**} {
+      allow read, write: if true;
+    }
+    match /announcements/{document=**} {
+      allow read, write: if true;
+    }
+
+    // 2. Daily Agent Engagement Logs & Audit Trail Logs
+    match /daily_activity/{document=**} {
+      allow read, write: if true;
+    }
+    match /userActivityLogs/{document=**} {
+      allow read, write: if true;
+    }
+
+    // Default fallback: deny access to any unlisted collection
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

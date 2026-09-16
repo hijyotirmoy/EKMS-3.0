@@ -1,6 +1,11 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore, initializeFirestore } from "firebase/firestore";
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
@@ -23,14 +28,25 @@ const bookingFirebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MEASUREMENT_ID || "G-S4K53XNQ92",
 };
 
+const logsFirebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_LOGS_FIREBASE_API_KEY || "AIzaSyAVgwUI96k1zwFRqOeienKiORcNr4MvzXI",
+  authDomain: process.env.NEXT_PUBLIC_LOGS_FIREBASE_AUTH_DOMAIN || "ekms-logs.firebaseapp.com",
+  projectId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_PROJECT_ID || "ekms-logs",
+  storageBucket: process.env.NEXT_PUBLIC_LOGS_FIREBASE_STORAGE_BUCKET || "ekms-logs.firebasestorage.app",
+  messagingSenderId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MESSAGING_SENDER_ID || "329565552036",
+  appId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_APP_ID || "1:329565552036:web:15fd1b8e3a3a420580d531",
+  measurementId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MEASUREMENT_ID || "G-SW0HRQM9ZQ",
+};
+
 // Initialize or reuse main Firebase App
 export const app = getApps().find((a) => a.name === "[DEFAULT]") || (getApps().length > 0 ? getApp() : initializeApp(firebaseConfig));
 export const auth = getAuth(app);
 
-// Use initializeFirestore with experimentalAutoDetectLongPolling: true to fix net::ERR_QUIC_PROTOCOL_ERROR.QUIC_TOO_MANY_RTOS
+// Use persistentLocalCache with persistentMultipleTabManager for modern zero-warning multi-tab persistence
 export const db = (() => {
   try {
     return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
       experimentalAutoDetectLongPolling: true,
     });
   } catch (e) {
@@ -45,10 +61,24 @@ export const bookingApp = getApps().find((a) => a.name === "BookingApp") || init
 export const bookingDb = (() => {
   try {
     return initializeFirestore(bookingApp, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
       experimentalAutoDetectLongPolling: true,
     });
   } catch (e) {
     return getFirestore(bookingApp);
+  }
+})();
+
+// Dedicated Logs Firebase App ("ekms-logs") for storing all notifications, announcements, user & daily activity logs separately
+export const logsApp = getApps().find((a) => a.name === "LogsApp") || initializeApp(logsFirebaseConfig, "LogsApp");
+export const logsDb = (() => {
+  try {
+    return initializeFirestore(logsApp, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+      experimentalAutoDetectLongPolling: true,
+    });
+  } catch (e) {
+    return getFirestore(logsApp);
   }
 })();
 

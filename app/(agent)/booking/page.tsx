@@ -17,6 +17,8 @@ import {
   where,
   getDocs,
   writeBatch,
+  orderBy,
+  limit,
 } from "firebase/firestore";
 import { db, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
@@ -164,9 +166,9 @@ export default function AgentBookingPage() {
       (err) => console.warn("Secondary bookings sync error:", err)
     );
 
-    // Reschedule Logs Main DB
+    // Reschedule Logs Main DB (Limited to 50 newest)
     const unsubLogsMain = onSnapshot(
-      collection(db, "rescheduleLogs"),
+      query(collection(db, "rescheduleLogs"), orderBy("timestamp", "desc"), limit(50)),
       (snap) => {
         const logs: RescheduleLog[] = [];
         snap.forEach((d) => logs.push({ id: d.id, ...(d.data() as Omit<RescheduleLog, "id">) }));
@@ -176,9 +178,9 @@ export default function AgentBookingPage() {
       (err) => console.warn("Main logs snapshot error:", err)
     );
 
-    // Reschedule Logs Secondary DB
+    // Reschedule Logs Secondary DB (Limited to 50 newest)
     const unsubLogsSec = onSnapshot(
-      collection(bookingDb, "rescheduleLogs"),
+      query(collection(bookingDb, "rescheduleLogs"), orderBy("timestamp", "desc"), limit(50)),
       (snap) => {
         const logs: RescheduleLog[] = [];
         snap.forEach((d) => logs.push({ id: d.id, ...(d.data() as Omit<RescheduleLog, "id">) }));

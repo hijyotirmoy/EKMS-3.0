@@ -8,7 +8,7 @@ import {
   arrayRemove,
   writeBatch,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, logsDb } from "@/lib/firebase";
 import { AppNotification, NotificationType, UserProfile } from "@/lib/types";
 
 /**
@@ -55,7 +55,7 @@ export async function createNotification(
   }
 ) {
   try {
-    const docId = data.id || doc(collection(db, "notifications")).id;
+    const docId = data.id || doc(collection(logsDb, "notifications")).id;
 
     const payload: Record<string, any> = {
       id: docId,
@@ -77,16 +77,16 @@ export async function createNotification(
       payload.link = data.link;
     }
 
-    // Parallel dual-write to notifications and announcements for 100% delivery guarantee
-    const p1 = setDoc(doc(db, "notifications", docId), payload, { merge: true }).catch((e) => {
-      console.warn("Write to notifications collection:", e);
+    // Write to logsDb (new dedicated account for all notifications)
+    const p1 = setDoc(doc(logsDb, "notifications", docId), payload, { merge: true }).catch((e) => {
+      console.warn("Write to logsDb notifications collection:", e);
     });
     const p2 = setDoc(
-      doc(db, "announcements", docId),
+      doc(logsDb, "announcements", docId),
       { ...payload, isVisible: true, isNotification: true },
       { merge: true }
     ).catch((e) => {
-      console.warn("Write to announcements collection:", e);
+      console.warn("Write to logsDb announcements collection:", e);
     });
 
     await Promise.allSettled([p1, p2]);
@@ -160,31 +160,16 @@ export async function markNotificationRead(notificationId: string, userEmail: st
     }
   } catch (e) {}
 
-  try {
-    const notifRef = doc(db, "notifications", notificationId);
-    await setDoc(
-      notifRef,
-      {
-        id: notificationId,
-        readBy: arrayUnion(emailKey),
-        updatedAt: Date.now(),
-      },
-      { merge: true }
-    );
-  } catch (error) {}
+  const payload = {
+    id: notificationId,
+    readBy: arrayUnion(emailKey),
+    updatedAt: Date.now(),
+  };
 
-  try {
-    const annRef = doc(db, "announcements", notificationId);
-    await setDoc(
-      annRef,
-      {
-        id: notificationId,
-        readBy: arrayUnion(emailKey),
-        updatedAt: Date.now(),
-      },
-      { merge: true }
-    );
-  } catch (e) {}
+  await Promise.allSettled([
+    setDoc(doc(logsDb, "notifications", notificationId), payload, { merge: true }),
+    setDoc(doc(logsDb, "announcements", notificationId), payload, { merge: true }),
+  ]);
 }
 
 /**
@@ -202,31 +187,16 @@ export async function markNotificationUnread(notificationId: string, userEmail: 
     }
   } catch (e) {}
 
-  try {
-    const notifRef = doc(db, "notifications", notificationId);
-    await setDoc(
-      notifRef,
-      {
-        id: notificationId,
-        readBy: arrayRemove(emailKey),
-        updatedAt: Date.now(),
-      },
-      { merge: true }
-    );
-  } catch (error) {}
+  const payload = {
+    id: notificationId,
+    readBy: arrayRemove(emailKey),
+    updatedAt: Date.now(),
+  };
 
-  try {
-    const annRef = doc(db, "announcements", notificationId);
-    await setDoc(
-      annRef,
-      {
-        id: notificationId,
-        readBy: arrayRemove(emailKey),
-        updatedAt: Date.now(),
-      },
-      { merge: true }
-    );
-  } catch (e) {}
+  await Promise.allSettled([
+    setDoc(doc(logsDb, "notifications", notificationId), payload, { merge: true }),
+    setDoc(doc(logsDb, "announcements", notificationId), payload, { merge: true }),
+  ]);
 }
 
 /**
@@ -246,10 +216,10 @@ export async function markAllNotificationsRead(notificationIds: string[], userEm
   } catch (e) {}
 
   try {
-    const batch = writeBatch(db);
+    const batchLogs = writeBatch(logsDb);
     notificationIds.forEach((id) => {
-      const ref = doc(db, "notifications", id);
-      batch.set(
+      const ref = doc(logsDb, "notifications", id);
+      batchLogs.set(
         ref,
         {
           id,
@@ -259,25 +229,8 @@ export async function markAllNotificationsRead(notificationIds: string[], userEm
         { merge: true }
       );
     });
-    await batch.commit();
+    await batchLogs.commit();
   } catch (error) {}
-
-  try {
-    const batch2 = writeBatch(db);
-    notificationIds.forEach((id) => {
-      const ref2 = doc(db, "announcements", id);
-      batch2.set(
-        ref2,
-        {
-          id,
-          readBy: arrayUnion(emailKey),
-          updatedAt: Date.now(),
-        },
-        { merge: true }
-      );
-    });
-    await batch2.commit();
-  } catch (e) {}
 }
 
 /**
@@ -298,31 +251,16 @@ export async function closeNotification(notificationId: string, userEmail: strin
     }
   } catch (e) {}
 
-  try {
-    const notifRef = doc(db, "notifications", notificationId);
-    await setDoc(
-      notifRef,
-      {
-        id: notificationId,
-        closedBy: arrayUnion(emailKey),
-        updatedAt: Date.now(),
-      },
-      { merge: true }
-    );
-  } catch (error) {}
+  const payload = {
+    id: notificationId,
+    closedBy: arrayUnion(emailKey),
+    updatedAt: Date.now(),
+  };
 
-  try {
-    const annRef = doc(db, "announcements", notificationId);
-    await setDoc(
-      annRef,
-      {
-        id: notificationId,
-        closedBy: arrayUnion(emailKey),
-        updatedAt: Date.now(),
-      },
-      { merge: true }
-    );
-  } catch (e) {}
+  await Promise.allSettled([
+    setDoc(doc(logsDb, "notifications", notificationId), payload, { merge: true }),
+    setDoc(doc(logsDb, "announcements", notificationId), payload, { merge: true }),
+  ]);
 }
 
 /**

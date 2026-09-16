@@ -14,7 +14,7 @@ import {
   updateDoc,
   onSnapshot,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, logsDb } from "@/lib/firebase";
 import { getOrFetchCollection } from "@/lib/cache";
 import { DailyActivityLog } from "@/lib/types";
 import { useAuth } from "@/context/AuthContext";
@@ -430,20 +430,19 @@ export default function AdminOverviewPage() {
     }
   };
 
-  // 4. Fetch Daily Activity for Date & merge with Users collection
+  // 4. Fetch Daily Activity for Date from logsDb & merge with Users collection
   useEffect(() => {
     setLoadingLogs(true);
-    const q = query(collection(db, "daily_activity"), where("date", "==", dateFilter));
+    const qLogs = query(collection(logsDb, "daily_activity"), where("date", "==", dateFilter));
 
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
-      const list: DailyActivityLog[] = [];
-      const loggedEmails = new Set<string>();
+    let logsDbData: Record<string, DailyActivityLog> = {};
 
-      snapshot.forEach((d) => {
-        const data = d.data() as Omit<DailyActivityLog, "id">;
-        list.push({ id: d.id, ...data });
-        if (data.email) loggedEmails.add(data.email.toLowerCase());
-      });
+    const syncActivity = async () => {
+      const mergedMap = new Map<string, DailyActivityLog>();
+      Object.values(logsDbData).forEach((item) => mergedMap.set(item.id || item.email, item));
+
+      const list: DailyActivityLog[] = Array.from(mergedMap.values());
+      const loggedEmails = new Set<string>(list.map((l) => (l.email || "").toLowerCase()).filter(Boolean));
 
       try {
         const usersSnap = await getDocs(collection(db, "users"));
@@ -458,13 +457,15 @@ export default function AdminOverviewPage() {
           if (!loggedEmails.has(email) && (u.lastLogin || isActuallyLocked)) {
             const loginDate = u.lastLogin ? new Date(u.lastLogin) : null;
             const localDateStr = loginDate
-              ? `${loginDate.getFullYear()}-${String(loginDate.getMonth() + 1).padStart(2, "0")}-${String(loginDate.getDate()).padStart(2, "0")}`
-              : null;
-            const isoDateStr = loginDate ? loginDate.toISOString().split("T")[0] : null;
+              ? loginDate.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+              : "";
+            const isTodayOrMatch = !dateFilter || localDateStr === dateFilter || isActuallyLocked;
 
-            if (localDateStr === dateFilter || isoDateStr === dateFilter || isActuallyLocked) {
-              const totalSec = u.lastLogin
-                ? Math.max(0, Math.floor(((u.lastActive || u.lastLogin) - u.lastLogin) / 1000))
+            if (isTodayOrMatch) {
+              const totalSec = u.totalDurationSeconds
+                ? Math.floor(u.totalDurationSeconds)
+                : u.lastLogin && u.lastActive
+                ? Math.floor((u.lastActive - u.lastLogin) / 1000)
                 : 0;
               list.push({
                 id: `${email}_${dateFilter}`,
@@ -488,9 +489,24 @@ export default function AdminOverviewPage() {
       list.sort((a, b) => (b.lastActive || b.loginTime || 0) - (a.lastActive || a.loginTime || 0));
       setActivityLogs(list);
       setLoadingLogs(false);
-    });
+    };
 
-    return () => unsubscribe();
+    const unsubLogs = onSnapshot(
+      qLogs,
+      (snapshot) => {
+        const map: Record<string, DailyActivityLog> = {};
+        snapshot.forEach((d) => {
+          map[d.id] = { id: d.id, ...(d.data() as Omit<DailyActivityLog, "id">) };
+        });
+        logsDbData = map;
+        syncActivity();
+      },
+      (err) => console.warn("logsDb daily_activity error:", err)
+    );
+
+    return () => {
+      try { unsubLogs(); } catch (e) {}
+    };
   }, [dateFilter]);
 
   // Online agents count
