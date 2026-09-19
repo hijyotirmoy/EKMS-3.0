@@ -52,10 +52,13 @@ export function timeAgo(timestamp: number): string {
   return "Just now";
 }
 
-// Parse markdown formatting (links, bold, italic, line breaks) to safe HTML
+// Parse markdown formatting (links, bold, italic, line breaks) to safe HTML with XSS entity escaping
 export function parseMarkdownLinks(text?: string): string {
   if (!text) return "";
   return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
     .replace(
       /\[(.*?)\]\((.*?)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline font-semibold hover:text-blue-800">$1</a>'

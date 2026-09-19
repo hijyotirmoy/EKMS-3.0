@@ -601,11 +601,60 @@ export default function AdminOverviewPage() {
         console.warn("Drilldown profile fetch error:", err);
       }
 
-      // Fetch Daily Activity for target date
+      // Fetch Daily Activity for target date from logsDb
       let activity: DailyActivityLog | null = null;
+      let sysLogsForAgent: any[] = [];
       try {
-        const activitySnap = await getDoc(doc(db, "daily_activity", `${cleanEmail}_${activeDate}`));
-        if (activitySnap.exists()) activity = activitySnap.data() as DailyActivityLog;
+        const [activitySnap, sysLogsSnap] = await Promise.all([
+          getDoc(doc(logsDb, "daily_activity", `${cleanEmail}_${activeDate}`)),
+          getDocs(
+            query(
+              collection(logsDb, "userActivityLogs"),
+              where("email", "==", cleanEmail),
+              where("date", "==", activeDate)
+            )
+          ).catch(() => ({ docs: [] } as any)),
+        ]);
+
+        if (activitySnap.exists()) {
+          activity = activitySnap.data() as DailyActivityLog;
+        }
+
+        if (sysLogsSnap.docs) {
+          sysLogsSnap.docs.forEach((dDoc: any) => sysLogsForAgent.push(dDoc.data()));
+        }
+
+        const existingEvents = activity?.timelineEvents || [];
+        const eventTimes = new Set(existingEvents.map((e) => e.time || (e as any).timestamp));
+        const mergedEvents = [...existingEvents];
+
+        sysLogsForAgent.forEach((sl) => {
+          if (sl.timestamp && !eventTimes.has(sl.timestamp)) {
+            eventTimes.add(sl.timestamp);
+            mergedEvents.push({
+              time: sl.timestamp,
+              desc: sl.desc,
+              type: sl.type,
+              color: sl.color,
+              icon: sl.icon,
+            });
+          }
+        });
+
+        mergedEvents.sort((a, b) => (a.time || 0) - (b.time || 0));
+
+        if (activity) {
+          activity.timelineEvents = mergedEvents;
+        } else if (mergedEvents.length > 0 || sysLogsForAgent.length > 0) {
+          activity = {
+            id: `${cleanEmail}_${activeDate}`,
+            email: cleanEmail,
+            name: profile?.displayName || cleanEmail.split("@")[0],
+            date: activeDate,
+            totalSeconds: 0,
+            timelineEvents: mergedEvents,
+          };
+        }
       } catch (err) {
         console.warn("Drilldown activity fetch error:", err);
       }
@@ -1135,21 +1184,22 @@ export default function AdminOverviewPage() {
                     <th className="p-4">First Login</th>
                     <th className="p-4">Last Status / Logout</th>
                     <th className="p-4">Account / Lock Status</th>
-                    <th className="p-4 text-center">Time Spent in App</th>
+                    <th className="p-4">Page Time & Recent Activity</th>
+                    <th className="p-4 text-center">Total Screen Time</th>
                     <th className="p-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
                   {loadingLogs ? (
                     <tr>
-                      <td colSpan={6} className="text-center py-12 text-slate-400">
+                      <td colSpan={7} className="text-center py-12 text-slate-400">
                         <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                         Loading daily logs...
                       </td>
                     </tr>
                   ) : displayedLogs.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="text-center py-12 text-slate-400">
+                      <td colSpan={7} className="text-center py-12 text-slate-400">
                         {filterOnlineOnly
                           ? "No agents are currently active online right now."
                           : `No agent activity recorded for ${dateFilter}.`}
@@ -1174,6 +1224,22 @@ export default function AdminOverviewPage() {
                       const lockInfo = userLockMap[log.email.toLowerCase()];
                       const isAccountLocked = !!lockInfo?.isLocked;
                       const failedCount = lockInfo?.failedAttempts || 0;
+
+                      // Page visits sorted by time spent
+                      const pageBreakdown = log.pageVisits
+                        ? Object.entries(log.pageVisits)
+                            .map(([p, sec]) => ({
+                              name: p.replace(/[/._]/g, " ").trim().toUpperCase() || "HOME",
+                              sec: Number(sec) || 0,
+                            }))
+                            .sort((a, b) => b.sec - a.sec)
+                            .slice(0, 3)
+                        : [];
+
+                      // Latest activity action text
+                      const latestEvent = log.timelineEvents && log.timelineEvents.length > 0
+                        ? log.timelineEvents[log.timelineEvents.length - 1]
+                        : null;
 
                       return (
                         <tr key={log.email} className={`hover:bg-slate-50/70 transition-colors ${isAccountLocked ? "bg-rose-50/30" : ""}`}>
@@ -1250,15 +1316,41 @@ export default function AdminOverviewPage() {
                             )}
                           </td>
 
+                          {/* Page Time & Recent Activity Column */}
+                          <td className="p-4 max-w-xs">
+                            <div className="space-y-1.5">
+                              {pageBreakdown.length > 0 ? (
+                                <div className="flex flex-wrap items-center gap-1">
+                                  {pageBreakdown.map((pb) => (
+                                    <span
+                                      key={pb.name}
+                                      className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200"
+                                    >
+                                      {pb.name}: {formatDuration(pb.sec)}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-slate-400 italic">No page breakdown</span>
+                              )}
+                              {latestEvent && (
+                                <div className="text-[11px] text-blue-700 font-medium line-clamp-1 flex items-center gap-1">
+                                  <Activity className="w-3 h-3 text-blue-500 shrink-0" />
+                                  <span>{latestEvent.desc}</span>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+
                           <td className="p-4 text-center">
-                            <span className="bg-blue-50 border border-blue-100 text-blue-700 font-bold px-3 py-1 rounded-full text-xs shadow-2xs">
+                            <span className="bg-blue-50 border border-blue-100 text-blue-700 font-bold px-3 py-1 rounded-full text-xs shadow-2xs whitespace-nowrap">
                               {timeStr}
                             </span>
                           </td>
                           <td className="p-4 text-right">
                             <button
                               onClick={() => handleOpenDrilldown(log.email)}
-                              className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
+                              className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer"
                             >
                               View Report
                             </button>

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { collection, query, where, getDocs, doc, getDoc, onSnapshot } from "firebase/firestore";
 import { sendPasswordResetEmail } from "firebase/auth";
-import { auth, db } from "@/lib/firebase";
+import { auth, db, logsDb } from "@/lib/firebase";
 import { usePopup } from "@/context/PopupContext";
 import { getBase64Image, timeAgo } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
@@ -79,22 +79,69 @@ export default function ProfilePage() {
   const [dailyActivity, setDailyActivity] = useState<DailyActivityLog | null>(null);
   const [activityLoading, setActivityLoading] = useState(true);
 
-  // 1. Subscribe to User's Daily Activity Log in Real Time
+  // 1. Subscribe to User's Daily Activity Log in Real Time from logsDb
   useEffect(() => {
     if (!user?.email) return;
-    const email = user.email.toLowerCase();
+    const email = user.email.toLowerCase().trim();
     const docId = `${email}_${dateFilter}`;
     setActivityLoading(true);
 
-    const unsubscribe = onSnapshot(
-      doc(db, "daily_activity", docId),
+    let dailyData: DailyActivityLog | null = null;
+    let sysLogs: any[] = [];
+
+    const syncCombinedActivity = () => {
+      if (!dailyData && sysLogs.length === 0) {
+        setDailyActivity(null);
+        setActivityLoading(false);
+        return;
+      }
+
+      const existingEvents = dailyData?.timelineEvents || [];
+      const eventTimes = new Set(existingEvents.map((e) => e.time || (e as any).timestamp));
+
+      // Merge events from userActivityLogs that match dateFilter
+      const mergedEvents = [...existingEvents];
+      sysLogs.forEach((sl) => {
+        if (sl.timestamp && !eventTimes.has(sl.timestamp)) {
+          eventTimes.add(sl.timestamp);
+          mergedEvents.push({
+            time: sl.timestamp,
+            desc: sl.desc,
+            type: sl.type,
+            color: sl.color,
+            icon: sl.icon,
+          });
+        }
+      });
+
+      mergedEvents.sort((a, b) => (a.time || 0) - (b.time || 0));
+
+      setDailyActivity({
+        id: docId,
+        email,
+        name: userProfile?.displayName || user.displayName || email.split("@")[0],
+        date: dateFilter,
+        loginTime: dailyData?.loginTime,
+        firstLogin: dailyData?.firstLogin,
+        lastActive: dailyData?.lastActive,
+        logoutTime: dailyData?.logoutTime,
+        totalSeconds: dailyData?.totalSeconds || 0,
+        pageVisits: dailyData?.pageVisits || {},
+        timelineEvents: mergedEvents,
+      });
+      setActivityLoading(false);
+    };
+
+    // A. Listen to daily_activity in logsDb
+    const unsubDaily = onSnapshot(
+      doc(logsDb, "daily_activity", docId),
       (snap) => {
         if (snap.exists()) {
-          setDailyActivity(snap.data() as DailyActivityLog);
+          dailyData = snap.data() as DailyActivityLog;
         } else {
-          setDailyActivity(null);
+          dailyData = null;
         }
-        setActivityLoading(false);
+        syncCombinedActivity();
       },
       (err) => {
         console.error("Daily activity sync error:", err);
@@ -102,8 +149,27 @@ export default function ProfilePage() {
       }
     );
 
-    return () => unsubscribe();
-  }, [user?.email, dateFilter]);
+    // B. Listen to userActivityLogs in logsDb for matching email and date
+    const unsubSysLogs = onSnapshot(
+      query(
+        collection(logsDb, "userActivityLogs"),
+        where("email", "==", email),
+        where("date", "==", dateFilter)
+      ),
+      (snap) => {
+        const list: any[] = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        sysLogs = list;
+        syncCombinedActivity();
+      },
+      (err) => console.warn("userActivityLogs profile sync notice:", err)
+    );
+
+    return () => {
+      unsubDaily();
+      unsubSysLogs();
+    };
+  }, [user?.email, userProfile, dateFilter]);
 
   // 2. Profile Completion Percentage
   const { completionPct, missingItems } = useMemo(() => {

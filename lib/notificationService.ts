@@ -56,6 +56,13 @@ export async function createNotification(
 ) {
   try {
     const docId = data.id || doc(collection(logsDb, "notifications")).id;
+    const notifRef = doc(logsDb, "notifications", docId);
+    const existingSnap = await getDoc(notifRef).catch(() => null);
+
+    // If notification already exists with readBy/closedBy data, do not wipe out readBy array
+    if (existingSnap && existingSnap.exists()) {
+      return docId;
+    }
 
     const payload: Record<string, any> = {
       id: docId,
@@ -78,7 +85,7 @@ export async function createNotification(
     }
 
     // Write to logsDb (new dedicated account for all notifications)
-    const p1 = setDoc(doc(logsDb, "notifications", docId), payload, { merge: true }).catch((e) => {
+    const p1 = setDoc(notifRef, payload, { merge: true }).catch((e) => {
       console.warn("Write to logsDb notifications collection:", e);
     });
     const p2 = setDoc(

@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { doc, getDoc, setDoc, updateDoc, increment } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, logsDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 
 export function getTodayDateString(): string {
@@ -55,7 +55,7 @@ export default function ActivityTracker() {
 
       const today = getTodayDateString();
       const docId = `${email}_${today}`;
-      const activityDocRef = doc(db, "daily_activity", docId);
+      const activityDocRef = doc(logsDb, "daily_activity", docId);
       const userDocRef = doc(db, "users", email);
       const now = Date.now();
       const cleanPath = (pathname || "/").replace(/[/.]/g, "_");

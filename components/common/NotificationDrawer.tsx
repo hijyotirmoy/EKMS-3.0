@@ -559,6 +559,9 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
                                 markNotificationRead(item.id, userEmail);
                               } else {
                                 setLocalReadIds((prev) => prev.filter((id) => id !== item.id));
+                                window.dispatchEvent(
+                                  new CustomEvent("ekms-notification-read-update", { detail: { unreadIds: [item.id] } })
+                                );
                                 markNotificationUnread(item.id, userEmail);
                               }
                             }

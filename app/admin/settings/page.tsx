@@ -248,9 +248,9 @@ export default function AdminSettingsPage() {
       }
     };
 
-    // A. Listen to userActivityLogs collection in logsDb (Limited to 100 newest)
+    // A. Listen to userActivityLogs collection in logsDb (Fetch up to 1000 newest logs)
     const unsubSysLogs = onSnapshot(
-      query(collection(logsDb, "userActivityLogs"), orderBy("timestamp", "desc"), limit(100)),
+      query(collection(logsDb, "userActivityLogs"), orderBy("timestamp", "desc"), limit(1000)),
       (snap) => {
         const list: SystemLogDoc[] = [];
         snap.forEach((dDoc) => {
@@ -278,7 +278,7 @@ export default function AdminSettingsPage() {
 
     // B. Fallback: Listen to daily_activity collection timelineEvents in logsDb
     const unsubDailyLogs = onSnapshot(
-      query(collection(logsDb, "daily_activity"), limit(30)),
+      query(collection(logsDb, "daily_activity"), limit(100)),
       (snap) => {
         const list: SystemLogDoc[] = [];
         snap.forEach((dDoc) => {

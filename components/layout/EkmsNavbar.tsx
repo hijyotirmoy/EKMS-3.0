@@ -6,7 +6,7 @@ import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { collection, query, where, getDocs } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, logsDb } from "@/lib/firebase";
 import { getCachedData, setCachedData } from "@/lib/firestoreCache";
 import {
   Menu,
@@ -51,7 +51,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
     }
   }, [user?.email]);
 
-  // Listen to instant read and creation events
+  // Listen to instant read, unread, and creation events
   useEffect(() => {
     const handleReadUpdate = (e: any) => {
       if (e.detail?.ids) {
@@ -61,6 +61,14 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
           return next;
         });
       }
+      if (e.detail?.unreadIds) {
+        setReadOverrideIds((prev) => {
+          const next = new Set(prev);
+          e.detail.unreadIds.forEach((id: string) => next.delete(id));
+          return next;
+        });
+      }
+      setNotifTrigger((prev) => prev + 1);
     };
 
     const handleNotifCreated = () => {
@@ -123,8 +131,13 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
             return;
           }
           seenIds.add(data.id);
-          const isRead = data.readBy?.includes(userEmail) || readOverrideIds.has(data.id);
-          const isClosed = data.closedBy?.includes(userEmail) || readOverrideIds.has(data.id);
+          const isRead = Array.isArray(data.readBy)
+            ? data.readBy.map((e: string) => e.toLowerCase().trim()).includes(userEmail)
+            : readOverrideIds.has(data.id);
+          const isClosed = Array.isArray(data.closedBy)
+            ? data.closedBy.map((e: string) => e.toLowerCase().trim()).includes(userEmail)
+            : false;
+
           if (!isRead && !isClosed) {
             unread++;
           }
@@ -142,7 +155,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       rawNotifs = cachedNotifs;
       calculateUnread();
     } else {
-      getDocs(collection(db, "notifications")).then((snap) => {
+      getDocs(collection(logsDb, "notifications")).then((snap) => {
         if (!isMounted) return;
         rawNotifs = [];
         snap.forEach((d) => rawNotifs.push({ id: d.id, ...d.data() }));
@@ -157,7 +170,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       rawAnn = cachedAnn;
       calculateUnread();
     } else {
-      getDocs(collection(db, "announcements")).then((snap) => {
+      getDocs(collection(logsDb, "announcements")).then((snap) => {
         if (!isMounted) return;
         const list: any[] = [];
         snap.forEach((d) => {

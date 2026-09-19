@@ -3,8 +3,9 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut as fbSignOut } from "firebase/auth";
 import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, increment } from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
+import { auth, db, logsDb } from "@/lib/firebase";
 import { UserProfile, UserRole, SystemStatus } from "@/lib/types";
+import { logUserActivity } from "@/lib/activityLogger";
 
 interface AuthContextType {
   user: User | null;
@@ -416,9 +417,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const docId = `${cleanEmail}_${today}`;
       const userName = profile?.displayName || profile?.name || currentUser.displayName || cleanEmail.split("@")[0];
 
-      const snap = await getDoc(doc(db, "daily_activity", docId));
+      const snap = await getDoc(doc(logsDb, "daily_activity", docId));
       if (!snap.exists()) {
-        await setDoc(doc(db, "daily_activity", docId), {
+        await setDoc(doc(logsDb, "daily_activity", docId), {
           email: cleanEmail,
           name: userName,
           date: today,
@@ -440,7 +441,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       } else {
         const nextSessionNum = (snap.data()?.loginCount || 0) + 1;
-        await updateDoc(doc(db, "daily_activity", docId), {
+        await updateDoc(doc(logsDb, "daily_activity", docId), {
           name: userName,
           lastActive: now,
           loginTime: now,
@@ -454,6 +455,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }),
         });
       }
+
+      // Also log into userActivityLogs collection for global system logs
+      const sessionNum = snap.exists() ? (snap.data()?.loginCount || 0) + 1 : 1;
+      logUserActivity(cleanEmail, {
+        desc: `Logged in to EKMS Portal (Session #${sessionNum})`,
+        type: "auth",
+        color: "emerald",
+        icon: "LogIn",
+      });
 
       await setDoc(
         userDocRef,
@@ -483,7 +493,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const docId = `${email}_${today}`;
         
         try {
-          await updateDoc(doc(db, "daily_activity", docId), {
+          await updateDoc(doc(logsDb, "daily_activity", docId), {
             logoutTime: now,
             lastActive: now,
             timelineEvents: arrayUnion({
@@ -496,14 +506,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           });
         } catch {
           await setDoc(
-            doc(db, "daily_activity", docId),
+            doc(logsDb, "daily_activity", docId),
             {
+              email,
               logoutTime: now,
               lastActive: now,
             },
             { merge: true }
           );
         }
+
+        // Also log logout event to userActivityLogs in logsDb
+        logUserActivity(email, {
+          desc: "User logged out of session",
+          type: "auth",
+          color: "slate",
+          icon: "LogOut",
+        });
 
         await setDoc(
           doc(db, "users", email),
