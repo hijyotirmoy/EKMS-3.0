@@ -6,19 +6,37 @@ service cloud.firestore {
     // Helper: Check if user is an Admin safely
     function isAdmin() {
       return request.auth != null && 
-             exists(/databases/$(database)/documents/users/$(request.auth.token.email)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role in ["Admin", "Master Admin"];
+             request.auth.token.email != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.token.email.lower())) &&
+             get(/databases/$(database)/documents/users/$(request.auth.token.email.lower())).data.role in ["Admin", "Master Admin"];
     }
 
-    // 1. Notifications: Authenticated users can receive & trigger notifications
+    // Helper: Check if user is Master Admin safely
+    function isMasterAdmin() {
+      return request.auth != null && 
+             request.auth.token.email != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.token.email.lower())) &&
+             get(/databases/$(database)/documents/users/$(request.auth.token.email.lower())).data.role == "Master Admin";
+    }
+
+    // Helper: Check if current authenticated user is operating on their own email record
+    function isSelf(email) {
+      return request.auth != null && 
+             request.auth.token.email != null && 
+             request.auth.token.email.lower() == email.lower();
+    }
+
+    // 1. Notifications: Authenticated users can read and mark read; only admins create or delete
     match /notifications/{document=**} {
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null;
+      allow create, delete: if isAdmin();
+      allow update: if request.auth != null;
     }
 
-    // 2. Announcements: Read-only for public/agents, write for authenticated/admins
+    // 2. Announcements: Read-only for public/agents, write for Admins only
     match /announcements/{document=**} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow write: if isAdmin();
     }
 
     // 3. Knowledge Base & CMS (Read-Only for Public/Agents, Full Write for Admins)
@@ -31,22 +49,33 @@ service cloud.firestore {
     // 4. System Status, Settings & Security Locks
     match /system/{document=**} { 
       allow read: if true; 
-      allow create, delete: if isAdmin();
-      allow update: if request.auth != null; 
+      allow write: if isAdmin(); 
     }
     match /settings/{document=**} { 
       allow read: if true; 
       allow write: if isAdmin(); 
     }
     match /security_locks/{email} {
-      allow read, write: if true;
+      allow read: if request.auth != null;
+      allow write: if isAdmin() || isSelf(email);
     }
 
-    // 5. User Profiles: Allow users to create & update profile, quiz scores, course progress
+    // 5. User Profiles: Prevent self-promotion to Admin/Master Admin or altering restricted pages
     match /users/{email} {
       allow read: if request.auth != null;
-      allow create, update: if request.auth != null;
-      allow delete: if isAdmin();
+      // Only admins can create admin users; self-provisioning is strictly forced to "Agent"
+      allow create: if isAdmin() || (
+        isSelf(email) && 
+        (!('role' in request.resource.data) || request.resource.data.role == "Agent") &&
+        (!('restrictedPages' in request.resource.data) || request.resource.data.restrictedPages.size() == 0)
+      );
+      // Self update cannot modify role or restrictedPages
+      allow update: if isAdmin() || (
+        isSelf(email) && 
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'restrictedPages']))
+      );
+      // Master Admins cannot be deleted by standard Admins
+      allow delete: if isMasterAdmin() || (isAdmin() && resource.data.role != "Master Admin");
     }
 
     // 6. Doubts Board: Agents can post & answer doubts, Admins full access
@@ -56,26 +85,22 @@ service cloud.firestore {
       allow delete: if isAdmin() || (request.auth != null && resource.data.authorEmail == request.auth.token.email);
     }
 
-    // 7. Quizzes & Onboarding Courses
+    // 7. Quizzes & Onboarding Courses: Read-only for agents, write for Admins only
     match /quizzes/{document=**} { 
       allow read: if true; 
-      allow create, delete: if isAdmin();
-      allow update: if request.auth != null;
+      allow write: if isAdmin();
     }
     match /courses/{document=**} { 
       allow read: if true; 
-      allow create, delete: if isAdmin();
-      allow update: if request.auth != null;
+      allow write: if isAdmin();
     }
     match /onboarding/{document=**} { 
       allow read: if true; 
-      allow create, delete: if isAdmin();
-      allow update: if request.auth != null;
+      allow write: if isAdmin();
     }
     match /onboardings/{document=**} { 
       allow read: if true; 
-      allow create, delete: if isAdmin();
-      allow update: if request.auth != null;
+      allow write: if isAdmin();
     }
 
     // 8. Agent Daily Activity Tracking
@@ -89,13 +114,15 @@ service cloud.firestore {
     // 9. Missing Content Tracker
     match /missing_searches/{term} {
       allow read: if isAdmin();
-      allow write: if true; 
+      allow create, update: if true; 
+      allow delete: if isAdmin();
     }
     
     // 10. Reports & Issue Tickets
     match /reports/{reportId} {
       allow create: if request.auth != null;
-      allow read, update, delete: if request.auth != null; 
+      allow read: if isAdmin() || (request.auth != null && resource.data.agentEmail == request.auth.token.email);
+      allow update, delete: if isAdmin();
     }
     
     // 11. Verification Bookings & Reschedule Logs

@@ -30,6 +30,7 @@ import {
   Check,
   X,
   Activity,
+  AlertTriangle,
 } from "lucide-react";
 
 function getTodayDateString(): string {
@@ -461,6 +462,18 @@ export default function ProfilePage() {
               <Shield className="w-4 h-4 text-blue-600" />
               <span>Security & Account</span>
             </h3>
+
+            {userProfile?.mustChangePassword && (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-amber-900">Default Password Detected</h4>
+                  <p className="text-[11px] text-amber-700 leading-relaxed">
+                    You are currently using the default system password. Please send yourself a password reset email below to choose a private password.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <button

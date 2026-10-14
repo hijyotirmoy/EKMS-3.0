@@ -324,10 +324,14 @@ export default function AdminOverviewPage() {
     if (!confirmed) return;
 
     try {
-      // 1. Call server API to unlock
+      // 1. Call server API to unlock with Admin ID token
+      const idToken = user ? await user.getIdToken() : "";
       fetch("/api/auth/security-lock", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
         body: JSON.stringify({ email: cleanEmail, action: "unlock" }),
       }).catch(() => {});
 

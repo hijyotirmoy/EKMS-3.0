@@ -31,6 +31,7 @@ export interface UserProfile {
   lastFailedAttempt?: number;
   lockReason?: string;
   restrictedPages?: string[];
+  mustChangePassword?: boolean;
 }
 
 export interface BookingRecord {

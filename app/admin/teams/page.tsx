@@ -10,7 +10,7 @@ import {
   getDocs,
   writeBatch,
 } from "firebase/firestore";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, sendPasswordResetEmail } from "firebase/auth";
 import { db, getSecondaryAuth } from "@/lib/firebase";
 import { getOrFetchCollection, touchMetadata } from "@/lib/cache";
 import { useAuth } from "@/context/AuthContext";
@@ -244,6 +244,7 @@ export default function AdminTeamsPage() {
         const secAuth = getSecondaryAuth();
         try {
           await createUserWithEmailAndPassword(secAuth, emailKey, "esic123");
+          await sendPasswordResetEmail(secAuth, emailKey).catch(() => {});
           await secAuth.signOut();
         } catch (authErr: any) {
           console.warn("Auth user creation note:", authErr.message);
@@ -262,6 +263,7 @@ export default function AdminTeamsPage() {
           profilePhoto: photoVal,
           createdAt: Date.now(),
           orgTier: "unassigned",
+          mustChangePassword: true,
         });
 
         logUserActivity(currentAdminProfile?.email, {
@@ -271,7 +273,7 @@ export default function AdminTeamsPage() {
 
         showAlert({
           title: "Team Member Added!",
-          message: "Agent ID: " + formAgentId + "\nDefault Password: esic123",
+          message: `Agent ID: ${formAgentId || nextGeneratedAgentId}\nDefault Temporary Password: esic123\n\nA secure password setup link has also been dispatched to ${emailKey}.`,
           type: "success",
         });
       } else {

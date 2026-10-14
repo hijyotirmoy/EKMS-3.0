@@ -374,10 +374,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Clear local & server lock record on successful sign-in
     setLocalLock({ isLocked: false, failedAttempts: 0, lockedUntil: 0 });
+    const currentUser = userCredential.user;
     try {
+      const idToken = await currentUser.getIdToken();
       fetch("/api/auth/security-lock", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken}`,
+        },
         body: JSON.stringify({ email: cleanEmail, action: "unlock" }),
       }).catch(() => {});
 
@@ -387,7 +392,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ]);
     } catch (e) {}
 
-    const currentUser = userCredential.user;
     const profile = await fetchUserProfile(currentUser);
     const actualRole: UserRole = profile?.role || "Agent";
 

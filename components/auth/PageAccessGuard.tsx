@@ -34,16 +34,9 @@ export default function PageAccessGuard({ children }: { children?: React.ReactNo
   }
 
   return (
-    <>
-      {/* Background disabled/dimmed children content */}
-      <div className="filter blur-sm pointer-events-none select-none opacity-20 min-h-screen">
-        {children}
-      </div>
-
-      {/* Security Restriction Modal / Dialog */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-        <div className="bg-white border border-rose-100 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6 text-center animate-in zoom-in-95 duration-200">
-          {/* Animated Lock Icon */}
+    <div className="min-h-screen flex items-center justify-center p-4 bg-slate-50 animate-in fade-in duration-200">
+      <div className="bg-white border border-rose-100 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6 text-center animate-in zoom-in-95 duration-200">
+        {/* Animated Lock Icon */}
           <div className="w-16 h-16 bg-rose-50 border-2 border-rose-200 text-rose-600 rounded-2xl flex items-center justify-center mx-auto shadow-inner relative">
             <Lock className="w-8 h-8 text-rose-600" />
             <div className="absolute -top-1.5 -right-1.5 bg-rose-600 text-white rounded-full p-1 shadow-xs">
@@ -98,6 +91,5 @@ export default function PageAccessGuard({ children }: { children?: React.ReactNo
           </div>
         </div>
       </div>
-    </>
   );
 }

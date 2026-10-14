@@ -5,18 +5,22 @@ service cloud.firestore {
 
     // 1. Notifications & Broadcast Announcements
     match /notifications/{document=**} {
-      allow read, write: if true;
+      allow read, create, update: if true;
+      allow delete: if false;
     }
     match /announcements/{document=**} {
-      allow read, write: if true;
+      allow read, create, update: if true;
+      allow delete: if false;
     }
 
-    // 2. Daily Agent Engagement Logs & Audit Trail Logs
+    // 2. Daily Agent Engagement Logs & Audit Trail Logs (Tamper-Resistant: deletions prohibited)
     match /daily_activity/{document=**} {
-      allow read, write: if true;
+      allow read, create, update: if true;
+      allow delete: if false;
     }
     match /userActivityLogs/{document=**} {
-      allow read, write: if true;
+      allow read, create, update: if true;
+      allow delete: if false;
     }
 
     // Default fallback: deny access to any unlisted collection
