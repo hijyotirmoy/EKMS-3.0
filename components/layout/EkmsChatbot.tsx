@@ -27,6 +27,7 @@ const esicMessages = [
 ];
 
 export default function EkmsChatbot() {
+  return null;
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const [tooltipText, setTooltipText] = useState<string | null>(null);

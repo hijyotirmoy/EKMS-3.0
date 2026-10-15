@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import EkmsNavbar from "@/components/layout/EkmsNavbar";
 import EkmsSidebar from "@/components/layout/EkmsSidebar";
-import EkmsChatbot from "@/components/layout/EkmsChatbot";
 import { Lock, UserCheck, Loader2 } from "lucide-react";
 
 export default function AgentLayout({ children }: { children: React.ReactNode }) {
@@ -75,8 +74,6 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
           </div>
         </main>
       </div>
-
-      <EkmsChatbot />
     </div>
   );
 }
