@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { doc, setDoc, updateDoc, arrayUnion, increment } from "firebase/firestore";
+import { doc, setDoc, updateDoc, arrayUnion, increment, onSnapshot, deleteField } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getOrFetchCollection } from "@/lib/cache";
 import { useAuth } from "@/context/AuthContext";
@@ -41,6 +41,57 @@ export default function QuizPage() {
     if (userProfile?.quizScores) setLocalScores(userProfile.quizScores);
   }, [userProfile]);
 
+  // Self-heal and scrub stale/orphan scores from deleted or recycled quizzes
+  useEffect(() => {
+    if (!user?.email || !userProfile || quizzes.length === 0) return;
+
+    const quizMap = new Map(quizzes.map((q) => [q.id, q]));
+    const rawCompleted: string[] = Array.isArray(userProfile.quizCompleted) ? userProfile.quizCompleted : [];
+    const staleCompleted = rawCompleted.filter((qid: string) => {
+      const q = quizMap.get(qid);
+      if (!q) return true; // Quiz was deleted!
+      const userScore = userProfile.quizScores?.[qid];
+      if (typeof userScore === "number" && q.questions > 0 && userScore > q.questions) {
+        return true; // Impossible score from old deleted quiz!
+      }
+      return false;
+    });
+
+    const userScores = userProfile.quizScores && typeof userProfile.quizScores === "object" ? userProfile.quizScores : {};
+    const staleScoreKeys = Object.keys(userScores).filter((k) => {
+      const q = quizMap.get(k);
+      if (!q) return true; // Quiz was deleted!
+      const userScore = userScores[k];
+      if (typeof userScore === "number" && q.questions > 0 && userScore > q.questions) {
+        return true; // Impossible score from old deleted quiz!
+      }
+      return false;
+    });
+
+    if (staleCompleted.length > 0 || staleScoreKeys.length > 0) {
+      const userDocRef = doc(db, "users", user.email.toLowerCase().trim());
+      const updates: any = {};
+      if (staleCompleted.length > 0) {
+        updates.quizCompleted = rawCompleted.filter((qid) => !staleCompleted.includes(qid));
+      }
+      staleScoreKeys.forEach((k) => {
+        updates[`quizScores.${k}`] = deleteField();
+      });
+
+      updateDoc(userDocRef, updates)
+        .then(() => {
+          setLocalCompleted((prev) => prev.filter((id) => !staleCompleted.includes(id)));
+          setLocalScores((prev) => {
+            const next = { ...prev };
+            staleScoreKeys.forEach((k) => delete next[k]);
+            return next;
+          });
+          if (refreshProfile) refreshProfile();
+        })
+        .catch((err) => console.error("Scrubbing stale quiz scores error:", err));
+    }
+  }, [user, userProfile, quizzes, refreshProfile]);
+
   // Active Quiz Examination State
   const [activeQuiz, setActiveQuiz] = useState<Quiz | null>(null);
   const [userAnswers, setUserAnswers] = useState<Record<number, number>>({});
@@ -60,13 +111,19 @@ export default function QuizPage() {
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 1. Fetch Quizzes with smart browser cache
+  // 1. Fetch Quizzes with smart browser cache & real-time metadata sync
   useEffect(() => {
     let isMounted = true;
 
     const loadQuizzes = async () => {
       try {
         const list = await getOrFetchCollection<Quiz>("quizzes");
+        list.sort((a, b) => {
+          const numA = parseInt(a.id.replace(/\D/g, "") || "0", 10);
+          const numB = parseInt(b.id.replace(/\D/g, "") || "0", 10);
+          if (numA !== numB) return numA - numB;
+          return a.id.localeCompare(b.id);
+        });
         if (isMounted) {
           setQuizzes(list);
           setLoading(false);
@@ -79,8 +136,24 @@ export default function QuizPage() {
 
     loadQuizzes();
 
+    // Instantly sync when admin updates/activates/deactivates quizzes
+    const unsubMeta = onSnapshot(doc(db, "system", "metadata"), () => {
+      if (isMounted) {
+        loadQuizzes();
+      }
+    });
+
+    const handleFocus = () => {
+      if (isMounted) {
+        loadQuizzes();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+
     return () => {
       isMounted = false;
+      unsubMeta();
+      window.removeEventListener("focus", handleFocus);
     };
   }, []);
 
@@ -154,23 +227,35 @@ export default function QuizPage() {
     return Object.keys(localScores).length > 0 ? localScores : (userProfile?.quizScores || {});
   }, [localScores, userProfile]);
 
+  // Helper to verify a quiz is truly completed with a valid score for this specific quiz
+  const isQuizTaken = (quiz: Quiz) => {
+    if (!completedMap.includes(quiz.id)) return false;
+    const rawScore = scoresMap[quiz.id];
+    // If score is a number and exceeds question count (e.g. 8 > 3), it's stale data from an old deleted quiz!
+    if (typeof rawScore === "number" && quiz.questions > 0 && rawScore > quiz.questions) {
+      return false;
+    }
+    return true;
+  };
+
   // Personal Metrics
   const personalMetrics = useMemo(() => {
-    const total = quizzes.filter((q) => q.active).length;
+    const total = quizzes.filter((q) => q.active !== false).length;
     let taken = 0;
     let passed = 0;
     let totalPct = 0;
     const history: Array<{ quiz: Quiz; score: number; pct: number; passed: boolean }> = [];
 
     quizzes.forEach((q) => {
-      if (completedMap.includes(q.id)) {
+      if (isQuizTaken(q)) {
         taken++;
         const rawScore = scoresMap[q.id] || 0;
-        const pct = q.questions > 0 ? Math.round((rawScore / q.questions) * 100) : 0;
+        const currentScore = typeof rawScore === "number" ? Math.min(rawScore, q.questions) : 0;
+        const pct = q.questions > 0 ? Math.round((currentScore / q.questions) * 100) : 0;
         const isPass = pct >= 70;
         if (isPass) passed++;
         totalPct += pct;
-        history.push({ quiz: q, score: rawScore, pct, passed: isPass });
+        history.push({ quiz: q, score: currentScore, pct, passed: isPass });
       }
     });
 
@@ -197,6 +282,11 @@ export default function QuizPage() {
   const handleStartExam = (quiz: Quiz) => {
     if (!isLoggedIn || !user) {
       openLoginModal();
+      return;
+    }
+
+    if (quiz.active === false) {
+      toast.warning("This assessment is currently inactive and cannot be taken.");
       return;
     }
 
@@ -323,7 +413,7 @@ export default function QuizPage() {
                   {activeQuiz.title}
                 </h2>
                 <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-                  {activeQuiz.questions} Questions • {activeQuiz.time} Mins
+                  {`QUIZ ${activeQuiz.id.replace(/\D/g, "") || activeQuiz.id}`} • {activeQuiz.questions} Questions • {activeQuiz.time} Mins
                 </span>
               </div>
             </div>
@@ -532,8 +622,9 @@ export default function QuizPage() {
               </div>
             ) : (
               quizzes.map((quiz) => {
-                const isTaken = completedMap.includes(quiz.id);
-                const score = scoresMap[quiz.id] !== undefined ? scoresMap[quiz.id] : 0;
+                const isTaken = isQuizTaken(quiz);
+                const rawScore = scoresMap[quiz.id];
+                const score = typeof rawScore === "number" ? Math.min(rawScore, quiz.questions) : 0;
 
                 return (
                   <div
@@ -543,7 +634,7 @@ export default function QuizPage() {
                     {/* Top Row: Quiz ID & Score / Report */}
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-extrabold text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                        {quiz.id.replace("Q", "QUIZ ")}
+                        {`QUIZ ${quiz.id.replace(/\D/g, "") || quiz.id}`}
                       </span>
 
                       <div className="flex items-center gap-2">

@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
     const now = Date.now();
 
     // 1. UNLOCK ACTION: Must be authenticated and authorized
-    if (action === "unlock" || body.isLocked === false) {
+    if (action === "unlock") {
       const authHeader = request.headers.get("authorization") || "";
       const idToken = authHeader.startsWith("Bearer ") ? authHeader.substring(7) : "";
 

@@ -5,10 +5,12 @@ import {
   collection,
   onSnapshot,
   doc,
+  getDoc,
   setDoc,
   updateDoc,
   deleteDoc,
   writeBatch,
+  deleteField,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { touchMetadata } from "@/lib/cache";
@@ -64,10 +66,12 @@ export default function AdminQuizPage() {
   const [quizTitle, setQuizTitle] = useState("");
   const [quizTime, setQuizTime] = useState(15);
   const [mobileAllowed, setMobileAllowed] = useState(false);
+  const [quizActive, setQuizActive] = useState(true);
   const [questions, setQuestions] = useState<MCQQuestion[]>([
     { text: "", options: ["", "", "", ""], correct: 1 },
   ]);
   const [savingQuiz, setSavingQuiz] = useState(false);
+  const [bulkUploading, setBulkUploading] = useState(false);
 
   // Detailed Individual Agent Modal State & Pagination
   const [selectedAgentForAnalytics, setSelectedAgentForAnalytics] = useState<any | null>(null);
@@ -80,11 +84,40 @@ export default function AdminQuizPage() {
 
     const unsubQuizzes = onSnapshot(
       collection(db, "quizzes"),
-      (snapshot) => {
+      async (snapshot) => {
         const list: Quiz[] = [];
+        let legacyQuiz1: any = null;
         snapshot.forEach((d) => {
+          if (d.id === "1") {
+            legacyQuiz1 = { id: d.id, ...d.data() };
+          }
           list.push({ id: d.id, ...(d.data() as Omit<Quiz, "id">) });
         });
+
+        // Auto-migrate legacy ID "1" to "Q12"
+        if (legacyQuiz1) {
+          try {
+            const { id: _, ...quizData } = legacyQuiz1;
+            await setDoc(doc(db, "quizzes", "Q12"), {
+              ...quizData,
+              updatedAt: Date.now(),
+            });
+            await deleteDoc(doc(db, "quizzes", "1"));
+            await touchMetadata("quizzes");
+            console.log("Successfully migrated Quiz 1 to Q12 in Firestore");
+            return;
+          } catch (err) {
+            console.error("Auto-migration of quiz 1 to Q12 error:", err);
+          }
+        }
+
+        list.sort((a, b) => {
+          const numA = parseInt(a.id.replace(/\D/g, "") || "0", 10);
+          const numB = parseInt(b.id.replace(/\D/g, "") || "0", 10);
+          if (numA !== numB) return numA - numB;
+          return a.id.localeCompare(b.id);
+        });
+
         if (isMounted) {
           setQuizzes(list);
           setLoading(false);
@@ -120,6 +153,68 @@ export default function AdminQuizPage() {
     };
   }, []);
 
+  // Self-heal impossible / orphan user scores across the system
+  useEffect(() => {
+    if (quizzes.length === 0 || users.length === 0) return;
+
+    const quizMap = new Map(quizzes.map((q) => [q.id, q]));
+    const usersToFix: { docId: string; newCompleted?: string[]; deleteKeys: string[] }[] = [];
+
+    users.forEach((u) => {
+      let needsFix = false;
+      const rawCompleted: string[] = Array.isArray(u.quizCompleted) ? u.quizCompleted : [];
+      const userScores = u.quizScores && typeof u.quizScores === "object" ? u.quizScores : {};
+      const deleteKeys: string[] = [];
+
+      Object.entries(userScores).forEach(([qid, scoreVal]) => {
+        const q = quizMap.get(qid) || quizMap.get(`Q${qid.replace(/\D/g, "")}`);
+        if (!q) {
+          deleteKeys.push(qid);
+          needsFix = true;
+        } else if (typeof scoreVal === "number" && q.questions > 0 && scoreVal > q.questions) {
+          deleteKeys.push(qid);
+          needsFix = true;
+        }
+      });
+
+      const newCompleted = rawCompleted.filter((qid) => {
+        const q = quizMap.get(qid) || quizMap.get(`Q${qid.replace(/\D/g, "")}`);
+        if (!q) return false;
+        const scoreVal = userScores[qid];
+        if (typeof scoreVal === "number" && q.questions > 0 && scoreVal > q.questions) return false;
+        return true;
+      });
+
+      if (newCompleted.length !== rawCompleted.length) {
+        needsFix = true;
+      }
+
+      if (needsFix) {
+        usersToFix.push({ docId: u.id || u.email, newCompleted, deleteKeys });
+      }
+    });
+
+    if (usersToFix.length > 0) {
+      const batch = writeBatch(db);
+      usersToFix.forEach(({ docId, newCompleted, deleteKeys }) => {
+        const uRef = doc(db, "users", docId);
+        const updates: any = {};
+        if (newCompleted) updates.quizCompleted = newCompleted;
+        deleteKeys.forEach((k) => {
+          updates[`quizScores.${k}`] = deleteField();
+        });
+        batch.update(uRef, updates);
+      });
+      batch
+        .commit()
+        .then(() => {
+          console.log(`Auto-scrubbed ${usersToFix.length} user records with orphan/impossible quiz scores.`);
+          touchMetadata("users");
+        })
+        .catch((err) => console.error("Auto scrub error:", err));
+    }
+  }, [quizzes, users]);
+
   // Helper to extract numeric score and raw info from user's quiz record
   const extractQuizAttempt = (rawScore: any, quizQuestionsCount: number) => {
     if (rawScore === undefined || rawScore === null) return null;
@@ -128,9 +223,9 @@ export default function AdminQuizPage() {
 
     if (typeof rawScore === "number") {
       scoreNum = rawScore;
-      if (scoreNum > totalNum && scoreNum <= 100) {
-        const pct = Math.min(100, Math.round(scoreNum));
-        return { score: Math.round((pct / 100) * totalNum), total: totalNum, pct, passed: pct >= 70 };
+      if (scoreNum > totalNum) {
+        // Impossible score for this quiz (from a deleted quiz with different questions count)
+        return null;
       }
       const pct = totalNum > 0 ? Math.round((scoreNum / totalNum) * 100) : 0;
       return { score: scoreNum, total: totalNum, pct, passed: pct >= 70 };
@@ -334,11 +429,32 @@ export default function AdminQuizPage() {
 
   // Toggle Active Status Switch
   const handleToggleStatus = async (quiz: Quiz) => {
+    const isCurrentlyActive = quiz.active !== false;
+    const nextStatus = !isCurrentlyActive;
+
+    // Optimistic local state update for instant UI response
+    setQuizzes((prev) =>
+      prev.map((q) => (q.id === quiz.id ? { ...q, active: nextStatus } : q))
+    );
+
     try {
       const docRef = doc(db, "quizzes", quiz.id);
-      await updateDoc(docRef, { active: !quiz.active });
-      toast.info(`Assessment ${!quiz.active ? "activated" : "deactivated"}.`);
+      await updateDoc(docRef, {
+        active: nextStatus,
+        updatedAt: Date.now(),
+      });
+      await touchMetadata("quizzes");
+      logUserActivity(user?.email, {
+        desc: `${nextStatus ? "Activated" : "Deactivated"} assessment: "${quiz.title}" (#${quiz.id})`,
+        type: "edit",
+      });
+      toast.success(`Assessment "${quiz.title}" ${nextStatus ? "activated" : "deactivated"} successfully.`);
     } catch (e: any) {
+      // Revert optimistic update on error
+      setQuizzes((prev) =>
+        prev.map((q) => (q.id === quiz.id ? { ...q, active: isCurrentlyActive } : q))
+      );
+      console.error("Failed to toggle status:", e);
       toast.error("Failed to toggle status: " + e.message);
     }
   };
@@ -350,6 +466,7 @@ export default function AdminQuizPage() {
       setQuizTitle(quiz.title || "");
       setQuizTime(quiz.time || 15);
       setMobileAllowed(!!quiz.mobileAllowed);
+      setQuizActive(quiz.active !== false);
       setQuestions(
         quiz.questionData && quiz.questionData.length > 0
           ? quiz.questionData
@@ -360,6 +477,7 @@ export default function AdminQuizPage() {
       setQuizTitle("");
       setQuizTime(15);
       setMobileAllowed(false);
+      setQuizActive(true);
       setQuestions([{ text: "", options: ["", "", "", ""], correct: 1 }]);
     }
     setViewMode("editor");
@@ -384,6 +502,112 @@ export default function AdminQuizPage() {
     setQuestions(next);
   };
 
+  // Helper to remove deleted quiz data from all users in Firestore so data never mixes
+  const cleanupUsersQuizData = async (quizIds: string[]) => {
+    if (quizIds.length === 0 || users.length === 0) return;
+
+    const idSet = new Set(
+      quizIds.flatMap((id) => [
+        id,
+        id.toUpperCase(),
+        id.toLowerCase(),
+        id.replace(/\D/g, ""),
+        `Q${id.replace(/\D/g, "")}`,
+      ])
+    );
+
+    const batch = writeBatch(db);
+    let count = 0;
+
+    users.forEach((u) => {
+      let changed = false;
+      const updates: any = {};
+
+      const rawCompleted: string[] = Array.isArray(u.quizCompleted) ? u.quizCompleted : [];
+      const newCompleted = rawCompleted.filter((qid) => !idSet.has(qid));
+      if (newCompleted.length !== rawCompleted.length) {
+        updates.quizCompleted = newCompleted;
+        changed = true;
+      }
+
+      const userScores = u.quizScores && typeof u.quizScores === "object" ? u.quizScores : {};
+      Object.keys(userScores).forEach((k) => {
+        if (idSet.has(k)) {
+          updates[`quizScores.${k}`] = deleteField();
+          changed = true;
+        }
+      });
+
+      Object.keys(u).forEach((k) => {
+        if (k.startsWith("quizScores.")) {
+          const subKey = k.split(".")[1];
+          if (idSet.has(subKey)) {
+            updates[k] = deleteField();
+            changed = true;
+          }
+        }
+      });
+
+      if (changed) {
+        const uRef = doc(db, "users", u.id || u.email);
+        batch.update(uRef, updates);
+        count++;
+      }
+    });
+
+    if (count > 0) {
+      try {
+        await batch.commit();
+        await touchMetadata("users");
+      } catch (err) {
+        console.error("Failed to clean up users on quiz deletion:", err);
+      }
+    }
+  };
+
+  // Generate the next sequential quiz number, ensuring deleted IDs are NEVER recycled
+  const getNextQuizNumber = async (): Promise<number> => {
+    const currentMax = Math.max(
+      0,
+      ...quizzes.map((q) => {
+        const match = String(q.id).match(/\d+/);
+        return match ? parseInt(match[0], 10) : 0;
+      })
+    );
+
+    const userMax = Math.max(
+      0,
+      ...users.flatMap((u) => {
+        const scores = u.quizScores && typeof u.quizScores === "object" ? Object.keys(u.quizScores) : [];
+        const completed = Array.isArray(u.quizCompleted) ? u.quizCompleted : [];
+        return [...scores, ...completed].map((k) => {
+          const match = String(k).match(/\d+/);
+          return match ? parseInt(match[0], 10) : 0;
+        });
+      })
+    );
+
+    let metaMax = 0;
+    try {
+      const metaSnap = await getDoc(doc(db, "system", "metadata"));
+      if (metaSnap.exists()) {
+        metaMax = Number(metaSnap.data()?.quizzesHighestNumber) || 0;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    const nextNum = Math.max(currentMax, userMax, metaMax) + 1;
+
+    try {
+      await setDoc(doc(db, "system", "metadata"), { quizzesHighestNumber: nextNum }, { merge: true });
+    } catch (e) {
+      // ignore
+    }
+
+    return nextNum;
+  };
+
   // Save Quiz
   const handleSaveQuiz = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -399,7 +623,7 @@ export default function AdminQuizPage() {
       mobileAllowed: !!mobileAllowed,
       questions: questions.length,
       questionData: questions,
-      active: true,
+      active: editingId ? quizActive : true,
       updatedAt: Date.now(),
     };
 
@@ -412,8 +636,8 @@ export default function AdminQuizPage() {
         });
         toast.success("Assessment updated successfully!");
       } else {
-        const nextNum = Math.max(0, ...quizzes.map((q) => Number(q.id) || 0)) + 1;
-        const newId = String(nextNum);
+        const nextNum = await getNextQuizNumber();
+        const newId = `Q${nextNum}`;
 
         await setDoc(doc(db, "quizzes", newId), {
           ...payload,
@@ -459,12 +683,13 @@ export default function AdminQuizPage() {
 
     try {
       await deleteDoc(doc(db, "quizzes", id));
+      await cleanupUsersQuizData([id]);
       await touchMetadata("quizzes");
       logUserActivity(user?.email, {
         desc: `Deleted assessment: "${target?.title || `Quiz #${id}`}"`,
         type: "delete",
       });
-      toast.success("Assessment deleted successfully.");
+      toast.success("Assessment and related participant scores deleted successfully.");
     } catch (e: any) {
       toast.error("Delete failed: " + e.message);
     }
@@ -483,14 +708,16 @@ export default function AdminQuizPage() {
 
     setBulkDeleting(true);
     try {
+      const idsArray = Array.from(selectedIds);
       const batch = writeBatch(db);
-      selectedIds.forEach((id) => {
+      idsArray.forEach((id) => {
         batch.delete(doc(db, "quizzes", id));
       });
       await batch.commit();
+      await cleanupUsersQuizData(idsArray);
       await touchMetadata("quizzes");
       setSelectedIds(new Set());
-      toast.success(selectedIds.size + " assessments deleted successfully.");
+      toast.success(idsArray.length + " assessments and related participant records deleted successfully.");
     } catch (e: any) {
       toast.error("Bulk delete failed: " + e.message);
     } finally {
@@ -500,20 +727,256 @@ export default function AdminQuizPage() {
 
   // Template Download
   const handleDownloadTemplate = () => {
-    const headers = [["Question", "Option 1", "Option 2", "Option 3", "Option 4", "Correct Option (1-4)"]];
+    const headers = [
+      [
+        "Quiz Title (Optional)",
+        "Question",
+        "Option 1",
+        "Option 2",
+        "Option 3",
+        "Option 4",
+        "Correct Option (1-4)",
+        "Time Limit (Mins)",
+      ],
+    ];
     const sample = [
-      ["What is the standard procedure for Phase 1 inspection?", "Follow SOP 1", "Skip to SOP 2", "Call supervisor", "None", 1],
-      ["How many days are given for grievance resolution?", "7 Days", "15 Days", "30 Days", "45 Days", 2],
+      [
+        "ESIC Scheme Basics",
+        "What is the standard procedure for Phase 1 inspection?",
+        "Follow SOP 1",
+        "Skip to SOP 2",
+        "Call supervisor",
+        "None",
+        1,
+        15,
+      ],
+      [
+        "ESIC Scheme Basics",
+        "How many days are given for grievance resolution?",
+        "7 Days",
+        "15 Days",
+        "30 Days",
+        "45 Days",
+        2,
+        15,
+      ],
     ];
     const ws = XLSX.utils.aoa_to_sheet([...headers, ...sample]);
-    ws["!cols"] = [{ wch: 45 }, { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 20 }];
+    ws["!cols"] = [
+      { wch: 25 },
+      { wch: 45 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 20 },
+      { wch: 18 },
+    ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Quiz Template");
     XLSX.writeFile(wb, "ESIC_Quiz_Upload_Template.xlsx");
   };
 
-  // Bulk Upload Questions
+  // Helper to parse question rows from spreadsheet
+  const parseQuestionRows = (rows: any[], fileName: string) => {
+    const quizzesMap = new Map<
+      string,
+      { time: number; mobileAllowed: boolean; questions: MCQQuestion[] }
+    >();
+
+    const defaultTitle = fileName
+      .replace(/\.[^/.]+$/, "")
+      .replace(/[_-]/g, " ")
+      .trim();
+
+    rows.forEach((row) => {
+      const qText =
+        row["Question"] ||
+        row["Question Text"] ||
+        row["question"] ||
+        row["QuestionText"] ||
+        row["Q"] ||
+        row["question_text"] ||
+        row["Question text"] ||
+        "";
+
+      if (!String(qText).trim()) return;
+
+      const opt1 = String(row["Option 1"] || row["Option1"] || row["option 1"] || row["Option A"] || row["A"] || row["Option_1"] || "").trim();
+      const opt2 = String(row["Option 2"] || row["Option2"] || row["option 2"] || row["Option B"] || row["B"] || row["Option_2"] || "").trim();
+      const opt3 = String(row["Option 3"] || row["Option3"] || row["option 3"] || row["Option C"] || row["C"] || row["Option_3"] || "").trim();
+      const opt4 = String(row["Option 4"] || row["Option4"] || row["option 4"] || row["Option D"] || row["D"] || row["Option_4"] || "").trim();
+
+      let correctVal = 1;
+      const rawCorrect =
+        row["Correct Option (1-4)"] ??
+        row["Correct Option"] ??
+        row["Correct"] ??
+        row["Answer"] ??
+        row["Correct Answer"] ??
+        row["CorrectOption"] ??
+        row["correct"] ??
+        "";
+      const rawStr = String(rawCorrect).trim().toUpperCase();
+
+      if (rawStr === "1" || rawStr === "A" || rawStr === "OPTION 1" || rawStr === "OPTION A") {
+        correctVal = 1;
+      } else if (rawStr === "2" || rawStr === "B" || rawStr === "OPTION 2" || rawStr === "OPTION B") {
+        correctVal = 2;
+      } else if (rawStr === "3" || rawStr === "C" || rawStr === "OPTION 3" || rawStr === "OPTION C") {
+        correctVal = 3;
+      } else if (rawStr === "4" || rawStr === "D" || rawStr === "OPTION 4" || rawStr === "OPTION D") {
+        correctVal = 4;
+      } else {
+        const parsed = parseInt(rawStr);
+        if (parsed >= 1 && parsed <= 4) {
+          correctVal = parsed;
+        } else if (rawStr) {
+          const opts = [opt1.toLowerCase(), opt2.toLowerCase(), opt3.toLowerCase(), opt4.toLowerCase()];
+          const matchIdx = opts.indexOf(rawStr.toLowerCase());
+          if (matchIdx !== -1) {
+            correctVal = matchIdx + 1;
+          }
+        }
+      }
+
+      const rowTitle =
+        row["Quiz Title (Optional)"] ||
+        row["Quiz Title"] ||
+        row["Quiz"] ||
+        row["Title"] ||
+        row["Assessment Title"] ||
+        row["Assessment"] ||
+        row["quiz_title"] ||
+        "";
+      const title = String(rowTitle).trim() || defaultTitle || "New Assessment Quiz";
+
+      const timeVal =
+        parseInt(row["Time Limit (Mins)"] || row["Time Limit"] || row["Time"] || row["Time (Mins)"] || row["Minutes"]) || 15;
+      const mobileVal =
+        String(row["Allow Mobile"] || row["Mobile Allowed"] || row["Mobile"] || "").toLowerCase() === "true" ||
+        String(row["Allow Mobile"] || row["Mobile Allowed"] || row["Mobile"] || "").toLowerCase() === "yes";
+
+      if (!quizzesMap.has(title)) {
+        quizzesMap.set(title, {
+          time: timeVal,
+          mobileAllowed: mobileVal,
+          questions: [],
+        });
+      }
+
+      quizzesMap.get(title)!.questions.push({
+        text: String(qText).trim(),
+        options: [opt1, opt2, opt3, opt4],
+        correct: correctVal,
+      });
+    });
+
+    return quizzesMap;
+  };
+
+  // Bulk Upload Quizzes directly to Firestore from Table View
   const handleBulkUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setBulkUploading(true);
+    const reader = new FileReader();
+
+    reader.onload = async (evt) => {
+      try {
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: "array" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+        if (rows.length === 0) {
+          toast.warning("The uploaded spreadsheet is empty.");
+          setBulkUploading(false);
+          return;
+        }
+
+        const quizzesMap = parseQuestionRows(rows, file.name);
+
+        if (quizzesMap.size === 0) {
+          toast.error("No valid questions found in the spreadsheet. Please verify the template format.");
+          setBulkUploading(false);
+          return;
+        }
+
+        let currentNext = await getNextQuizNumber();
+        const batch = writeBatch(db);
+        let totalQuestionsCount = 0;
+        const createdTitles: string[] = [];
+
+        Array.from(quizzesMap.entries()).forEach(([title, qData]) => {
+          const newId = `Q${currentNext}`;
+          currentNext++;
+          const docRef = doc(db, "quizzes", newId);
+
+          const payload: Omit<Quiz, "id"> = {
+            title,
+            time: qData.time,
+            mobileAllowed: qData.mobileAllowed,
+            questions: qData.questions.length,
+            questionData: qData.questions,
+            active: true,
+            date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+            attempts: 0,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+
+          batch.set(docRef, payload);
+          totalQuestionsCount += qData.questions.length;
+          createdTitles.push(title);
+        });
+
+        await batch.commit();
+        try {
+          await setDoc(doc(db, "system", "metadata"), { quizzesHighestNumber: currentNext - 1 }, { merge: true });
+        } catch (e) {}
+        await touchMetadata("quizzes");
+
+        logUserActivity(user?.email, {
+          desc: `Bulk uploaded ${quizzesMap.size} assessment(s) with ${totalQuestionsCount} questions total: ${createdTitles.join(", ")}`,
+          type: "add",
+        });
+
+        // Broadcast notifications to agents
+        if (createdTitles.length === 1) {
+          await createNotification({
+            title: `🏆 New Quiz: ${createdTitles[0]}`,
+            message: `A new assessment **"${createdTitles[0]}"** (${totalQuestionsCount} questions) has been published in the Quiz portal.`,
+            type: "quiz",
+            targetEmail: "all",
+            link: "/quiz",
+          });
+        } else {
+          await createNotification({
+            title: `🏆 ${createdTitles.length} New Quizzes Published`,
+            message: `${createdTitles.length} new assessments (${totalQuestionsCount} questions total) have been published in the Quiz portal.`,
+            type: "quiz",
+            targetEmail: "all",
+            link: "/quiz",
+          });
+        }
+
+        toast.success(`Successfully uploaded and created ${quizzesMap.size} assessment(s) with ${totalQuestionsCount} questions!`);
+      } catch (err: any) {
+        console.error("Bulk upload error:", err);
+        toast.error("Upload error: " + (err.message || "Failed to process spreadsheet"));
+      } finally {
+        setBulkUploading(false);
+      }
+    };
+
+    reader.readAsArrayBuffer(file);
+    e.target.value = "";
+  };
+
+  // Import Questions directly into the Editor
+  const handleImportQuestionsToEditor = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -530,33 +993,29 @@ export default function AdminQuizPage() {
           return;
         }
 
-        const newQuestions: MCQQuestion[] = [];
-        rows.forEach((row) => {
-          const qText = row["Question"] || row["Question Text"] || "";
-          if (qText) {
-            newQuestions.push({
-              text: String(qText).trim(),
-              options: [
-                String(row["Option 1"] || "").trim(),
-                String(row["Option 2"] || "").trim(),
-                String(row["Option 3"] || "").trim(),
-                String(row["Option 4"] || "").trim(),
-              ],
-              correct: parseInt(row["Correct Option (1-4)"]) || 1,
-            });
-          }
+        const quizzesMap = parseQuestionRows(rows, file.name);
+        let importedQuestions: MCQQuestion[] = [];
+        let firstTitle = "";
+
+        Array.from(quizzesMap.entries()).forEach(([title, qData]) => {
+          if (!firstTitle) firstTitle = title;
+          importedQuestions = importedQuestions.concat(qData.questions);
         });
 
-        if (newQuestions.length > 0) {
-          setQuestions(newQuestions);
-          toast.success("Imported " + newQuestions.length + " questions from spreadsheet!");
+        if (importedQuestions.length > 0) {
+          setQuestions((prev) => (prev.length === 1 && !prev[0].text ? importedQuestions : [...prev, ...importedQuestions]));
+          if (!quizTitle && firstTitle) {
+            setQuizTitle(firstTitle);
+          }
+          toast.success(`Imported ${importedQuestions.length} questions into editor!`);
         } else {
           toast.error("No valid questions found in file.");
         }
       } catch (err: any) {
-        toast.error("Upload error: " + err.message);
+        toast.error("Import error: " + err.message);
       }
     };
+
     reader.readAsArrayBuffer(file);
     e.target.value = "";
   };
@@ -809,18 +1268,52 @@ export default function AdminQuizPage() {
               />
             </div>
 
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className={`w-4 h-4 ${quizActive ? "text-emerald-600" : "text-slate-400"}`} />
+                <div>
+                  <span className="text-xs font-semibold text-slate-700">Assessment Active</span>
+                  <p className="text-[10px] text-slate-400">When disabled, agents cannot take this assessment.</p>
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={quizActive}
+                onChange={(e) => setQuizActive(e.target.checked)}
+                className="w-4 h-4 text-emerald-600 rounded cursor-pointer"
+              />
+            </div>
+
             {/* Questions Builder */}
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <h3 className="font-bold text-slate-900 text-sm">Questions ({questions.length})</h3>
-                <button
-                  type="button"
-                  onClick={handleAddQuestion}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Question</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    id="editorQuestionsInput"
+                    accept=".xlsx, .xls, .csv"
+                    className="hidden"
+                    onChange={handleImportQuestionsToEditor}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => document.getElementById("editorQuestionsInput")?.click()}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                    title="Import questions from Excel or CSV file"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Import Questions</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAddQuestion}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Question</span>
+                  </button>
+                </div>
               </div>
 
               {questions.map((q, qIdx) => (
@@ -929,10 +1422,12 @@ export default function AdminQuizPage() {
 
               <button
                 onClick={() => document.getElementById("bulkQuizInput")?.click()}
-                className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-800 rounded-xl text-xs font-semibold shadow-xs"
+                disabled={bulkUploading}
+                className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-800 rounded-xl text-xs font-semibold shadow-xs disabled:opacity-50 cursor-pointer transition-colors"
+                title="Bulk upload quizzes directly from Excel or CSV file"
               >
-                <Upload className="w-4 h-4" />
-                <span>Bulk Upload</span>
+                <Upload className={`w-4 h-4 ${bulkUploading ? "animate-spin" : ""}`} />
+                <span>{bulkUploading ? "Uploading Quizzes..." : "Bulk Upload"}</span>
               </button>
 
               <button
@@ -1034,7 +1529,9 @@ export default function AdminQuizPage() {
                             className="cursor-pointer"
                           />
                         </td>
-                        <td className="p-4 font-mono font-bold text-blue-600">#{quiz.id}</td>
+                        <td className="p-4 font-mono font-bold text-blue-600">
+                          #{quiz.id.toUpperCase().startsWith("Q") ? quiz.id.toUpperCase() : `Q${quiz.id}`}
+                        </td>
                         <td className="p-4 text-slate-400">{quiz.date}</td>
                         <td className="p-4 font-bold text-slate-900">{quiz.title}</td>
                         <td className="p-4 text-center">{quiz.questions}</td>

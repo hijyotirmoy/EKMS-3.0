@@ -5,9 +5,10 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { getCachedData, setCachedData } from "@/lib/firestoreCache";
+import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
+import { getOrFetchCollection } from "@/lib/cache";
 import {
   Home,
   Folder,
@@ -79,79 +80,68 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     }
 
     let isMounted = true;
-    const TTL = 5 * 60 * 1000; // 5 minutes cache
 
-    // 1. Doubts badge
-    const cachedDoubtsCount = getCachedData<number>("sidebar_unresolved_doubts", TTL);
-    if (cachedDoubtsCount !== null) {
-      setUnresolvedDoubtsCount(cachedDoubtsCount);
-    } else {
-      const qDoubts = query(collection(db, "doubts"), where("status", "in", ["pending", "waiting"]));
-      getDocs(qDoubts).then((snap) => {
-        if (!isMounted) return;
-        setUnresolvedDoubtsCount(snap.size);
-        setCachedData("sidebar_unresolved_doubts", snap.size);
-      }).catch(() => {});
-    }
+    const loadBadges = async (force = false) => {
+      // 1. Doubts badge
+      try {
+        const qDoubts = query(collection(db, "doubts"), where("status", "in", ["pending", "waiting"]));
+        const snap = await getDocs(qDoubts);
+        if (isMounted) setUnresolvedDoubtsCount(snap.size);
+      } catch (e) {}
 
-    // 2. Active Courses for pending count
-    const cachedCourses = getCachedData<any[]>("sidebar_courses", TTL);
-    if (cachedCourses !== null) {
-      setCourses(cachedCourses);
-    } else {
-      getDocs(collection(db, "onboardings")).then((snap) => {
-        if (!isMounted) return;
-        const list: any[] = [];
-        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-        setCourses(list);
-        setCachedData("sidebar_courses", list);
-      }).catch(() => {});
-    }
+      // 2. Active Courses for pending count
+      try {
+        const courseList = await getOrFetchCollection<any>("onboardings", { forceRefresh: force });
+        if (isMounted) setCourses(courseList);
+      } catch (e) {}
 
-    // 3. Active Quizzes for pending count
-    const cachedQuizzes = getCachedData<any[]>("sidebar_quizzes", TTL);
-    if (cachedQuizzes !== null) {
-      setQuizzes(cachedQuizzes);
-    } else {
-      getDocs(collection(db, "quizzes")).then((snap) => {
-        if (!isMounted) return;
-        const list: any[] = [];
-        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-        setQuizzes(list);
-        setCachedData("sidebar_quizzes", list);
-      }).catch(() => {});
-    }
+      // 3. Active Quizzes for pending count
+      try {
+        const quizList = await getOrFetchCollection<any>("quizzes", { forceRefresh: force });
+        if (isMounted) setQuizzes(quizList);
+      } catch (e) {}
 
-    // 4. Admin Reports & Missing badges
-    if (isAdmin) {
-      const cachedReports = getCachedData<number>("sidebar_pending_reports", TTL);
-      if (cachedReports !== null) {
-        setPendingReportsCount(cachedReports);
-      } else {
-        const qReports = query(collection(db, "reports"), where("status", "==", "pending"));
-        getDocs(qReports).then((snap) => {
-          if (!isMounted) return;
-          setPendingReportsCount(snap.size);
-          setCachedData("sidebar_pending_reports", snap.size);
-        }).catch(() => {});
+      // 4. Admin Reports & Missing badges
+      if (isAdmin) {
+        try {
+          const qReports = query(collection(db, "reports"), where("status", "==", "pending"));
+          const rSnap = await getDocs(qReports);
+          if (isMounted) setPendingReportsCount(rSnap.size);
+
+          const mSnap = await getDocs(collection(db, "missing_searches"));
+          if (isMounted) setMissingContentCount(mSnap.size);
+        } catch (e) {}
       }
+    };
 
-      const cachedMissing = getCachedData<number>("sidebar_missing_content", TTL);
-      if (cachedMissing !== null) {
-        setMissingContentCount(cachedMissing);
-      } else {
-        getDocs(collection(db, "missing_searches")).then((snap) => {
-          if (!isMounted) return;
-          setMissingContentCount(snap.size);
-          setCachedData("sidebar_missing_content", snap.size);
-        }).catch(() => {});
+    loadBadges(false);
+
+    // Instantly sync when metadata bumps (e.g. quiz or course added/deleted)
+    const unsubMeta = onSnapshot(
+      doc(db, "system", "metadata"),
+      () => {
+        if (isMounted) {
+          clearCachedData("sidebar_quizzes");
+          clearCachedData("sidebar_courses");
+          loadBadges(true);
+        }
+      },
+      (err) => console.warn("Sidebar metadata sync error:", err)
+    );
+
+    const handleFocus = () => {
+      if (isMounted) {
+        loadBadges(false);
       }
-    }
+    };
+    window.addEventListener("focus", handleFocus);
 
     return () => {
       isMounted = false;
+      unsubMeta();
+      window.removeEventListener("focus", handleFocus);
     };
-  }, [isLoggedIn, isAdmin]);
+  }, [isLoggedIn, isAdmin, pathname]);
 
   // Compute agent-specific pending courses
   const pendingCoursesCount = React.useMemo(() => {
@@ -163,15 +153,21 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   // Compute agent-specific pending quizzes
   const pendingQuizzesCount = React.useMemo(() => {
     if (!isLoggedIn) return 0;
-    const completedList = userProfile?.quizCompleted || [];
-    const scoreMap = userProfile?.quizScores || {};
+    const completedList = Array.isArray(userProfile?.quizCompleted) ? userProfile.quizCompleted : [];
+    const scoreMap = userProfile?.quizScores && typeof userProfile.quizScores === "object" ? userProfile.quizScores : {};
+
     return quizzes.filter((q) => {
-      if (!q.active) return false;
-      const isDone =
-        completedList.includes(q.id) ||
-        scoreMap[q.id] !== undefined ||
-        scoreMap["Q" + q.id] !== undefined ||
-        scoreMap[q.id.replace(/\D/g, "")] !== undefined;
+      if (q.active === false) return false;
+      const rawScore =
+        scoreMap[q.id] ??
+        scoreMap["Q" + q.id] ??
+        scoreMap[String(q.id).replace(/\D/g, "")];
+
+      const isScoreValid =
+        rawScore !== undefined &&
+        (typeof rawScore !== "number" || q.questions <= 0 || rawScore <= q.questions);
+
+      const isDone = completedList.includes(q.id) || isScoreValid;
       return !isDone;
     }).length;
   }, [quizzes, userProfile, isLoggedIn]);

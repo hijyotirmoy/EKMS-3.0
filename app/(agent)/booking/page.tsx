@@ -54,7 +54,7 @@ interface FlattenedBooking extends BookingRecord {
 }
 
 export default function AgentBookingPage() {
-  const { user, userProfile, isLoggedIn, openLoginModal } = useAuth();
+  const { user, userProfile, isLoggedIn, openLoginModal, isMasterAdmin } = useAuth();
   const { toast, showConfirm } = usePopup();
   const [liveBookings, setLiveBookings] = useState<Record<string, DayAvailability>>({});
   const [rescheduleLogs, setRescheduleLogs] = useState<RescheduleLog[]>([]);
@@ -107,7 +107,9 @@ export default function AgentBookingPage() {
   const [editBookingItem, setEditBookingItem] = useState<FlattenedBooking | null>(null);
   const [editIpName, setEditIpName] = useState("");
   const [editPhone, setEditPhone] = useState("");
+  const [editSelectedAgentEmail, setEditSelectedAgentEmail] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [userProfilesMap, setUserProfilesMap] = useState<Record<string, string>>({});
 
   // Copy indicator
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -208,6 +210,25 @@ export default function AgentBookingPage() {
           }
           setCachedData("system_status", data);
         }
+      }).catch(() => {});
+    }
+
+    // User profiles for Master Admin agent reassignment (cached 10 mins)
+    const USER_TTL = 10 * 60 * 1000;
+    const cachedUsers = getCachedData<Record<string, string>>("booking_user_profiles_map", USER_TTL);
+    if (cachedUsers) {
+      setUserProfilesMap(cachedUsers);
+    } else {
+      getDocs(collection(db, "users")).then((snap) => {
+        if (!isMounted) return;
+        const map: Record<string, string> = {};
+        snap.forEach((d) => {
+          const data = d.data();
+          const email = (data.email || d.id || "").toLowerCase().trim();
+          map[email] = data.displayName || data.name || email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+        });
+        setUserProfilesMap(map);
+        setCachedData("booking_user_profiles_map", map);
       }).catch(() => {});
     }
 
@@ -410,6 +431,31 @@ export default function AgentBookingPage() {
     return list;
   }, [tableView, allBookings, myBookings, searchTerm, statusFilter, scheduleDateFilter, followUpDays]);
 
+  // All Agent Options for Master Admin Reassignment
+  const allAgentOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    Object.entries(userProfilesMap).forEach(([email, name]) => {
+      if (email) map.set(email.toLowerCase().trim(), name);
+    });
+    allBookings.forEach((b) => {
+      if (b.agentEmail) {
+        const email = b.agentEmail.toLowerCase().trim();
+        if (!map.has(email)) {
+          map.set(email, b.agentName || email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()));
+        }
+      }
+    });
+    if (editBookingItem?.agentEmail) {
+      const email = editBookingItem.agentEmail.toLowerCase().trim();
+      if (!map.has(email)) {
+        map.set(email, editBookingItem.agentName || email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()));
+      }
+    }
+    return Array.from(map.entries())
+      .map(([email, name]) => ({ email, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [userProfilesMap, allBookings, editBookingItem]);
+
   const agentFilterLabel = useMemo(() => {
     let statusText = "";
     switch (statusFilter) {
@@ -603,6 +649,16 @@ export default function AgentBookingPage() {
       return;
     }
 
+    const currentAgentEmail = (editBookingItem.agentEmail || "").toLowerCase().trim();
+    const targetAgentEmail = (editSelectedAgentEmail || "").toLowerCase().trim();
+    const isAgentChanged = isMasterAdmin && !!targetAgentEmail && targetAgentEmail !== currentAgentEmail;
+
+    const newAgentEmail = isAgentChanged ? targetAgentEmail : (editBookingItem.agentEmail || "");
+    const matchedAgent = allAgentOptions.find((a) => a.email.toLowerCase() === newAgentEmail.toLowerCase());
+    const newAgentName = isAgentChanged
+      ? (matchedAgent ? matchedAgent.name : newAgentEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()))
+      : (editBookingItem.agentName || editBookingItem.agentEmail);
+
     setEditSaving(true);
     try {
       const candidateDates = Array.from(
@@ -626,8 +682,8 @@ export default function AgentBookingPage() {
               const updatedRecords = currentRecords.map((r) => {
                 if (
                   (r.timestamp === editBookingItem.timestamp &&
-                    (r.agentEmail || "").toLowerCase().trim() === (editBookingItem.agentEmail || "").toLowerCase().trim()) ||
-                  ((r.agentEmail || "").toLowerCase().trim() === (editBookingItem.agentEmail || "").toLowerCase().trim() &&
+                    (r.agentEmail || "").toLowerCase().trim() === currentAgentEmail) ||
+                  ((r.agentEmail || "").toLowerCase().trim() === currentAgentEmail &&
                     (r.ipName || "").toLowerCase().trim() === (editBookingItem.ipName || "").toLowerCase().trim() &&
                     r.phone === editBookingItem.phone)
                 ) {
@@ -636,6 +692,8 @@ export default function AgentBookingPage() {
                     ...r,
                     ipName: trimmedName,
                     phone: trimmedPhone,
+                    agentEmail: newAgentEmail,
+                    agentName: newAgentName,
                   };
                 }
                 return r;
@@ -652,40 +710,77 @@ export default function AgentBookingPage() {
         await Promise.allSettled([updateRecordsInDb(bookingDb), updateRecordsInDb(db)]);
       }
 
-        // Update matching reschedule logs as well for consistency
-        const updateLogsInDb = async (firestoreInstance: any) => {
-          try {
-            const q = query(
+      // Update matching reschedule logs as well for consistency
+      const updateLogsInDb = async (firestoreInstance: any) => {
+        try {
+          const q = query(
+            collection(firestoreInstance, "rescheduleLogs"),
+            where("timestamp", "==", editBookingItem.timestamp)
+          );
+          const logsSnap = await getDocs(q);
+          const batch = writeBatch(firestoreInstance);
+          let hasUpdates = false;
+          logsSnap.forEach((logDoc) => {
+            const updates: any = {
+              ipName: trimmedName,
+              phone: trimmedPhone,
+            };
+            if (isAgentChanged) {
+              updates.seatOwner = newAgentEmail;
+              updates.agentName = newAgentName;
+            }
+            batch.update(logDoc.ref, updates);
+            hasUpdates = true;
+          });
+
+          // Fallback if timestamp query didn't match
+          if (logsSnap.empty && editBookingItem.ipName && currentAgentEmail) {
+            const fallbackQ = query(
               collection(firestoreInstance, "rescheduleLogs"),
-              where("timestamp", "==", editBookingItem.timestamp)
+              where("seatOwner", "==", currentAgentEmail),
+              where("ipName", "==", editBookingItem.ipName.trim())
             );
-            const logsSnap = await getDocs(q);
-            const batch = writeBatch(firestoreInstance);
-            let hasUpdates = false;
-            logsSnap.forEach((logDoc) => {
-              batch.update(logDoc.ref, {
+            const fallbackSnap = await getDocs(fallbackQ);
+            fallbackSnap.forEach((logDoc) => {
+              const updates: any = {
                 ipName: trimmedName,
                 phone: trimmedPhone,
-              });
+              };
+              if (isAgentChanged) {
+                updates.seatOwner = newAgentEmail;
+                updates.agentName = newAgentName;
+              }
+              batch.update(logDoc.ref, updates);
               hasUpdates = true;
             });
-            if (hasUpdates) {
-              await batch.commit();
-            }
-          } catch (e) {
-            console.warn("Could not sync reschedule logs:", e);
           }
-        };
 
-        await Promise.allSettled([updateLogsInDb(db), updateLogsInDb(bookingDb)]);
+          if (hasUpdates) {
+            await batch.commit();
+          }
+        } catch (e) {
+          console.warn("Could not sync reschedule logs:", e);
+        }
+      };
 
-        logUserActivity(user?.email, {
-          desc: `Updated booking details for ${trimmedName} (${editBookingItem.dateKey})`,
-          type: "edit",
-        });
+      await Promise.allSettled([updateLogsInDb(db), updateLogsInDb(bookingDb)]);
 
-        toast.success("Booking details updated successfully!");
-        setEditBookingItem(null);
+      const activityDesc = isAgentChanged
+        ? `Reassigned booking for ${trimmedName} (${editBookingItem.dateKey}) from ${editBookingItem.agentName || editBookingItem.agentEmail} to ${newAgentName}`
+        : `Updated booking details for ${trimmedName} (${editBookingItem.dateKey})`;
+
+      logUserActivity(user?.email, {
+        desc: activityDesc,
+        type: "edit",
+      });
+
+      toast.success(
+        isAgentChanged
+          ? `Booking reassigned to ${newAgentName} successfully!`
+          : "Booking details updated successfully!"
+      );
+      setEditBookingItem(null);
+      setEditSelectedAgentEmail("");
     } catch (error: any) {
       console.error("Edit booking error:", error);
       toast.error(error.message || "Failed to update booking details.");
@@ -1626,6 +1721,7 @@ export default function AgentBookingPage() {
                                   setEditBookingItem(b);
                                   setEditIpName(b.ipName || "");
                                   setEditPhone(b.phone || "");
+                                  setEditSelectedAgentEmail(b.agentEmail || "");
                                 }}
                                 className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
                                 title="Edit Booking Details"
@@ -1838,6 +1934,7 @@ export default function AgentBookingPage() {
                             setEditBookingItem(b);
                             setEditIpName(b.ipName || "");
                             setEditPhone(b.phone || "");
+                            setEditSelectedAgentEmail(b.agentEmail || "");
                           }}
                           className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors cursor-pointer"
                           title="Edit Booking Details"
@@ -2166,11 +2263,35 @@ export default function AgentBookingPage() {
               </button>
             </div>
 
-            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
-              <div>
-                Booked By: <strong className="text-blue-600">{editBookingItem.agentName || editBookingItem.agentEmail}</strong>
-              </div>
-              <div>
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-2.5">
+              {isMasterAdmin ? (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-semibold text-slate-700">
+                      Booked By (Agent) <span className="text-rose-500">*</span>
+                    </label>
+                    <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded font-bold border border-blue-200">
+                      Master Admin Control
+                    </span>
+                  </div>
+                  <select
+                    value={editSelectedAgentEmail}
+                    onChange={(e) => setEditSelectedAgentEmail(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs"
+                  >
+                    {allAgentOptions.map((ag) => (
+                      <option key={ag.email} value={ag.email}>
+                        {ag.name} ({ag.email})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  Booked By: <strong className="text-blue-600">{editBookingItem.agentName || editBookingItem.agentEmail}</strong>
+                </div>
+              )}
+              <div className="text-slate-600 pt-0.5 border-t border-slate-200/60">
                 Scheduled Date: <strong className="text-slate-800">{editBookingItem.dateKey}</strong>
               </div>
             </div>

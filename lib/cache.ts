@@ -70,6 +70,11 @@ export async function touchMetadata(collectionKey: string): Promise<void> {
     if (typeof window !== "undefined") {
       localStorage.removeItem(`ekms_cache_${collectionKey}`);
       localStorage.removeItem(`ekms_meta_${collectionKey}`);
+      sessionStorage.removeItem(`ekms_cache_sidebar_${collectionKey}`);
+      sessionStorage.removeItem(`ekms_cache_sidebar_${collectionKey}zes`);
+      sessionStorage.removeItem(`ekms_cache_sidebar_${collectionKey}s`);
+      sessionStorage.removeItem("ekms_cache_sidebar_quizzes");
+      sessionStorage.removeItem("ekms_cache_sidebar_courses");
     }
   } catch (e) {
     console.error(`Failed to touch metadata for ${collectionKey}:`, e);
