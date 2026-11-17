@@ -14,6 +14,7 @@ import {
   Crown,
   Shield,
   Headphones,
+  Building2,
   PieChart,
   Contact,
   Network,
@@ -28,7 +29,7 @@ interface TeamMemberAnalytics extends UserProfile {
 }
 
 export default function TeamPage() {
-  const [activeTab, setActiveTab] = useState<"directory" | "organogram" | "analytics">("directory");
+  const [activeTab, setActiveTab] = useState<"directory" | "organogram">("directory");
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [doubts, setDoubts] = useState<Doubt[]>([]);
@@ -172,18 +173,6 @@ export default function TeamPage() {
           <Network className="w-4 h-4" />
           <span>Organogram Hierarchy</span>
         </button>
-
-        <button
-          onClick={() => setActiveTab("analytics")}
-          className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
-            activeTab === "analytics"
-              ? "bg-blue-600 text-white shadow-xs"
-              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-          }`}
-        >
-          <PieChart className="w-4 h-4" />
-          <span>Performance Analytics</span>
-        </button>
       </div>
 
       {/* ----------------------------------------------------
@@ -200,6 +189,7 @@ export default function TeamPage() {
               const streak = member.streak || 0;
               const isMaster = member.role === "Master Admin";
               const isAdmin = member.role === "Admin";
+              const isDispensary = member.role === "Dispensary Staff" || member.role === "Dispensary";
 
               return (
                 <div
@@ -246,6 +236,8 @@ export default function TeamPage() {
                           ? "bg-rose-50 text-rose-700 border border-rose-200"
                           : isAdmin
                           ? "bg-purple-50 text-purple-700 border border-purple-200"
+                          : isDispensary
+                          ? "bg-teal-50 text-teal-700 border border-teal-200"
                           : "bg-blue-50 text-blue-700 border border-blue-200"
                       }`}
                     >
@@ -253,6 +245,8 @@ export default function TeamPage() {
                         <Crown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                       ) : isAdmin ? (
                         <Shield className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                      ) : isDispensary ? (
+                        <Building2 className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                       ) : (
                         <Headphones className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                       )}
@@ -302,58 +296,6 @@ export default function TeamPage() {
       {activeTab === "organogram" && (
         <div className="animate-in fade-in duration-150">
           <OrganogramCanvas config={orgConfig} users={users} isAdminMode={false} />
-        </div>
-      )}
-
-      {/* ----------------------------------------------------
-          TAB 3: PERFORMANCE ANALYTICS LEADERBOARD
-          ---------------------------------------------------- */}
-      {activeTab === "analytics" && (
-        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs animate-in fade-in duration-150">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
-                  <th className="p-4">Agent Name</th>
-                  <th className="p-4 text-center">Quizzes Taken</th>
-                  <th className="p-4 text-center">Average Score</th>
-                  <th className="p-4 text-center">Doubts Asked</th>
-                  <th className="p-4 text-center">Doubts Resolved</th>
-                  <th className="p-4 text-center">Courses Completed</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                {teamAnalytics
-                  .sort((a, b) => b.avgScore - a.avgScore)
-                  .map((m) => {
-                    const scoreColor =
-                      m.avgScore >= 70 ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50";
-
-                    return (
-                      <tr key={m.email} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="p-4">
-                          <div className="font-bold text-slate-900">{m.displayName || "Agent"}</div>
-                          <div className="text-[11px] text-slate-400">{m.email}</div>
-                        </td>
-                        <td className="p-4 text-center font-bold text-blue-600">{m.quizCount}</td>
-                        <td className="p-4 text-center">
-                          <span className={`px-2.5 py-1 rounded-full font-extrabold text-[11px] ${scoreColor}`}>
-                            {m.quizCount > 0 ? `${m.avgScore}%` : "N/A"}
-                          </span>
-                        </td>
-                        <td className="p-4 text-center font-semibold text-amber-600">{m.doubtsAsked}</td>
-                        <td className="p-4 text-center font-semibold text-emerald-700">
-                          {m.doubtsResolved}
-                        </td>
-                        <td className="p-4 text-center font-semibold text-purple-700">
-                          {m.coursesCompleted} Completed
-                        </td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
     </div>

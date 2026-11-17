@@ -20,6 +20,15 @@ export default function PageAccessGuard({ children }: { children?: React.ReactNo
       return;
     }
 
+    const roleStr = (userProfile?.role || "").toLowerCase().trim();
+    const isDispensary = roleStr === "dispensary staff" || roleStr === "dispensary";
+
+    // Auto-redirect Dispensary Staff from / to their appointment dashboard
+    if (isDispensary && (pathname === "/" || pathname === "")) {
+      router.replace("/appointment");
+      return;
+    }
+
     if (isMasterAdmin) {
       setIsRestricted(false);
       return;
@@ -27,7 +36,11 @@ export default function PageAccessGuard({ children }: { children?: React.ReactNo
 
     const restricted = isPageRestricted(pathname, userProfile);
     setIsRestricted(restricted);
-  }, [pathname, userProfile, isMasterAdmin, isLoggedIn, loading]);
+  }, [pathname, userProfile, isMasterAdmin, isLoggedIn, loading, router]);
+
+  const roleStr = (userProfile?.role || "").toLowerCase().trim();
+  const isDispensary = roleStr === "dispensary staff" || roleStr === "dispensary";
+  const homeTarget = isAdmin ? "/admin/overview" : isDispensary ? "/appointment" : "/";
 
   if (!mounted || !isRestricted) {
     return <>{children}</>;
@@ -82,11 +95,11 @@ export default function PageAccessGuard({ children }: { children?: React.ReactNo
               <span>Go Back</span>
             </button>
             <button
-              onClick={() => router.push(isAdmin ? "/admin/overview" : "/")}
+              onClick={() => router.push(homeTarget)}
               className="w-full sm:flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Home className="w-4 h-4" />
-              <span>Return to Home</span>
+              <span>{isDispensary ? "Return to Dashboard" : "Return to Home"}</span>
             </button>
           </div>
         </div>

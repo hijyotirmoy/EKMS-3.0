@@ -66,6 +66,34 @@ export const ALL_AGENT_PAGES: AppPageDef[] = [
     iconName: "CalendarCheck",
   },
   {
+    path: "/appointment",
+    label: "Appointments",
+    category: "Agent",
+    description: "Insured person appointment scheduling and dispensary visit verification",
+    iconName: "CalendarClock",
+  },
+  {
+    path: "/dispensary/reception",
+    label: "Reception Desk",
+    category: "Agent",
+    description: "Patient arrival check-in and vitals recording",
+    iconName: "UserCheck",
+  },
+  {
+    path: "/dispensary/doctor",
+    label: "Doctor Desk",
+    category: "Agent",
+    description: "Doctor consultation, diagnosis, and prescription",
+    iconName: "Stethoscope",
+  },
+  {
+    path: "/dispensary/pharmacy",
+    label: "Pharmacy Desk",
+    category: "Agent",
+    description: "Medicine dispensation and visit completion",
+    iconName: "Pill",
+  },
+  {
     path: "/data",
     label: "Core Data Search",
     category: "Agent",
@@ -116,6 +144,20 @@ export const ALL_ADMIN_PAGES: AppPageDef[] = [
     category: "Admin",
     description: "Update empaneled hospital and dispensary network listings",
     iconName: "Building2",
+  },
+  {
+    path: "/admin/appointment",
+    label: "Manage Appointment",
+    category: "Admin",
+    description: "Create and manage dispensary appointment accounts and branch access",
+    iconName: "CalendarClock",
+  },
+  {
+    path: "/admin/dispensary",
+    label: "Manage Appointment",
+    category: "Admin",
+    description: "Create and manage dispensary appointment accounts and branch access",
+    iconName: "CalendarClock",
   },
   {
     path: "/admin/missing-content",
@@ -201,12 +243,57 @@ export const isPageRestricted = (
     return false;
   }
 
+  const normalizedCurrent = normalizePath(pathname);
+
+  // Check if target page is a dispensary-related function page
+  const isDispensaryRelated =
+    normalizedCurrent === "/appointment" ||
+    normalizedCurrent === "/admin/appointment" ||
+    normalizedCurrent.startsWith("/dispensary/");
+
+  const isDispensaryStaff =
+    roleStr === "dispensary staff" ||
+    roleStr === "dispensary" ||
+    Boolean(userProfile.dispensaryRole) ||
+    Boolean(userProfile.dispensaryName);
+  const isAdminOrMaster = roleStr === "admin" || roleStr.includes("master");
+
+  // Dispensary-related functions are ONLY visible to Dispensary Staff, Admin, and Master Admin.
+  // Normal agents cannot see or access any dispensary functions.
+  if (isDispensaryRelated) {
+    if (!isDispensaryStaff && !isAdminOrMaster) {
+      return true;
+    }
+  }
+
+  // Strict page boundary for Dispensary Staff:
+  // ONLY Allowed: /appointment, /profile, /reports, and their specific role desk (/dispensary/reception, doctor, or pharmacy).
+  // ALL other EKMS pages are disabled/restricted by default.
+  if (isDispensaryStaff) {
+    const subRole = (userProfile.dispensaryRole || "").toLowerCase().trim();
+    let myDeskPath = "/dispensary/reception";
+    if (subRole === "doctor") {
+      myDeskPath = "/dispensary/doctor";
+    } else if (subRole === "pharmacist") {
+      myDeskPath = "/dispensary/pharmacy";
+    }
+
+    const allowedDispensaryPages = new Set([
+      "/appointment",
+      "/profile",
+      "/reports",
+      myDeskPath,
+    ]);
+
+    if (!allowedDispensaryPages.has(normalizedCurrent)) {
+      return true;
+    }
+  }
+
   const restrictedPages = userProfile.restrictedPages || [];
   if (!Array.isArray(restrictedPages) || restrictedPages.length === 0) {
     return false;
   }
-
-  const normalizedCurrent = normalizePath(pathname);
 
   return restrictedPages.some((restricted) => {
     const normRestricted = normalizePath(restricted);

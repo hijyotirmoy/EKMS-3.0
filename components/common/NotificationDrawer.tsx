@@ -42,6 +42,7 @@ import {
   ArrowRight,
   Flag,
   BookOpen,
+  Activity,
 } from "lucide-react";
 
 interface NotificationDrawerProps {
@@ -208,8 +209,44 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
   const userVisibleList = useMemo(() => {
     const userRole = (userProfile?.role || (user ? "Agent" : "guest")).toLowerCase().trim();
     const isUserAdmin = isAdmin || userRole.includes("admin") || userRole.includes("master");
+    const isUserDispensary =
+      userRole === "dispensary staff" ||
+      userRole === "dispensary" ||
+      Boolean(userProfile?.dispensaryName) ||
+      Boolean(userProfile?.dispensaryRole);
 
     const directNotifs = notifications.filter((item) => {
+      // Handle Dispensary OPD Notifications
+      if (item.type === "dispensary_opd") {
+        if (!isUserDispensary) return false;
+        if (
+          item.targetDispensary &&
+          userProfile?.dispensaryName &&
+          !item.targetDispensary.toLowerCase().includes(userProfile.dispensaryName.toLowerCase().replace(/[^a-z0-9]/g, "")) &&
+          !userProfile.dispensaryName.toLowerCase().includes(item.targetDispensary.toLowerCase().replace(/[^a-z0-9]/g, ""))
+        ) {
+          return false;
+        }
+        if (
+          item.targetDispensaryRole &&
+          item.targetDispensaryRole !== "all" &&
+          userProfile?.dispensaryRole &&
+          item.targetDispensaryRole.toLowerCase() !== userProfile.dispensaryRole.toLowerCase()
+        ) {
+          return false;
+        }
+        return true;
+      }
+
+      // Stop all booking notifications for agents, admins, and master admins
+      if (
+        item.type === "booking" ||
+        (item.title && /booking|appointment/i.test(item.title)) ||
+        (item.link && item.link.includes("/booking"))
+      ) {
+        return false;
+      }
+
       const target = (item.targetEmail || "all").toLowerCase().trim();
       const isDirectlyForMe = target !== "all" && target === userEmail;
 
@@ -294,6 +331,12 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
   // Helper to render type-specific icons
   const renderNotifIcon = (type?: string) => {
     switch (type) {
+      case "dispensary_opd":
+        return (
+          <div className="w-9 h-9 rounded-xl bg-teal-100 text-teal-700 flex items-center justify-center shrink-0 shadow-xs border border-teal-200">
+            <Activity className="w-4 h-4" />
+          </div>
+        );
       case "booking":
         return (
           <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0 shadow-xs border border-blue-200">

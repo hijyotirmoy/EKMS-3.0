@@ -28,7 +28,6 @@ import { getISTMidnight, getFollowUpInfo, mergeBookingData, deleteBookingRecordC
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
-import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -583,35 +582,7 @@ export default function AgentBookingPage() {
           year: "numeric",
         });
 
-        try {
-          await createNotification({
-            title: "🎉 Verification Booking Confirmed",
-            message: `Your verification appointment on **${formattedDate}** has been successfully booked for **${ipName.trim()}** (Phone: **${ipPhone.trim()}**).`,
-            type: "booking",
-            targetEmail: user.email.toLowerCase().trim(),
-            link: "/booking",
-            metadata: {
-              ipName: ipName.trim(),
-              phone: ipPhone.trim(),
-              dateKey: bookModalDate,
-            },
-          });
-
-          // Notify Admins
-          await notifyAdmins({
-            title: "📅 New Booking Received",
-            message: `**${userProfile?.displayName || user?.email || "Agent"}** booked an appointment for **${ipName.trim()}** (Phone: **${ipPhone.trim()}**) on **${formattedDate}**.`,
-            type: "booking",
-            link: "/admin/bookings",
-            metadata: {
-              ipName: ipName.trim(),
-              phone: ipPhone.trim(),
-              dateKey: bookModalDate,
-            },
-          });
-        } catch (notifErr) {
-          console.error("Booking notification error:", notifErr);
-        }
+        // Booking notifications stopped per policy
       }
 
       setBookModalDate(null);
@@ -907,38 +878,6 @@ export default function AgentBookingPage() {
         type: "booking",
       });
 
-      // Send customized reschedule notification
-      if (user?.email) {
-        const oldFmt = new Date(rescheduleData.oldDateKey).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-        const newFmt = new Date(rsSelectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-        const targetAgent = (rescheduleData.record.agentEmail || user.email).toLowerCase().trim();
-
-        try {
-          await createNotification({
-            title: "🔄 Verification Booking Rescheduled",
-            message: `Your booking for **${rescheduleData.record.ipName}** has been moved from **${oldFmt}** to **${newFmt}**.`,
-            type: "booking",
-            targetEmail: targetAgent,
-            link: "/booking",
-            metadata: {
-              ipName: rescheduleData.record.ipName,
-              oldDate: rescheduleData.oldDateKey,
-              newDate: rsSelectedDate,
-            },
-          });
-
-          // Notify Admins
-          await notifyAdmins({
-            title: "🔄 Booking Rescheduled",
-            message: `**${userProfile?.displayName || user?.email || "Agent"}** rescheduled booking for **${rescheduleData.record.ipName}** from **${oldFmt}** to **${newFmt}**.`,
-            type: "booking",
-            link: "/admin/bookings",
-          });
-        } catch (notifErr) {
-          console.error("Reschedule notification error:", notifErr);
-        }
-      }
-
       setRescheduleData(null);
       setRsSelectedDate(null);
       toast.success("Booking successfully rescheduled!");
@@ -982,38 +921,6 @@ export default function AgentBookingPage() {
 
       if (removedCount === 0) {
         throw new Error("This booking record was not found or was already removed.");
-      }
-
-      // Send notifications ONLY after deletion succeeds
-      try {
-        await notifyAdmins({
-          title: "🗑️ Booking Cancelled",
-          message: `**${userProfile?.displayName || user?.email || "Agent"}** cancelled the appointment for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.record.rescheduledDate || cancelData.dateKey}**.`,
-          type: "booking",
-          link: "/admin/bookings",
-          metadata: {
-            ipName: cancelData.record.ipName,
-            phone: cancelData.record.phone,
-            dateKey: cancelData.dateKey,
-          },
-        });
-
-        if (recordOwner && recordOwner !== myEmail) {
-          await createNotification({
-            title: "🗑️ Booking Cancelled",
-            message: `Your booking for **${cancelData.record.ipName}** (Phone: **${cancelData.record.phone}**) on **${cancelData.record.rescheduledDate || cancelData.dateKey}** was cancelled by **${userProfile?.displayName || user?.email || "Admin"}**.`,
-            type: "booking",
-            targetEmail: recordOwner,
-            link: "/booking",
-            metadata: {
-              ipName: cancelData.record.ipName,
-              phone: cancelData.record.phone,
-              dateKey: cancelData.dateKey,
-            },
-          });
-        }
-      } catch (notifErr) {
-        console.error("Cancel notification error:", notifErr);
       }
 
       logUserActivity(user?.email, {
@@ -1092,44 +999,6 @@ export default function AgentBookingPage() {
         };
 
         await Promise.allSettled([updateVisitedInDb(bookingDb), updateVisitedInDb(db)]);
-      }
-
-      // Send notifications for visit update
-      try {
-        const isNowVisited = !b.visited;
-        const actionText = isNowVisited ? "marked as visited" : "unmarked and reverted to active";
-        const notifTitle = isNowVisited ? "🏥 Hospital Visit Completed" : "🔄 Visit Status Reverted";
-
-        // Notify Admins
-        await notifyAdmins({
-          title: notifTitle,
-          message: `**${userProfile?.displayName || user?.email || "Agent"}** ${actionText} the appointment for **${b.ipName}** (Phone: **${b.phone}**) scheduled on **${b.dateKey}**.`,
-          type: "booking",
-          link: "/admin/bookings",
-          metadata: {
-            ipName: b.ipName,
-            phone: b.phone,
-            dateKey: b.dateKey,
-          },
-        });
-
-        // Notify Agent
-        if (b.agentEmail) {
-          await createNotification({
-            title: notifTitle,
-            message: `Appointment for **${b.ipName}** (Phone: **${b.phone}**) on **${b.dateKey}** was ${actionText}.`,
-            type: "booking",
-            targetEmail: b.agentEmail.toLowerCase().trim(),
-            link: "/booking",
-            metadata: {
-              ipName: b.ipName,
-              phone: b.phone,
-              dateKey: b.dateKey,
-            },
-          });
-        }
-      } catch (notifErr) {
-        console.error("Visit notification error:", notifErr);
       }
 
       logUserActivity(user?.email, {

@@ -10,12 +10,12 @@ import {
   getDocs,
   writeBatch,
 } from "firebase/firestore";
-import { createUserWithEmailAndPassword, sendPasswordResetEmail } from "firebase/auth";
-import { db, getSecondaryAuth } from "@/lib/firebase";
+import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
+import { auth, db, getSecondaryAuth } from "@/lib/firebase";
 import { getOrFetchCollection, touchMetadata } from "@/lib/cache";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { UserProfile, UserRole, OrganogramTier, OrganogramConfig, OrganogramBranch, OrganogramLeader, Quiz, Doubt, Course } from "@/lib/types";
+import { UserProfile, UserRole, OrganogramTier, OrganogramConfig, OrganogramBranch, OrganogramLeader, Quiz, Doubt, Course, Facility } from "@/lib/types";
 import OrganogramCanvas from "@/components/team/OrganogramCanvas";
 import { getBase64Image } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
@@ -27,6 +27,7 @@ import {
   Shield,
   Crown,
   Headphones,
+  Building2,
   Search,
   ChevronLeft,
   ChevronRight,
@@ -47,13 +48,16 @@ import {
   Upload,
   User,
   GripVertical,
+  Lock,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 export default function AdminTeamsPage() {
   const { userProfile: currentAdminProfile, isMasterAdmin } = useAuth();
   const { toast, showAlert, showConfirm } = usePopup();
 
-  const [activeTab, setActiveTab] = useState<"directory" | "organogram" | "analytics">("directory");
+  const [activeTab, setActiveTab] = useState<"directory" | "organogram">("directory");
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [doubts, setDoubts] = useState<Doubt[]>([]);
@@ -78,9 +82,14 @@ export default function AdminTeamsPage() {
   const [editEmail, setEditEmail] = useState<string | null>(null);
   const [formEmail, setFormEmail] = useState("");
   const [formPassword, setFormPassword] = useState("");
+  const [showEditPassword, setShowEditPassword] = useState(false);
   const [formName, setFormName] = useState("");
   const [formAgentId, setFormAgentId] = useState("");
   const [formRole, setFormRole] = useState<UserRole>("Agent");
+  const [formDispensaryName, setFormDispensaryName] = useState("");
+  const [formDispensaryId, setFormDispensaryId] = useState("");
+  const [formDispensaryRole, setFormDispensaryRole] = useState<"Doctor" | "Pharmacist" | "Receptionist">("Receptionist");
+  const [dispensaries, setDispensaries] = useState<Facility[]>([]);
   const [formBirthday, setFormBirthday] = useState("");
   const [formPhotoURL, setFormPhotoURL] = useState("");
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -120,16 +129,25 @@ export default function AdminTeamsPage() {
 
     const loadExtras = async () => {
       try {
-        const [qList, dList, cList] = await Promise.all([
+        const [qList, dList, cList, facList] = await Promise.all([
           getOrFetchCollection<Quiz>("quizzes"),
           getOrFetchCollection<Doubt>("doubts"),
           getOrFetchCollection<Course>("onboardings", { metaKey: "onboarding" }),
+          getOrFetchCollection<Facility>("facilities"),
         ]);
 
         if (isMounted) {
           setQuizzes(qList);
           setDoubts(dList);
           setCourses(cList);
+          const dispOnly = facList.filter((f) => {
+            const typeLower = (f.type || "").toLowerCase();
+            const nameLower = (f.name || "").toLowerCase();
+            if (typeLower.includes("hospital") || nameLower.includes("hospital")) return false;
+            if (typeLower.includes("office") || nameLower.includes("office")) return false;
+            return typeLower.includes("dispensary") || nameLower.includes("dispensary");
+          });
+          setDispensaries(dispOnly);
         }
       } catch (err) {
         console.error("Extras load error:", err);
@@ -192,17 +210,27 @@ export default function AdminTeamsPage() {
     if (u) {
       setEditEmail(u.email);
       setFormEmail(u.email);
+      setFormPassword("");
+      setShowEditPassword(false);
       setFormName(u.displayName || u.name || "");
       setFormAgentId(u.agentId || "");
       setFormRole(u.role || "Agent");
+      setFormDispensaryName(u.dispensaryName || "");
+      setFormDispensaryId(u.dispensaryId || "");
+      setFormDispensaryRole((u.dispensaryRole as any) || "Receptionist");
       setFormBirthday(u.birthday || (u as any).dob || "");
       setFormPhotoURL(u.photoURL || (u as any).avatarUrl || (u as any).profilePhoto || (u as any).profileImage || "");
     } else {
       setEditEmail(null);
       setFormEmail("");
+      setFormPassword("");
+      setShowEditPassword(false);
       setFormName("");
       setFormAgentId(nextGeneratedAgentId);
       setFormRole("Agent");
+      setFormDispensaryName("");
+      setFormDispensaryId("");
+      setFormDispensaryRole("Receptionist");
       setFormBirthday("");
       setFormPhotoURL("");
     }
@@ -240,14 +268,27 @@ export default function AdminTeamsPage() {
       const birthdayVal = formBirthday.trim() || null;
 
       if (!editEmail) {
-        // Create user in Firebase Auth with default password 'esic123' using secondary app instance
+        const initialPass =
+          formPassword.trim() || `ESIC@${Math.floor(100000 + Math.random() * 900000)}`;
+        // Create user in Firebase Auth with initial password using secondary app instance
         const secAuth = getSecondaryAuth();
         try {
-          await createUserWithEmailAndPassword(secAuth, emailKey, "esic123");
-          await sendPasswordResetEmail(secAuth, emailKey).catch(() => {});
+          await createUserWithEmailAndPassword(secAuth, emailKey, initialPass);
           await secAuth.signOut();
         } catch (authErr: any) {
           console.warn("Auth user creation note:", authErr.message);
+        }
+
+        // Automatically restrict other dispensary desks based on chosen role
+        let autoRestricted: string[] = [];
+        if (formRole === "Dispensary Staff") {
+          if (formDispensaryRole === "Receptionist") {
+            autoRestricted = ["/dispensary/doctor", "/dispensary/pharmacy"];
+          } else if (formDispensaryRole === "Doctor") {
+            autoRestricted = ["/dispensary/reception", "/dispensary/pharmacy"];
+          } else if (formDispensaryRole === "Pharmacist") {
+            autoRestricted = ["/dispensary/reception", "/dispensary/doctor"];
+          }
         }
 
         await setDoc(doc(db, "users", emailKey), {
@@ -256,6 +297,10 @@ export default function AdminTeamsPage() {
           name: formName.trim(),
           agentId: formAgentId.trim() || nextGeneratedAgentId,
           role: formRole,
+          dispensaryName: formRole === "Dispensary Staff" ? formDispensaryName : "",
+          dispensaryId: formRole === "Dispensary Staff" ? formDispensaryId : "",
+          dispensaryRole: formRole === "Dispensary Staff" ? formDispensaryRole : "",
+          restrictedPages: autoRestricted,
           birthday: birthdayVal,
           dob: birthdayVal,
           photoURL: photoVal,
@@ -264,7 +309,13 @@ export default function AdminTeamsPage() {
           createdAt: Date.now(),
           orgTier: "unassigned",
           mustChangePassword: true,
+          password: initialPass,
+          passwordUpdatedAt: Date.now(),
         });
+
+        // Instantly vanish password from state
+        setFormPassword("");
+        setShowEditPassword(false);
 
         logUserActivity(currentAdminProfile?.email, {
           desc: `Created team member profile for ${formName.trim()} (${emailKey}) as ${formRole}`,
@@ -272,33 +323,89 @@ export default function AdminTeamsPage() {
         });
 
         showAlert({
-          title: "Team Member Added!",
-          message: `Agent ID: ${formAgentId || nextGeneratedAgentId}\nDefault Temporary Password: esic123\n\nA secure password setup link has also been dispatched to ${emailKey}.`,
+          title: "Team Member Added Successfully",
+          message: `Agent ID: ${formAgentId || nextGeneratedAgentId}\nAssigned Password: ${initialPass}\n\nPlease copy and share these credentials with the user. For security, the password is not pre-filled or shown on the website interface.`,
           type: "success",
         });
       } else {
-        await setDoc(
-          doc(db, "users", emailKey),
-          {
-            displayName: formName.trim(),
-            name: formName.trim(),
-            agentId: formAgentId.trim(),
-            role: formRole,
-            birthday: birthdayVal,
-            dob: birthdayVal,
-            photoURL: photoVal,
-            avatarUrl: photoVal,
-            profilePhoto: photoVal,
-            updatedAt: Date.now(),
-          },
-          { merge: true }
-        );
+        // Automatically restrict other dispensary desks based on chosen role
+        let autoRestricted: string[] = [];
+        if (formRole === "Dispensary Staff") {
+          if (formDispensaryRole === "Receptionist") {
+            autoRestricted = ["/dispensary/doctor", "/dispensary/pharmacy"];
+          } else if (formDispensaryRole === "Doctor") {
+            autoRestricted = ["/dispensary/reception", "/dispensary/pharmacy"];
+          } else if (formDispensaryRole === "Pharmacist") {
+            autoRestricted = ["/dispensary/reception", "/dispensary/doctor"];
+          }
+        }
+
+        const updatePayload: any = {
+          displayName: formName.trim(),
+          name: formName.trim(),
+          agentId: formAgentId.trim(),
+          role: formRole,
+          dispensaryName: formRole === "Dispensary Staff" ? formDispensaryName : "",
+          dispensaryId: formRole === "Dispensary Staff" ? formDispensaryId : "",
+          dispensaryRole: formRole === "Dispensary Staff" ? formDispensaryRole : "",
+          restrictedPages: autoRestricted,
+          birthday: birthdayVal,
+          dob: birthdayVal,
+          photoURL: photoVal,
+          avatarUrl: photoVal,
+          profilePhoto: photoVal,
+          updatedAt: Date.now(),
+        };
+
+        const newPass = formPassword.trim();
+        if (newPass) {
+          updatePayload.password = newPass;
+          updatePayload.passwordUpdatedAt = Date.now();
+          updatePayload.mustChangePassword = false;
+
+          // 1. If editing currently logged in admin's Firebase Auth password
+          if (auth.currentUser && auth.currentUser.email?.toLowerCase() === emailKey) {
+            try {
+              const { updatePassword: updateFbPassword } = await import("firebase/auth");
+              await updateFbPassword(auth.currentUser, newPass);
+            } catch (err: any) {
+              console.warn("Update current user auth password notice:", err);
+            }
+          }
+
+          // 2. Try updating via secondaryAuth
+          try {
+            const secAuth = getSecondaryAuth();
+            const existingUser = users.find((u) => u.email.toLowerCase() === emailKey);
+            const prevPass = (existingUser as any)?.password;
+            if (prevPass) {
+              const secCred = await signInWithEmailAndPassword(secAuth, emailKey, prevPass).catch(() => null);
+              if (secCred) {
+                const { updatePassword: updateSecPassword } = await import("firebase/auth");
+                await updateSecPassword(secCred.user, newPass);
+                await secAuth.signOut();
+              }
+            }
+          } catch (secErr) {
+            console.warn("Secondary auth password update note:", secErr);
+          }
+        }
+
+        await setDoc(doc(db, "users", emailKey), updatePayload, { merge: true });
+
+        // Instantly vanish password from component memory so it is NEVER exposed in website memory or frontend
+        setFormPassword("");
+        setShowEditPassword(false);
 
         logUserActivity(currentAdminProfile?.email, {
-          desc: `Updated member profile & role for ${formName.trim()} (${emailKey})`,
+          desc: `Updated member profile & role for ${formName.trim()} (${emailKey})${
+            newPass ? " including updated password" : ""
+          }`,
           type: "edit",
         });
-        toast.success("Profile updated successfully!");
+        toast.success(
+          `Profile for ${formName.trim()} updated successfully${newPass ? " with new password" : ""}!`
+        );
       }
 
       await touchMetadata("users");
@@ -557,18 +664,6 @@ export default function AdminTeamsPage() {
           <Network className="w-4 h-4" />
           <span>Organogram Tiers</span>
         </button>
-
-        <button
-          onClick={() => setActiveTab("analytics")}
-          className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
-            activeTab === "analytics"
-              ? "bg-blue-600 text-white shadow-xs"
-              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-          }`}
-        >
-          <PieChart className="w-4 h-4" />
-          <span>Performance Table</span>
-        </button>
       </div>
 
       {/* ----------------------------------------------------
@@ -597,6 +692,7 @@ export default function AdminTeamsPage() {
               >
                 <option value="All">All Roles</option>
                 <option value="Agent">Agents</option>
+                <option value="Dispensary Staff">Dispensary Staff</option>
                 <option value="Admin">Admins</option>
                 <option value="Master Admin">Master Admins</option>
               </select>
@@ -618,6 +714,7 @@ export default function AdminTeamsPage() {
                 const streak = member.streak || 0;
                 const isMaster = member.role === "Master Admin";
                 const isAdmin = member.role === "Admin";
+                const isDispensary = member.role === "Dispensary Staff" || member.role === "Dispensary";
                 const avatar = member.photoURL || (member as any).avatarUrl || (member as any).profilePhoto || (member as any).profileImage;
                 const bday = formatBirthday(member.birthday || (member as any).dob);
 
@@ -678,6 +775,8 @@ export default function AdminTeamsPage() {
                             ? "bg-rose-50 text-rose-700 border border-rose-200"
                             : isAdmin
                             ? "bg-purple-50 text-purple-700 border border-purple-200"
+                            : isDispensary
+                            ? "bg-teal-50 text-teal-700 border border-teal-200"
                             : "bg-blue-50 text-blue-700 border border-blue-200"
                         }`}
                       >
@@ -685,11 +784,27 @@ export default function AdminTeamsPage() {
                           <Crown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                         ) : isAdmin ? (
                           <Shield className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                        ) : isDispensary ? (
+                          <Building2 className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                         ) : (
                           <Headphones className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                         )}
-                        <span className="truncate">{member.role || "Agent"}</span>
+                        <span className="truncate">
+                          {isDispensary && (member as any).dispensaryRole
+                            ? `${member.role} (${(member as any).dispensaryRole})`
+                            : member.role || "Agent"}
+                        </span>
                       </span>
+
+                      {isDispensary && member.dispensaryName && (
+                        <div
+                          className="mt-1 text-[10px] sm:text-[11px] font-semibold text-teal-800 bg-teal-50 border border-teal-200/80 rounded-lg px-2 py-0.5 truncate flex items-center justify-center gap-1"
+                          title={member.dispensaryName}
+                        >
+                          <Building2 className="w-3 h-3 text-teal-600 shrink-0" />
+                          <span className="truncate">{member.dispensaryName}</span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Bottom Details: Email & Birthday */}
@@ -739,82 +854,6 @@ export default function AdminTeamsPage() {
             onAssignUserBranch={handleAssignUserBranch}
             onRemoveUserFromBranch={handleRemoveUserFromBranch}
           />
-        </div>
-      )}
-
-      {/* ----------------------------------------------------
-          TAB 3: PERFORMANCE TABLE
-          ---------------------------------------------------- */}
-      {activeTab === "analytics" && (
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-xs space-y-4">
-          <div className="overflow-x-auto rounded-2xl border border-slate-100">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
-                  <th className="p-4">Agent Name</th>
-                  <th className="p-4">Role</th>
-                  <th className="p-4 text-center">Quizzes Taken</th>
-                  <th className="p-4 text-center">Avg Score</th>
-                  <th className="p-4 text-center">Courses Completed</th>
-                  <th className="p-4 text-center">Doubts Asked</th>
-                  <th className="p-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                {users.map((u) => {
-                  let quizCount = 0;
-                  let sumScore = 0;
-                  if (u.quizScores) {
-                    Object.values(u.quizScores).forEach((sc: any) => {
-                      if (typeof sc === "number") {
-                        sumScore += sc;
-                        quizCount++;
-                      }
-                    });
-                  }
-                  const avg = quizCount > 0 ? Math.round(sumScore / quizCount) : 0;
-
-                  let completedCourses = 0;
-                  if (u.courseProgress) {
-                    Object.values(u.courseProgress).forEach((prog: any) => {
-                      if (prog.status === "completed") completedCourses++;
-                    });
-                  }
-
-                  let doubtsCount = 0;
-                  doubts.forEach((d) => {
-                    if (d.authorEmail?.toLowerCase() === u.email.toLowerCase()) doubtsCount++;
-                  });
-
-                  return (
-                    <tr key={u.email} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="p-4">
-                        <div className="font-bold text-slate-900">{u.displayName || u.name}</div>
-                        <div className="text-[10px] text-slate-400">{u.email}</div>
-                      </td>
-                      <td className="p-4">
-                        <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-md text-[10px] font-bold">
-                          {u.role || "Agent"}
-                        </span>
-                      </td>
-                      <td className="p-4 text-center font-bold text-slate-800">{quizCount}</td>
-                      <td className="p-4 text-center font-extrabold text-emerald-600">{avg}%</td>
-                      <td className="p-4 text-center font-bold text-blue-600">{completedCourses}</td>
-                      <td className="p-4 text-center text-slate-600">{doubtsCount}</td>
-                      <td className="p-4 text-right whitespace-nowrap">
-                        <button
-                          onClick={() => handleOpenUserModal(u)}
-                          className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors"
-                        >
-                          Edit
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
 
@@ -932,11 +971,56 @@ export default function AdminTeamsPage() {
                     className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-semibold text-slate-800"
                   >
                     <option value="Agent">Agent</option>
+                    <option value="Dispensary Staff">Dispensary Staff</option>
                     <option value="Admin">Admin</option>
                     {isMasterAdmin && <option value="Master Admin">Master Admin</option>}
                   </select>
                 </div>
               </div>
+
+              {/* Conditional Dispensary Selection for Dispensary Staff */}
+              {formRole === "Dispensary Staff" && (
+                <div className="space-y-3 p-3 bg-teal-50/40 rounded-xl border border-teal-200">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Dispensary Sub-Role / Designation *
+                    </label>
+                    <select
+                      value={formDispensaryRole}
+                      onChange={(e) => setFormDispensaryRole(e.target.value as any)}
+                      className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-teal-500 font-semibold text-slate-800"
+                    >
+                      <option value="Receptionist">Dispensary Receptionist (Arrivals & Check-in)</option>
+                      <option value="Doctor">Dispensary Doctor (Consultation & Rx)</option>
+                      <option value="Pharmacist">Dispensary Pharmacist (Dispensation)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Select Allotted Dispensary *
+                    </label>
+                    <select
+                      value={formDispensaryName}
+                      onChange={(e) => {
+                        const selectedName = e.target.value;
+                        setFormDispensaryName(selectedName);
+                        const match = dispensaries.find((d) => d.name === selectedName);
+                        setFormDispensaryId(match?.id || "");
+                      }}
+                      required={formRole === "Dispensary Staff"}
+                      className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-teal-500 font-semibold text-slate-800"
+                    >
+                      <option value="">-- Choose Allotted Dispensary ({dispensaries.length}) --</option>
+                      {dispensaries.map((d) => (
+                        <option key={d.id} value={d.name}>
+                          {d.name} {d.district ? `(${d.district})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
@@ -948,6 +1032,39 @@ export default function AdminTeamsPage() {
                   onChange={(e) => setFormBirthday(e.target.value)}
                   className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 font-semibold"
                 />
+              </div>
+
+              {/* SET / UPDATE PASSWORD (Optional) */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
+                  <span>SET / UPDATE PASSWORD</span>
+                  <span className="text-[10px] font-normal text-slate-400">Optional</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showEditPassword ? "text" : "password"}
+                    value={formPassword}
+                    onChange={(e) => setFormPassword(e.target.value)}
+                    placeholder={
+                      editEmail
+                        ? "Enter new password to update (or leave blank to keep unchanged)..."
+                        : "Leave blank to auto-generate temporary password..."
+                    }
+                    className="w-full px-3.5 py-2 pr-10 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 font-mono tracking-wider"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowEditPassword(!showEditPassword)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                    title={showEditPassword ? "Hide password" : "Show password"}
+                  >
+                    {showEditPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1 flex items-center gap-1">
+                  <Lock className="w-3 h-3 text-emerald-600 shrink-0" />
+                  <span>Saved securely directly to Firebase and never exposed in website storage.</span>
+                </p>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">

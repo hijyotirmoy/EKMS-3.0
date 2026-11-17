@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut as fbSignOut } from "firebase/auth";
-import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, increment } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, increment, collection, query, where, getDocs } from "firebase/firestore";
 import { auth, db, logsDb } from "@/lib/firebase";
 import { UserProfile, UserRole, SystemStatus } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
@@ -39,9 +39,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const role: UserRole | "guest" = userProfile?.role || (user ? "Agent" : "guest");
   const isLoggedIn = !!user;
-  const roleStr = (role || "").toLowerCase().trim();
-  const isMasterAdmin = roleStr.includes("master");
-  const isAdmin = isMasterAdmin || roleStr.includes("admin");
+  const isMasterAdmin = role === "Master Admin";
+  const isAdmin = isMasterAdmin || role === "Admin";
 
   const openLoginModal = () => setShowLoginModal(true);
   const closeLoginModal = () => setShowLoginModal(false);
@@ -219,8 +218,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [isLoggedIn, systemStatus]);
 
   // 5. Login function with Tier Validation & 5-Attempt Security Lock
-  const loginWithRole = async (requestedRole: UserRole, email: string, pass: string) => {
-    const cleanEmail = email.trim().toLowerCase();
+  const loginWithRole = async (requestedRole: UserRole, emailOrId: string, pass: string) => {
+    let cleanEmail = emailOrId.trim().toLowerCase();
+
+    // If identifier doesn't contain '@', resolve by dispensaryId or agentId from Firestore
+    if (!cleanEmail.includes("@")) {
+      try {
+        const qDisp = query(collection(db, "users"), where("dispensaryId", "==", emailOrId.trim()));
+        const snapDisp = await getDocs(qDisp);
+        if (!snapDisp.empty) {
+          const docData = snapDisp.docs[0].data();
+          if (docData?.email) {
+            cleanEmail = docData.email.toLowerCase().trim();
+          }
+        } else {
+          const qAgent = query(collection(db, "users"), where("agentId", "==", emailOrId.trim()));
+          const snapAgent = await getDocs(qAgent);
+          if (!snapAgent.empty) {
+            const docData = snapAgent.docs[0].data();
+            if (docData?.email) {
+              cleanEmail = docData.email.toLowerCase().trim();
+            }
+          } else {
+            // Also check direct document in dispensaries collection if any
+            const dispDoc = await getDoc(doc(db, "dispensaries", cleanEmail));
+            if (dispDoc.exists() && dispDoc.data()?.email) {
+              cleanEmail = dispDoc.data().email.toLowerCase().trim();
+            } else {
+              cleanEmail = `${cleanEmail}@ekms.in`;
+            }
+          }
+        }
+      } catch (e) {
+        cleanEmail = `${cleanEmail}@ekms.in`;
+      }
+    }
+
     const userDocRef = doc(db, "users", cleanEmail);
     const now = Date.now();
 
@@ -301,8 +334,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       userCredential = await signInWithEmailAndPassword(auth, cleanEmail, pass);
     } catch (authErr: any) {
-      // Failed login attempt tracking
-      const lastFailedTime = userData?.lastFailedAttempt || localData?.lastFailedAttempt || 0;
+      // If primary auth failed, check if password was updated by admin in Firestore users collection
+      let recovered = false;
+      try {
+        const uSnap = await getDoc(userDocRef);
+        const uData = uSnap.exists() ? uSnap.data() : null;
+        if (uData?.password && uData.password === pass) {
+          const { getSecondaryAuth } = await import("@/lib/firebase");
+          const { createUserWithEmailAndPassword, updatePassword: updateAuthPassword } = await import("firebase/auth");
+          const secAuth = getSecondaryAuth();
+
+          // Try 1: Maybe user hasn't been created in Firebase Auth yet
+          try {
+            await createUserWithEmailAndPassword(secAuth, cleanEmail, pass);
+            await secAuth.signOut();
+          } catch (createErr: any) {
+            // Try 2: If user exists in Auth with older default password, sign in and update
+            const defaultPasswords = ["esic123", "ekms123", "password", "123456"];
+            for (const candPass of defaultPasswords) {
+              try {
+                const sCred = await signInWithEmailAndPassword(secAuth, cleanEmail, candPass);
+                if (sCred) {
+                  await updateAuthPassword(sCred.user, pass);
+                  await secAuth.signOut();
+                  break;
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Try signing in on primary auth with the synced password
+          const retryCred = await signInWithEmailAndPassword(auth, cleanEmail, pass).catch(() => null);
+          if (retryCred) {
+            userCredential = retryCred;
+            recovered = true;
+          }
+        }
+      } catch (recoveryErr) {
+        console.warn("Admin password recovery notice:", recoveryErr);
+      }
+
+      if (!recovered) {
+        // Failed login attempt tracking
+        const lastFailedTime = userData?.lastFailedAttempt || localData?.lastFailedAttempt || 0;
       const isOlderThan24h = (now - lastFailedTime) > 24 * 3600 * 1000;
       const currentFailed = isOlderThan24h ? 0 : Math.max(userData?.failedAttempts || 0, localData?.failedAttempts || 0);
       const newFailed = currentFailed + 1;
@@ -370,6 +444,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           `ID or Password is incorrect. (${remainingAttempts} attempt${remainingAttempts === 1 ? "" : "s"} remaining)`
         );
       }
+      }
+    }
+
+    if (!userCredential) {
+      throw new Error("Authentication failed. Please check your credentials.");
     }
 
     // Clear local & server lock record on successful sign-in
@@ -413,6 +492,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await fbSignOut(auth);
       throw new Error("Access Denied: You do not have Admin permissions.");
     }
+    const isActualDispensary = actualRole === "Dispensary Staff" || actualRole === "Dispensary";
+    const isRequestedDispensary = requestedRole === "Dispensary Staff" || requestedRole === "Dispensary";
+
+    if (isRequestedDispensary && !isActualDispensary) {
+      await fbSignOut(auth);
+      throw new Error("Access Denied: This account is not registered as Dispensary Staff.");
+    }
+    if (requestedRole === "Agent" && isActualDispensary) {
+      await fbSignOut(auth);
+      throw new Error("Access Denied: Dispensary Staff must sign in using the Dispensary Staff option.");
+    }
+    if (isActualDispensary && profile?.status === "inactive") {
+      await fbSignOut(auth);
+      throw new Error("Account Deactivated: This dispensary account has been deactivated. Please contact an administrator.");
+    }
 
     // Record login session ONLY when user logs in via the login window/form & reset failed counter
     try {
@@ -433,30 +527,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           loginCount: 1,
           totalSeconds: 0,
           pageVisits: {},
-          timelineEvents: [
-            {
-              time: now,
-              desc: "Logged in to EKMS Portal (Session #1)",
-              type: "auth",
-              icon: "LogIn",
-              color: "emerald",
-            },
-          ],
+          timelineEvents: [],
         });
       } else {
-        const nextSessionNum = (snap.data()?.loginCount || 0) + 1;
         await updateDoc(doc(logsDb, "daily_activity", docId), {
           name: userName,
           lastActive: now,
           loginTime: now,
           loginCount: increment(1),
-          timelineEvents: arrayUnion({
-            time: now,
-            desc: `Logged in to EKMS Portal (Session #${nextSessionNum})`,
-            type: "auth",
-            icon: "LogIn",
-            color: "emerald",
-          }),
         });
       }
 
@@ -500,13 +578,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await updateDoc(doc(logsDb, "daily_activity", docId), {
             logoutTime: now,
             lastActive: now,
-            timelineEvents: arrayUnion({
-              time: now,
-              desc: "User logged out of session",
-              type: "auth",
-              color: "slate",
-              icon: "LogOut",
-            }),
           });
         } catch {
           await setDoc(

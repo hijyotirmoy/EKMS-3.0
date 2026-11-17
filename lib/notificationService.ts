@@ -40,6 +40,56 @@ export function getLocalClosedNotifications(userEmail: string): string[] {
 /**
  * Creates a notification in Firestore if it doesn't already exist
  */
+export async function createDispensaryNotification(data: {
+  targetDispensary: string;
+  targetDispensaryRole: "Doctor" | "Pharmacist" | "Receptionist" | "all";
+  title: string;
+  message: string;
+  link: string;
+  tokenNo?: string;
+}) {
+  try {
+    const docId = `disp_notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const notifRef = doc(logsDb, "notifications", docId);
+
+    const payload: Record<string, any> = {
+      id: docId,
+      title: data.title || "Dispensary OPD Alert",
+      message: data.message || "",
+      type: "dispensary_opd",
+      targetEmail: "all",
+      targetRole: "all",
+      targetDispensary: (data.targetDispensary || "").trim(),
+      targetDispensaryRole: data.targetDispensaryRole || "all",
+      link: data.link || "/appointment",
+      readBy: [],
+      closedBy: [],
+      createdAt: Date.now(),
+      metadata: {
+        tokenNo: data.tokenNo || "",
+        targetDispensary: data.targetDispensary,
+        targetDispensaryRole: data.targetDispensaryRole,
+      },
+    };
+
+    await setDoc(notifRef, payload, { merge: true }).catch((e) => {
+      console.warn("Write to logsDb dispensary notification:", e);
+    });
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("ekms-notification-created"));
+    }
+
+    return docId;
+  } catch (err) {
+    console.warn("createDispensaryNotification error:", err);
+    return null;
+  }
+}
+
+/**
+ * Creates a notification in Firestore if it doesn't already exist
+ */
 export async function createNotification(
   data: {
     id?: string;
@@ -54,6 +104,15 @@ export async function createNotification(
     createdAt?: number;
   }
 ) {
+  // Stop all booking notifications for agents, admins, and master admins
+  if (
+    data.type === "booking" ||
+    (data.title && /booking|appointment/i.test(data.title)) ||
+    (data.link && data.link.includes("/booking"))
+  ) {
+    return null;
+  }
+
   try {
     const docId = data.id || doc(collection(logsDb, "notifications")).id;
     const notifRef = doc(logsDb, "notifications", docId);
@@ -124,6 +183,13 @@ export async function notifyAdmins(data: {
   link?: string;
   metadata?: Record<string, any>;
 }) {
+  if (
+    data.type === "booking" ||
+    (data.title && /booking|appointment/i.test(data.title)) ||
+    (data.link && data.link.includes("/booking"))
+  ) {
+    return null;
+  }
   return createNotification({
     ...data,
     targetEmail: "all",

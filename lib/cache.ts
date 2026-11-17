@@ -138,10 +138,36 @@ export async function getOrFetchCollection<T = any>(
       try {
         const serverMeta = await getSystemMetadata();
         const serverVersion = serverMeta[`${metaKey}UpdatedAt`] || Date.now();
-        localStorage.setItem(storageKey, JSON.stringify(items));
-        localStorage.setItem(metaStorageKey, String(serverVersion));
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(items));
+          localStorage.setItem(metaStorageKey, String(serverVersion));
+        } catch (storageErr: any) {
+          // If quota exceeded, clean up stale/other ekms_cache keys and retry
+          if (storageErr?.name === "QuotaExceededError" || storageErr?.code === 22 || storageErr?.number === -2147024882) {
+            const keysToRemove: string[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k && (k.startsWith("ekms_cache_") || k.startsWith("ekms_meta_")) && k !== storageKey && k !== metaStorageKey) {
+                keysToRemove.push(k);
+              }
+            }
+            keysToRemove.forEach((k) => {
+              try { localStorage.removeItem(k); } catch {}
+            });
+
+            try {
+              localStorage.setItem(storageKey, JSON.stringify(items));
+              localStorage.setItem(metaStorageKey, String(serverVersion));
+            } catch {
+              // If still too large (e.g. heavy media/attachments in onboardings), fallback to sessionStorage
+              try {
+                sessionStorage.setItem(storageKey, JSON.stringify(items));
+              } catch {}
+            }
+          }
+        }
       } catch (e) {
-        console.warn(`Could not cache ${collectionName} to localStorage (quota exceeded or private mode):`, e);
+        // Silently handled without cluttering console
       }
     }
 

@@ -7,8 +7,20 @@ import { getOrFetchCollection } from "@/lib/cache";
 import { QnAItem } from "@/lib/types";
 import { Search, Flag, ChevronLeft, ChevronRight, BookOpen, Calendar, HelpCircle } from "lucide-react";
 import ReportIssueModal from "@/components/common/ReportIssueModal";
+import { useAuth } from "@/context/AuthContext";
+import { useRouter } from "next/navigation";
 
 export default function HomePage() {
+  const { userProfile, isLoggedIn } = useAuth();
+  const router = useRouter();
+
+  // Dispensary staff are automatically redirected to their appointment dashboard
+  useEffect(() => {
+    if (isLoggedIn && (userProfile?.role === "Dispensary Staff" || userProfile?.role === "Dispensary")) {
+      router.replace("/appointment");
+    }
+  }, [isLoggedIn, userProfile, router]);
+
   const [qaList, setQaList] = useState<QnAItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");

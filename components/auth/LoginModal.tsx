@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { UserRole } from "@/lib/types";
-import { Users, Headphones, Briefcase, ShieldAlert, Lock, X, ChevronRight, AlertCircle } from "lucide-react";
+import { Users, Headphones, Briefcase, ShieldAlert, Lock, X, ChevronRight, AlertCircle, Building2 } from "lucide-react";
 
 export default function LoginModal() {
   const { showLoginModal, closeLoginModal, loginWithRole } = useAuth();
@@ -119,6 +119,21 @@ export default function LoginModal() {
               </button>
 
               <button
+                onClick={() => handleSelectRole("Dispensary Staff")}
+                className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl hover:border-teal-500 hover:bg-teal-50/50 transition-all group text-left"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-teal-100 text-teal-600 flex items-center justify-center">
+                    <Building2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-slate-900 text-sm">Dispensary Staff</div>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600 group-hover:translate-x-0.5 transition-all" />
+              </button>
+
+              <button
                 onClick={() => handleSelectRole("Admin")}
                 className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl hover:border-emerald-500 hover:bg-emerald-50/50 transition-all group text-left"
               >
@@ -152,24 +167,42 @@ export default function LoginModal() {
         ) : (
           /* STEP 2: Email & Password Credentials Form */
           <div>
-            <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-3">
+            <div
+              className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3 ${
+                selectedRole === "Dispensary Staff" || selectedRole === "Dispensary"
+                  ? "bg-teal-50 text-teal-600"
+                  : selectedRole === "Admin"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : selectedRole === "Master Admin"
+                  ? "bg-rose-50 text-rose-600"
+                  : "bg-blue-50 text-blue-600"
+              }`}
+            >
               <Lock className="w-7 h-7" />
             </div>
             <h2 className="text-xl font-bold text-center text-slate-800 mb-1">
               Sign In as {selectedRole}
             </h2>
-            <p className="text-xs text-center text-slate-500 mb-6">Enter your registered work credentials</p>
+            <p className="text-xs text-center text-slate-500 mb-6">
+              {selectedRole === "Dispensary Staff" || selectedRole === "Dispensary"
+                ? "Enter your Dispensary Staff ID / Email and password"
+                : "Enter your registered work credentials"}
+            </p>
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Email Address
+                  {selectedRole === "Dispensary Staff" || selectedRole === "Dispensary" ? "Dispensary Staff ID or Email" : "Email Address"}
                 </label>
                 <input
-                  type="email"
+                  type={selectedRole === "Dispensary Staff" || selectedRole === "Dispensary" ? "text" : "email"}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@piramalswasthya.org"
+                  placeholder={
+                    selectedRole === "Dispensary Staff" || selectedRole === "Dispensary"
+                      ? "e.g. DISP-001 or dispensary@ekms.in"
+                      : "name@piramalswasthya.org"
+                  }
                   required
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                 />
@@ -211,14 +244,22 @@ export default function LoginModal() {
                   type="button"
                   onClick={handleBack}
                   disabled={submitting}
-                  className="w-1/3 py-2.5 border border-slate-200 hover:bg-slate-100 text-slate-700 text-sm font-medium rounded-lg transition-colors"
+                  className="w-1/3 py-2.5 border border-slate-200 hover:bg-slate-100 text-slate-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
                 >
                   Back
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="w-2/3 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
+                  className={`w-2/3 py-2.5 text-white text-sm font-medium rounded-lg shadow-sm transition-colors cursor-pointer ${
+                    selectedRole === "Dispensary Staff" || selectedRole === "Dispensary"
+                      ? "bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400"
+                      : selectedRole === "Admin"
+                      ? "bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400"
+                      : selectedRole === "Master Admin"
+                      ? "bg-rose-600 hover:bg-rose-700 disabled:bg-rose-400"
+                      : "bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400"
+                  }`}
                 >
                   {submitting ? "Signing in..." : "Sign In"}
                 </button>

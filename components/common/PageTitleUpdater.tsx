@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 export const PAGE_TITLES: Record<string, string> = {
   "/": "Home",
   "/booking": "Booking",
+  "/appointment": "Appointment",
   "/files": "Files",
   "/doubts": "Doubts",
   "/facility": "Facilities",
@@ -25,6 +26,8 @@ export const PAGE_TITLES: Record<string, string> = {
   "/admin/doubts": "Manage Doubts",
   "/admin/facilities": "Manage Facilities",
   "/admin/facility": "Manage Facilities",
+  "/admin/appointment": "Manage Appointment",
+  "/admin/dispensary": "Manage Appointment",
   "/admin/qa": "Manage Q&A",
   "/admin/quiz": "Manage Quizzes",
   "/admin/onboarding": "Manage Onboarding",

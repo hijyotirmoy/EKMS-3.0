@@ -5,6 +5,7 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  memoryLocalCache,
 } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
@@ -56,26 +57,24 @@ export const db = (() => {
 
 export const storage = getStorage(app);
 
-// Dedicated Booking Firebase App ("ekmsbooking") for storing all booking records separately
+// Dedicated Booking Firebase App ("ekmsbooking") with memory cache to avoid multi-app IndexedDB collision
 export const bookingApp = getApps().find((a) => a.name === "BookingApp") || initializeApp(bookingFirebaseConfig, "BookingApp");
 export const bookingDb = (() => {
   try {
     return initializeFirestore(bookingApp, {
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-      experimentalAutoDetectLongPolling: true,
+      localCache: memoryLocalCache(),
     });
   } catch (e) {
     return getFirestore(bookingApp);
   }
 })();
 
-// Dedicated Logs Firebase App ("ekms-logs") for storing all notifications, announcements, user & daily activity logs separately
+// Dedicated Logs Firebase App ("ekms-logs") with memory cache to avoid multi-app IndexedDB collision
 export const logsApp = getApps().find((a) => a.name === "LogsApp") || initializeApp(logsFirebaseConfig, "LogsApp");
 export const logsDb = (() => {
   try {
     return initializeFirestore(logsApp, {
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-      experimentalAutoDetectLongPolling: true,
+      localCache: memoryLocalCache(),
     });
   } catch (e) {
     return getFirestore(logsApp);

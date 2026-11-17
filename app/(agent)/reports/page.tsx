@@ -117,10 +117,15 @@ export default function ReportsPage() {
   const filteredReports = useMemo(() => {
     let list = allReports;
 
-    if (statusFilter === "pending") {
+    // Non-admin users can ONLY see pending reports and cannot see solved reports
+    if (!isAdmin) {
       list = list.filter((r) => r.status !== "solved");
-    } else if (statusFilter === "solved") {
-      list = list.filter((r) => r.status === "solved");
+    } else {
+      if (statusFilter === "pending") {
+        list = list.filter((r) => r.status !== "solved");
+      } else if (statusFilter === "solved") {
+        list = list.filter((r) => r.status === "solved");
+      }
     }
 
     if (searchQuery.trim()) {
@@ -137,7 +142,7 @@ export default function ReportsPage() {
     }
 
     return list;
-  }, [allReports, statusFilter, searchQuery]);
+  }, [allReports, statusFilter, searchQuery, isAdmin]);
 
   // 4. Mark Report Solved with Admin Remarks Modal
   const handleOpenSolveModal = (report: AppReport) => {
@@ -412,8 +417,8 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* 3 Top Interactive KPI Filter Boxes */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 select-none">
+      {/* Top KPI Filter Boxes (Admins see all 3, Regular users only see Pending) */}
+      <div className={`grid gap-3 select-none ${isAdmin ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-1 sm:grid-cols-3"}`}>
         {/* Pending Reports (Active by Default) */}
         <div
           onClick={() => setStatusFilter("pending")}
@@ -429,42 +434,44 @@ export default function ReportsPage() {
           <div className="text-xl sm:text-2xl font-black text-amber-900 mt-1">{pendingCount}</div>
         </div>
 
-        {/* Solved Reports */}
-        <div
-          onClick={() => setStatusFilter("solved")}
-          className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
-            statusFilter === "solved"
-              ? "bg-emerald-50/90 border-emerald-400 ring-2 ring-emerald-500/30 shadow-md scale-[1.01]"
-              : "bg-emerald-50/70 border-emerald-200 hover:border-emerald-300 hover:shadow-xs"
-          }`}
-        >
-          <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
-            Solved Reports
-          </div>
-          <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{solvedCount}</div>
-        </div>
-
-        {/* Total Reports */}
-        <div
-          onClick={() => setStatusFilter("all")}
-          className={`p-3.5 rounded-xl border transition-all cursor-pointer col-span-2 sm:col-span-1 flex flex-col justify-between ${
-            statusFilter === "all"
-              ? "bg-blue-50/90 border-blue-400 ring-2 ring-blue-500/30 shadow-md scale-[1.01]"
-              : "bg-blue-50/70 border-blue-200 hover:border-blue-300 hover:shadow-xs"
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">
-              Total Reports
+        {/* Solved Reports - Admin Only */}
+        {isAdmin && (
+          <div
+            onClick={() => setStatusFilter("solved")}
+            className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+              statusFilter === "solved"
+                ? "bg-emerald-50/90 border-emerald-400 ring-2 ring-emerald-500/30 shadow-md scale-[1.01]"
+                : "bg-emerald-50/70 border-emerald-200 hover:border-emerald-300 hover:shadow-xs"
+            }`}
+          >
+            <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+              Solved Reports
             </div>
-            {isAdmin && totalCount > 0 && (
+            <div className="text-xl sm:text-2xl font-black text-emerald-900 mt-1">{solvedCount}</div>
+          </div>
+        )}
+
+        {/* Total Reports - Admin Only */}
+        {isAdmin && (
+          <div
+            onClick={() => setStatusFilter("all")}
+            className={`p-3.5 rounded-xl border transition-all cursor-pointer col-span-2 sm:col-span-1 flex flex-col justify-between ${
+              statusFilter === "all"
+                ? "bg-blue-50/90 border-blue-400 ring-2 ring-blue-500/30 shadow-md scale-[1.01]"
+                : "bg-blue-50/70 border-blue-200 hover:border-blue-300 hover:shadow-xs"
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">
+                Total Reports
+              </div>
               <span className="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-bold">
                 Admin
               </span>
-            )}
+            </div>
+            <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{totalCount}</div>
           </div>
-          <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1">{totalCount}</div>
-        </div>
+        )}
       </div>
 
       {/* Reports Table Section */}
@@ -511,38 +518,40 @@ export default function ReportsPage() {
               </div>
             )}
 
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setStatusFilter("pending")}
-                className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                  statusFilter === "pending"
-                    ? "bg-amber-600 text-white shadow-2xs"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                Pending
-              </button>
-              <button
-                onClick={() => setStatusFilter("solved")}
-                className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                  statusFilter === "solved"
-                    ? "bg-emerald-600 text-white shadow-2xs"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                Solved History
-              </button>
-              <button
-                onClick={() => setStatusFilter("all")}
-                className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                  statusFilter === "all"
-                    ? "bg-blue-600 text-white shadow-2xs"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                All
-              </button>
-            </div>
+            {isAdmin && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setStatusFilter("pending")}
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
+                    statusFilter === "pending"
+                      ? "bg-amber-600 text-white shadow-2xs"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                >
+                  Pending
+                </button>
+                <button
+                  onClick={() => setStatusFilter("solved")}
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
+                    statusFilter === "solved"
+                      ? "bg-emerald-600 text-white shadow-2xs"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                >
+                  Solved History
+                </button>
+                <button
+                  onClick={() => setStatusFilter("all")}
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
+                    statusFilter === "all"
+                      ? "bg-blue-600 text-white shadow-2xs"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                >
+                  All
+                </button>
+              </div>
+            )}
           </div>
         </div>
 

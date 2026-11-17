@@ -6,9 +6,10 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { collection, query, where, getDocs, doc, onSnapshot } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, bookingDb } from "@/lib/firebase";
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { getOrFetchCollection } from "@/lib/cache";
+import { isDispensaryMatch } from "@/lib/appointmentTypes";
 import {
   Home,
   Folder,
@@ -19,6 +20,7 @@ import {
   Gamepad2,
   Users,
   CalendarCheck,
+  CalendarClock,
   MapPin,
   PieChart,
   Edit,
@@ -33,6 +35,10 @@ import {
   Lock,
   Database,
   Bell,
+  UserCheck,
+  Stethoscope,
+  Pill,
+  HeartPulse,
 } from "lucide-react";
 import { isPageRestricted } from "@/lib/pageAccess";
 
@@ -68,6 +74,9 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const [missingContentCount, setMissingContentCount] = useState(0);
   const [courses, setCourses] = useState<any[]>([]);
   const [quizzes, setQuizzes] = useState<any[]>([]);
+  const [receptionQueueCount, setReceptionQueueCount] = useState(0);
+  const [doctorQueueCount, setDoctorQueueCount] = useState(0);
+  const [pharmacyQueueCount, setPharmacyQueueCount] = useState(0);
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -143,6 +152,63 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     };
   }, [isLoggedIn, isAdmin, pathname]);
 
+  const isDispensaryUser =
+    (userProfile?.role || "").toLowerCase().trim() === "dispensary staff" ||
+    (userProfile?.role || "").toLowerCase().trim() === "dispensary" ||
+    Boolean(userProfile?.dispensaryRole) ||
+    Boolean(userProfile?.dispensaryName);
+
+  // Live Queue Count Badges for Dispensary Desks
+  useEffect(() => {
+    if (!isLoggedIn || (!isDispensaryUser && !isAdmin)) {
+      setReceptionQueueCount(0);
+      setDoctorQueueCount(0);
+      setPharmacyQueueCount(0);
+      return;
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const staffDispensary = (userProfile as any)?.dispensaryName || "";
+
+    const q = query(
+      collection(bookingDb, "dispensary_appointments"),
+      where("date", "==", todayStr)
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        let recCount = 0;
+        let docCount = 0;
+        let pharmCount = 0;
+
+        snap.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (isDispensaryUser && staffDispensary) {
+            if (!isDispensaryMatch(data.dispensaryName, staffDispensary, data.dispensaryId, userProfile?.dispensaryId)) {
+              return;
+            }
+          }
+
+          if (data.status === "scheduled") {
+            recCount++;
+          } else if (data.status === "with_doctor" || data.status === "visited") {
+            docCount++;
+          } else if (data.status === "pharmacy_queue") {
+            pharmCount++;
+          }
+        });
+
+        setReceptionQueueCount(recCount);
+        setDoctorQueueCount(docCount);
+        setPharmacyQueueCount(pharmCount);
+      },
+      (err) => console.warn("Dispensary queue sync error:", err)
+    );
+
+    return () => unsub();
+  }, [isLoggedIn, isDispensaryUser, isAdmin, userProfile?.dispensaryName, userProfile?.dispensaryId]);
+
   // Compute agent-specific pending courses
   const pendingCoursesCount = React.useMemo(() => {
     if (!isLoggedIn) return 0;
@@ -208,6 +274,14 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     { href: "/data", label: "Data", icon: Database, color: "text-teal-600" },
   ];
 
+  const dispensaryLinks = [
+    { href: "/appointment", label: "Appointments", icon: CalendarClock, color: "text-teal-600" },
+    { href: "/admin/appointment", label: "Manage Appointments", icon: CalendarCheck, color: "text-emerald-600", adminOnly: true },
+    { href: "/dispensary/reception", label: "Reception Desk", icon: UserCheck, color: "text-blue-600", badge: receptionQueueCount },
+    { href: "/dispensary/doctor", label: "Doctor Desk", icon: Stethoscope, color: "text-teal-600", badge: doctorQueueCount },
+    { href: "/dispensary/pharmacy", label: "Pharmacy Desk", icon: Pill, color: "text-amber-500", badge: pharmacyQueueCount },
+  ];
+
   const adminLinks = [
     {
       href: "/admin/overview",
@@ -248,6 +322,14 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
   const connectedSites = [
     {
+      href: "https://triage.ekms.in/",
+      label: "EKMS Triage",
+      domain: "triage.ekms.in",
+      icon: HeartPulse,
+      imageSrc: "/triage-logo.png",
+      color: "text-rose-600",
+    },
+    {
       href: "https://map.ekms.in/",
       label: "EKMS Map",
       domain: "map.ekms.in",
@@ -276,12 +358,61 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   // Mini sidebar items
   const miniLinks = [
     { href: "/", label: "Home", icon: Home, color: "text-rose-500", isExternal: false },
-    { href: "/onboarding", label: "Onboarding", icon: GraduationCap, color: "text-blue-600", isExternal: false, badge: pendingCoursesCount },
-    { href: "/quiz", label: "Quizzes", icon: Gamepad2, color: "text-purple-600", isExternal: false, badge: pendingQuizzesCount },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500", isExternal: false },
+    { href: "/appointment", label: "Appt", icon: CalendarClock, color: "text-teal-600", isExternal: false },
+    { href: "/dispensary/reception", label: "Reception", icon: UserCheck, color: "text-blue-600", isExternal: false, dispensaryStaffOnly: true, badge: receptionQueueCount },
+    { href: "/dispensary/doctor", label: "Doctor", icon: Stethoscope, color: "text-teal-600", isExternal: false, dispensaryStaffOnly: true, badge: doctorQueueCount },
+    { href: "/dispensary/pharmacy", label: "Pharmacy", icon: Pill, color: "text-amber-500", isExternal: false, dispensaryStaffOnly: true, badge: pharmacyQueueCount },
     { href: "/data", label: "Data", icon: Database, color: "text-teal-600", isExternal: false },
+    { href: "https://triage.ekms.in/", label: "Triage", icon: HeartPulse, color: "text-rose-600", isExternal: true, imageSrc: "/triage-logo.png" },
     { href: "https://map.ekms.in/", label: "EKMS Map", icon: MapPin, color: "text-emerald-600", isExternal: true },
   ];
+
+  // Filtered links: Only allowed pages are shown. Restricted pages are totally hidden.
+  // Non-logged-in users only see Home.
+  const visiblePrimaryLinks = primaryLinks.filter((item) => {
+    if (!isLoggedIn) return item.href === "/";
+    return !isPageRestricted(item.href, userProfile);
+  });
+
+  const visibleQuickLinks = isLoggedIn
+    ? quickLinks.filter((item) => !isPageRestricted(item.href, userProfile))
+    : [];
+
+  const visibleDispensaryLinks = isLoggedIn
+    ? dispensaryLinks.filter((item) => {
+        if ((item as any).adminOnly && !isAdmin) return false;
+        return !isPageRestricted(item.href, userProfile);
+      })
+    : [];
+
+  const visibleAdminLinks = isAdmin
+    ? adminLinks.filter((item) => !isPageRestricted(item.href, userProfile))
+    : [];
+
+  const visibleExploreLinks = isLoggedIn
+    ? exploreLinks.filter((item) => !isPageRestricted(item.href, userProfile))
+    : [];
+
+  const visibleMiniLinks = miniLinks.filter((item) => {
+    if (!isLoggedIn) return item.href === "/";
+    if (isDispensaryUser) {
+      // 1. Remove EKMS Map completely from all dispensary staff mini menu
+      if (item.label === "EKMS Map" || item.isExternal || item.href.includes("map.ekms.in")) {
+        return false;
+      }
+      // 2. Remove Home from dispensary staff mini menu (Appointment is their default dashboard)
+      if (item.href === "/") {
+        return false;
+      }
+      // 3. For dispensary staff, only allow Appointment and their role-specific desk
+      if (item.href !== "/appointment" && !item.href.startsWith("/dispensary/")) {
+        return false;
+      }
+    }
+    if ((item as any).dispensaryStaffOnly && !isDispensaryUser) return false;
+    return !isPageRestricted(item.href, userProfile);
+  });
 
   return (
     <>
@@ -297,11 +428,10 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
           1. MINI COLLAPSED SIDEBAR (DESKTOP ONLY WHEN COLLAPSED)
           ---------------------------------------------------- */}
       {!isOpen && (
-        <aside className="hidden lg:flex fixed top-14 left-0 bottom-0 w-[72px] bg-white border-r border-slate-200 z-30 py-3 flex-col items-center gap-1.5 select-none animate-in fade-in duration-200">
-          {miniLinks.map((item) => {
+        <aside className="hidden lg:flex fixed top-14 left-0 bottom-0 w-[72px] bg-white border-r border-slate-200 z-30 py-3 flex-col items-center gap-1.5 select-none animate-in fade-in duration-200 overflow-y-auto overflow-x-hidden">
+          {visibleMiniLinks.map((item) => {
             const isActive = pathname === item.href;
             const Icon = item.icon;
-            const isRestricted = !item.isExternal && isPageRestricted(item.href, userProfile);
 
             if (item.isExternal) {
               return (
@@ -313,9 +443,21 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                   className="flex flex-col items-center justify-center w-16 py-3 px-1 rounded-xl text-center text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all group"
                   title={item.label}
                 >
-                  <Icon
-                    className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
-                  />
+                  {(item as any).imageSrc ? (
+                    <div className="w-5 h-5 mb-1.5 rounded-full overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                      <Image
+                        src={(item as any).imageSrc}
+                        alt={item.label}
+                        width={20}
+                        height={20}
+                        className="w-5 h-5 object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <Icon
+                      className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
+                    />
+                  )}
                   <span className="text-[10px] font-semibold leading-tight truncate w-full">
                     {item.label}
                   </span>
@@ -334,17 +476,13 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     ? "bg-slate-100 text-slate-900 font-bold"
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                 }`}
-                title={isRestricted ? `${item.label} (Access Restricted)` : item.label}
+                title={item.label}
               >
                 <div className="relative">
                   <Icon
                     className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
                   />
-                  {isRestricted ? (
-                    <span className="absolute -top-1 -right-2 bg-rose-600 text-white text-[8px] font-bold p-0.5 rounded-full ring-2 ring-white">
-                      <Lock className="w-2.5 h-2.5" />
-                    </span>
-                  ) : item.badge !== undefined && item.badge > 0 ? (
+                  {item.badge !== undefined && item.badge > 0 ? (
                     <span className="absolute -top-1 -right-2 bg-rose-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full ring-2 ring-white">
                       {item.badge > 99 ? "99+" : item.badge}
                     </span>
@@ -369,90 +507,153 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       >
         <div className="py-3 divide-y divide-slate-100">
           {/* Primary Core Links */}
-          <div className="px-2 space-y-1">
-            {primaryLinks.map((item) => {
-              const isActive = pathname === item.href;
-              const Icon = item.icon;
-              const isRestricted = isPageRestricted(item.href, userProfile);
+          {visiblePrimaryLinks.length > 0 && (
+            <div className="px-2 space-y-1">
+              {visiblePrimaryLinks.map((item) => {
+                const isActive = pathname === item.href;
+                const Icon = item.icon;
 
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  prefetch={true}
-                  onClick={(e) => handleNavClick(e, item.href)}
-                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
-                    isActive
-                      ? "bg-slate-100 text-slate-900 font-semibold shadow-xs"
-                      : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <div className="flex items-center gap-3.5">
-                    <Icon
-                      className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
-                    />
-                    <span>{item.label}</span>
-                  </div>
-                  {isRestricted ? (
-                    <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
-                      <Lock className="w-2.5 h-2.5" />
-                      <span>Locked</span>
-                    </span>
-                  ) : item.badge !== undefined && item.badge > 0 ? (
-                    <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-                      {item.badge > 99 ? "99+" : item.badge}
-                    </span>
-                  ) : null}
-                </Link>
-              );
-            })}
-          </div>
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    prefetch={true}
+                    onClick={(e) => handleNavClick(e, item.href)}
+                    className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
+                      isActive
+                        ? "bg-slate-100 text-slate-900 font-semibold shadow-xs"
+                        : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <Icon
+                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                      />
+                      <span>{item.label}</span>
+                    </div>
+                    {item.badge !== undefined && item.badge > 0 ? (
+                      <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        {item.badge > 99 ? "99+" : item.badge}
+                      </span>
+                    ) : null}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
 
           {/* Quick Options */}
-          <div className="pt-3 px-2 space-y-1">
-            <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Quick Options
-            </div>
-            {quickLinks.map((item) => {
-              const isActive = pathname === item.href;
-              const Icon = item.icon;
-              const isRestricted = isPageRestricted(item.href, userProfile);
+          {visibleQuickLinks.length > 0 && (
+            <div className="pt-3 px-2 space-y-1">
+              <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Quick Options
+              </div>
+              {visibleQuickLinks.map((item) => {
+                const isActive = pathname === item.href;
+                const Icon = item.icon;
 
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  prefetch={true}
-                  onClick={(e) => handleNavClick(e, item.href)}
-                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
-                    isActive
-                      ? "bg-slate-100 text-slate-900 font-semibold"
-                      : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <div className="flex items-center gap-3.5">
-                    <Icon
-                      className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
-                    />
-                    <span>{item.label}</span>
-                  </div>
-                  {isRestricted ? (
-                    <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
-                      <Lock className="w-2.5 h-2.5" />
-                      <span>Locked</span>
-                    </span>
-                  ) : item.badge !== undefined && item.badge > 0 ? (
-                    <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-                      {item.badge > 99 ? "99+" : item.badge}
-                    </span>
-                  ) : null}
-                </Link>
-              );
-            })}
-          </div>
+                if ((item as any).isExternal) {
+                  return (
+                    <a
+                      key={item.href}
+                      href={item.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(item as any).isTriage ? handleOpenTriage : undefined}
+                      className="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all group"
+                      title={item.label}
+                    >
+                      <div className="flex items-center gap-3.5">
+                        <Icon
+                          className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                        />
+                        <span>{item.label}</span>
+                      </div>
+                      {(item as any).badgeText && (
+                        <span className="bg-rose-50 text-rose-700 border border-rose-200/80 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                          {(item as any).badgeText}
+                          <ExternalLink className="w-2.5 h-2.5 text-rose-500" />
+                        </span>
+                      )}
+                    </a>
+                  );
+                }
+
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    prefetch={true}
+                    onClick={(e) => handleNavClick(e, item.href)}
+                    className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
+                      isActive
+                        ? "bg-slate-100 text-slate-900 font-semibold shadow-xs"
+                        : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <Icon
+                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                      />
+                      <span>{item.label}</span>
+                    </div>
+                    {item.badge !== undefined && item.badge > 0 ? (
+                      <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        {item.badge > 99 ? "99+" : item.badge}
+                      </span>
+                    ) : null}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Dispensary Suite */}
+          {visibleDispensaryLinks.length > 0 && (
+            <div className="pt-3 px-2 space-y-1">
+              <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                <span>Dispensary</span>
+                {userProfile?.role === "Dispensary Staff" && (
+                  <span className="text-[10px] bg-teal-50 text-teal-700 font-bold px-1.5 py-0.2 rounded border border-teal-200">
+                    OPD
+                  </span>
+                )}
+              </div>
+              {visibleDispensaryLinks.map((item) => {
+                const isActive = pathname === item.href;
+                const Icon = item.icon;
+
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    prefetch={true}
+                    onClick={(e) => handleNavClick(e, item.href)}
+                    className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all group ${
+                      isActive
+                        ? "bg-slate-100 text-slate-900 font-semibold shadow-xs"
+                        : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <Icon
+                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                      />
+                      <span>{item.label}</span>
+                    </div>
+                    {item.badge !== undefined && item.badge > 0 ? (
+                      <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        {item.badge > 99 ? "99+" : item.badge}
+                      </span>
+                    ) : null}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
 
           {/* Admin Controls Suite (Role Protected) */}
-          {isAdmin && (
+          {isAdmin && visibleAdminLinks.length > 0 && (
             <div className="pt-3 px-2 space-y-1">
               <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                 <span>Admin Controls</span>
@@ -460,10 +661,9 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                   {isMasterAdmin ? "MASTER" : "ADMIN"}
                 </span>
               </div>
-              {adminLinks.map((item) => {
+              {visibleAdminLinks.map((item) => {
                 const isActive = pathname === item.href;
                 const Icon = item.icon;
-                const isRestricted = isPageRestricted(item.href, userProfile);
 
                 return (
                   <Link
@@ -483,12 +683,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                       />
                       <span className="truncate">{item.label}</span>
                     </div>
-                    {isRestricted ? (
-                      <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
-                        <Lock className="w-2.5 h-2.5" />
-                        <span>Locked</span>
-                      </span>
-                    ) : item.badge !== undefined && item.badge > 0 ? (
+                    {item.badge !== undefined && item.badge > 0 ? (
                       <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
                         {item.badge > 99 ? "99+" : item.badge}
                       </span>
@@ -500,97 +695,95 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
           )}
 
           {/* Explore & Account Settings */}
-          <div className="pt-3 px-2 space-y-1">
-            <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Explore & Feedback
-            </div>
-            {exploreLinks.map((item) => {
-              const isActive = pathname === item.href;
-              const Icon = item.icon;
-              const isRestricted = isPageRestricted(item.href, userProfile);
+          {visibleExploreLinks.length > 0 && (
+            <div className="pt-3 px-2 space-y-1">
+              <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Explore & Feedback
+              </div>
+              {visibleExploreLinks.map((item) => {
+                const isActive = pathname === item.href;
+                const Icon = item.icon;
 
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  prefetch={true}
-                  onClick={(e) => handleNavClick(e, item.href)}
-                  className={`flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-medium transition-all group ${
-                    isActive
-                      ? "bg-slate-100 text-slate-900 font-semibold"
-                      : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <div className="flex items-center gap-3.5">
-                    <Icon
-                      className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
-                    />
-                    <span>{item.label}</span>
-                  </div>
-                  {isRestricted ? (
-                    <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-1.5 py-0.5 rounded border border-rose-200/80 flex items-center gap-1">
-                      <Lock className="w-2.5 h-2.5" />
-                      <span>Locked</span>
-                    </span>
-                  ) : item.badge !== undefined && item.badge > 0 ? (
-                    <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-                      {item.badge > 99 ? "99+" : item.badge}
-                    </span>
-                  ) : null}
-                </Link>
-              );
-            })}
-          </div>
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    prefetch={true}
+                    onClick={(e) => handleNavClick(e, item.href)}
+                    className={`flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-medium transition-all group ${
+                      isActive
+                        ? "bg-slate-100 text-slate-900 font-semibold"
+                        : "text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <Icon
+                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                      />
+                      <span>{item.label}</span>
+                    </div>
+                    {item.badge !== undefined && item.badge > 0 ? (
+                      <span className="bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        {item.badge > 99 ? "99+" : item.badge}
+                      </span>
+                    ) : null}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
 
           {/* Connected Sites Section */}
-          <div className="pt-3 px-2 space-y-1">
-            <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Connected Sites</span>
-              <span className="text-[9px] bg-slate-100 text-slate-500 font-bold px-1.5 py-0.5 rounded">
-                ECOSYSTEM
-              </span>
-            </div>
-            {connectedSites.map((site) => {
-              const Icon = site.icon;
-              return (
-                <a
-                  key={site.href}
-                  href={site.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all group"
-                  title={`Open ${site.label} (${site.domain})`}
-                >
-                  <div className="flex items-center gap-3.5 min-w-0">
-                    {site.imageSrc ? (
-                      <div className="w-5 h-5 rounded overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
-                        <Image
-                          src={site.imageSrc}
-                          alt={site.label}
-                          width={20}
-                          height={20}
-                          className="w-5 h-5 object-contain"
+          {!isDispensaryUser && (
+            <div className="pt-3 px-2 space-y-1">
+              <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                <span>Connected Sites</span>
+                <span className="text-[9px] bg-slate-100 text-slate-500 font-bold px-1.5 py-0.5 rounded">
+                  ECOSYSTEM
+                </span>
+              </div>
+              {connectedSites.map((site) => {
+                const Icon = site.icon;
+                return (
+                  <a
+                    key={site.href}
+                    href={site.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between px-3.5 py-2 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all group"
+                    title={`Open ${site.label} (${site.domain})`}
+                  >
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      {site.imageSrc ? (
+                        <div className="w-5 h-5 rounded overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                          <Image
+                            src={site.imageSrc}
+                            alt={site.label}
+                            width={20}
+                            height={20}
+                            className="w-5 h-5 object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <Icon
+                          className={`w-5 h-5 ${site.color} group-hover:scale-110 transition-transform shrink-0`}
                         />
+                      )}
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-xs font-bold text-slate-800 group-hover:text-blue-600 transition-colors truncate">
+                          {site.label}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono truncate">
+                          {site.domain}
+                        </span>
                       </div>
-                    ) : (
-                      <Icon
-                        className={`w-5 h-5 ${site.color} group-hover:scale-110 transition-transform shrink-0`}
-                      />
-                    )}
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-bold text-slate-800 group-hover:text-blue-600 transition-colors truncate">
-                        {site.label}
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-mono truncate">
-                        {site.domain}
-                      </span>
                     </div>
-                  </div>
-                  <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 shrink-0 ml-2" />
-                </a>
-              );
-            })}
-          </div>
+                    <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 shrink-0 ml-2" />
+                  </a>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Footer */}

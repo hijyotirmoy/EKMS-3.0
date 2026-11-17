@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { collection, query, where, getDocs, onSnapshot, orderBy, limit } from "firebase/firestore";
 import { db, logsDb } from "@/lib/firebase";
 import { getCachedData, setCachedData } from "@/lib/firestoreCache";
 import {
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import NotificationModal from "@/components/common/NotificationModal";
 import { getLocalReadNotifications } from "@/lib/notificationService";
+import { isPageRestricted } from "@/lib/pageAccess";
 
 interface EkmsNavbarProps {
   onToggleSidebar: () => void;
@@ -79,11 +80,17 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       setNotifTrigger((prev) => prev + 1);
     };
 
+    const handleOpenDrawer = () => {
+      setIsNotifOpen(true);
+    };
+
     window.addEventListener("ekms-notification-read-update", handleReadUpdate);
     window.addEventListener("ekms-notification-created", handleNotifCreated);
+    window.addEventListener("ekms-open-notification-drawer", handleOpenDrawer);
     return () => {
       window.removeEventListener("ekms-notification-read-update", handleReadUpdate);
       window.removeEventListener("ekms-notification-created", handleNotifCreated);
+      window.removeEventListener("ekms-open-notification-drawer", handleOpenDrawer);
     };
   }, []);
 
@@ -113,8 +120,56 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
 
       const userRole = (userProfile?.role || (user ? "Agent" : "guest")).toLowerCase().trim();
       const isUserAdmin = isAdmin || userRole.includes("admin") || userRole.includes("master");
+      const isUserDispensary =
+        userRole === "dispensary staff" ||
+        userRole === "dispensary" ||
+        Boolean(userProfile?.dispensaryName) ||
+        Boolean(userProfile?.dispensaryRole);
 
       combinedMap.forEach((data) => {
+        // Handle Dispensary OPD Notifications
+        if (data.type === "dispensary_opd") {
+          if (!isUserDispensary) return;
+          if (
+            data.targetDispensary &&
+            userProfile?.dispensaryName &&
+            !data.targetDispensary.toLowerCase().includes(userProfile.dispensaryName.toLowerCase().replace(/[^a-z0-9]/g, "")) &&
+            !userProfile.dispensaryName.toLowerCase().includes(data.targetDispensary.toLowerCase().replace(/[^a-z0-9]/g, ""))
+          ) {
+            return;
+          }
+          if (
+            data.targetDispensaryRole &&
+            data.targetDispensaryRole !== "all" &&
+            userProfile?.dispensaryRole &&
+            data.targetDispensaryRole.toLowerCase() !== userProfile.dispensaryRole.toLowerCase()
+          ) {
+            return;
+          }
+
+          seenIds.add(data.id);
+          const isRead = Array.isArray(data.readBy)
+            ? data.readBy.map((e: string) => e.toLowerCase().trim()).includes(userEmail)
+            : readOverrideIds.has(data.id);
+          const isClosed = Array.isArray(data.closedBy)
+            ? data.closedBy.map((e: string) => e.toLowerCase().trim()).includes(userEmail)
+            : false;
+
+          if (!isRead && !isClosed) {
+            unread++;
+          }
+          return;
+        }
+
+        // Stop all standard booking notifications for agents, admins, and master admins
+        if (
+          data.type === "booking" ||
+          (data.title && /booking|appointment/i.test(data.title)) ||
+          (data.link && data.link.includes("/booking"))
+        ) {
+          return;
+        }
+
         const target = (data.targetEmail || "all").toLowerCase().trim();
         const isDirectlyForMe = target !== "all" && target === userEmail;
 
@@ -147,58 +202,55 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       setNotificationCount(unread);
     };
 
-    const TTL = 3 * 60 * 1000;
+    let unsubNotifs = () => {};
+    let unsubAnn = () => {};
 
-    // Fetch Notifications (cached 3 mins unless triggered)
-    const cachedNotifs = notifTrigger === 0 ? getCachedData<any[]>("navbar_notifications", TTL) : null;
-    if (cachedNotifs !== null) {
-      rawNotifs = cachedNotifs;
-      calculateUnread();
-    } else {
-      getDocs(collection(logsDb, "notifications")).then((snap) => {
-        if (!isMounted) return;
-        rawNotifs = [];
-        snap.forEach((d) => rawNotifs.push({ id: d.id, ...d.data() }));
-        setCachedData("navbar_notifications", rawNotifs);
-        calculateUnread();
-      }).catch(() => {});
-    }
+    try {
+      unsubNotifs = onSnapshot(
+        query(collection(logsDb, "notifications"), orderBy("createdAt", "desc"), limit(50)),
+        (snap) => {
+          if (!isMounted) return;
+          rawNotifs = [];
+          snap.forEach((d) => rawNotifs.push({ id: d.id, ...d.data() }));
+          calculateUnread();
+        },
+        (e) => console.warn("Navbar notifs onSnapshot notice:", e)
+      );
 
-    // Fetch Announcements (cached 3 mins unless triggered)
-    const cachedAnn = notifTrigger === 0 ? getCachedData<any[]>("navbar_announcements", TTL) : null;
-    if (cachedAnn !== null) {
-      rawAnn = cachedAnn;
-      calculateUnread();
-    } else {
-      getDocs(collection(logsDb, "announcements")).then((snap) => {
-        if (!isMounted) return;
-        const list: any[] = [];
-        snap.forEach((d) => {
-          const data = d.data() as any;
-          if (data.isNotification || (data.type && data.type !== "announcement")) {
-            list.push({ id: d.id, ...data });
-          } else if (data.isVisible) {
-            list.push({
-              id: d.id,
-              title: data.title || "📢 Official Announcement",
-              message: data.message,
-              type: "announcement",
-              targetEmail: (data.targetEmail || "all").toLowerCase().trim(),
-              targetRole: data.targetRole || "all",
-              readBy: data.readBy || [],
-              closedBy: data.closedBy || [],
-              createdAt: data.createdAt || Date.now(),
-            });
-          }
-        });
-        rawAnn = list;
-        setCachedData("navbar_announcements", rawAnn);
-        calculateUnread();
-      }).catch(() => {});
-    }
+      unsubAnn = onSnapshot(
+        collection(logsDb, "announcements"),
+        (snap) => {
+          if (!isMounted) return;
+          const list: any[] = [];
+          snap.forEach((d) => {
+            const data = d.data() as any;
+            if (data.isNotification || (data.type && data.type !== "announcement")) {
+              list.push({ id: d.id, ...data });
+            } else if (data.isVisible) {
+              list.push({
+                id: d.id,
+                title: data.title || "📢 Official Announcement",
+                message: data.message,
+                type: "announcement",
+                targetEmail: (data.targetEmail || "all").toLowerCase().trim(),
+                targetRole: data.targetRole || "all",
+                readBy: data.readBy || [],
+                closedBy: data.closedBy || [],
+                createdAt: data.createdAt || Date.now(),
+              });
+            }
+          });
+          rawAnn = list;
+          calculateUnread();
+        },
+        (e) => console.warn("Navbar announcements onSnapshot notice:", e)
+      );
+    } catch (err) {}
 
     return () => {
       isMounted = false;
+      unsubNotifs();
+      unsubAnn();
     };
   }, [isLoggedIn, user, isAdmin, readOverrideIds, notifTrigger]);
 
@@ -232,6 +284,10 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
     { href: "/doubts", label: "Doubts" },
     { href: "/facility", label: "Facilities" },
   ];
+
+  const visibleNavLinks = isLoggedIn
+    ? navLinks.filter((link) => !isPageRestricted(link.href, userProfile))
+    : [];
 
   return (
     <>
@@ -286,7 +342,14 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
                 <Menu className="w-5 h-5" />
               </button>
 
-              <Link href="/" className="flex items-center gap-2.5 group">
+              <Link
+                href={
+                  userProfile?.role === "Dispensary Staff" || userProfile?.role === "Dispensary"
+                    ? "/appointment"
+                    : "/"
+                }
+                className="flex items-center gap-2.5 group"
+              >
                 <div className="w-8 h-8 flex-shrink-0 relative">
                   <Image
                     src="/logo.png"
@@ -353,7 +416,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
 
               {/* Desktop Nav Links */}
               <nav className="hidden lg:flex items-center gap-1">
-                {navLinks.map((link) => {
+                {visibleNavLinks.map((link) => {
                   const isActive = pathname === link.href;
                   return (
                     <Link

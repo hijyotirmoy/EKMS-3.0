@@ -28,7 +28,6 @@ import { getISTMidnight, getFollowUpInfo, mergeBookingData, deleteBookingRecordC
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
-import { createNotification, notifyAdmins } from "@/lib/notificationService";
 import * as XLSX from "xlsx";
 import {
   Calendar as CalendarIcon,
@@ -637,38 +636,6 @@ export default function AdminBookingsPage() {
         throw new Error("This booking record was not found or was already removed.");
       }
 
-      // Send notifications for cancellation
-      try {
-        await notifyAdmins({
-          title: "🗑️ Booking Cancelled / Removed",
-          message: `**${userProfile?.displayName || user?.email}** removed the booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.rescheduledDate || b.dateKey}**.`,
-          type: "booking",
-          link: "/admin/bookings",
-          metadata: {
-            ipName: b.ipName,
-            phone: b.phone,
-            dateKey: b.dateKey,
-          },
-        });
-
-        if (b.agentEmail) {
-          await createNotification({
-            title: "🗑️ Booking Cancelled",
-            message: `Your booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.rescheduledDate || b.dateKey}** was removed by admin.`,
-            type: "booking",
-            targetEmail: b.agentEmail.toLowerCase().trim(),
-            link: "/booking",
-            metadata: {
-              ipName: b.ipName,
-              phone: b.phone,
-              dateKey: b.dateKey,
-            },
-          });
-        }
-      } catch (notifErr) {
-        console.error("Cancel notification error:", notifErr);
-      }
-
       logUserActivity(user?.email, {
         desc: `Deleted verification booking for IP: ${b.ipName || "Beneficiary"} (Phone: ${b.phone || "N/A"}) on ${b.dateKey}`,
         type: "delete",
@@ -890,41 +857,6 @@ export default function AdminBookingsPage() {
         };
 
         await Promise.allSettled([updateVisitedInDb(bookingDb), updateVisitedInDb(db)]);
-      }
-
-      // Send notifications for visit status update
-      try {
-        const isNowVisited = !b.visited;
-        const actionText = isNowVisited ? "marked as Visited" : "unmarked and reverted to active";
-        const notifTitle = isNowVisited ? "🏥 Booking Marked as Visited" : "🔄 Visit Status Reverted";
-
-        if (b.agentEmail) {
-          await createNotification({
-            title: notifTitle,
-            message: `Your booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}** has been ${actionText} by ${userProfile?.displayName || "Admin"}.`,
-            type: "booking",
-            targetEmail: b.agentEmail.toLowerCase().trim(),
-            link: "/booking",
-            metadata: {
-              ipName: b.ipName,
-              phone: b.phone,
-              dateKey: b.dateKey,
-            },
-          });
-        }
-        await notifyAdmins({
-          title: notifTitle,
-          message: `Booking for **${b.ipName || "Beneficiary"}** (Phone: **${b.phone || "N/A"}**) on **${b.dateKey}** (booked by ${b.agentName || b.agentEmail}) was ${actionText} by ${userProfile?.displayName || "Admin"}.`,
-          type: "booking",
-          link: "/admin/bookings",
-          metadata: {
-            ipName: b.ipName,
-            phone: b.phone,
-            dateKey: b.dateKey,
-          },
-        });
-      } catch (notifErr) {
-        console.error("Visited notification error:", notifErr);
       }
 
       logUserActivity(user?.email, {
@@ -1370,38 +1302,6 @@ export default function AdminBookingsPage() {
         desc: `Rescheduled booking for IP: ${rescheduleItem.ipName || "Beneficiary"} from ${rescheduleItem.dateKey} to ${rsSelectedDate}`,
         type: "booking",
       });
-
-      // Send customized notification to seat owner agent
-      if (rescheduleItem.agentEmail) {
-        const oldFmt = new Date(rescheduleItem.dateKey).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-        const newFmt = new Date(rsSelectedDate).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-
-        try {
-          await createNotification({
-            title: "🔄 Booking Rescheduled by Admin",
-            message: `Your verification booking for **${rescheduleItem.ipName}** was rescheduled from **${oldFmt}** to **${newFmt}** by admin (${userProfile?.displayName || user?.email || "Admin"}).`,
-            type: "booking",
-            targetEmail: rescheduleItem.agentEmail.toLowerCase().trim(),
-            link: "/booking",
-            metadata: {
-              ipName: rescheduleItem.ipName,
-              oldDate: rescheduleItem.dateKey,
-              newDate: rsSelectedDate,
-              actionBy: user?.email,
-            },
-          });
-
-          // Notify other Admins
-          await notifyAdmins({
-            title: "🔄 Booking Rescheduled by Admin",
-            message: `**${userProfile?.displayName || user?.email}** rescheduled booking for **${rescheduleItem.ipName}** (Agent: ${rescheduleItem.agentName || rescheduleItem.agentEmail}) to **${newFmt}**.`,
-            type: "booking",
-            link: "/admin/bookings",
-          });
-        } catch (notifErr) {
-          console.error("Admin reschedule notification error:", notifErr);
-        }
-      }
 
       setRescheduleItem(null);
       setRsSelectedDate(null);

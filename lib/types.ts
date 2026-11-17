@@ -1,4 +1,22 @@
-export type UserRole = "Agent" | "Admin" | "Master Admin";
+export type UserRole = "Agent" | "Dispensary Staff" | "Dispensary" | "Admin" | "Master Admin";
+
+export interface DispensaryAccount {
+  id?: string;
+  dispensaryId: string;
+  dispensaryName: string;
+  email: string;
+  location?: string;
+  district?: string;
+  state?: string;
+  phone?: string;
+  status: "active" | "inactive";
+  role: "Dispensary";
+  createdAt?: number;
+  updatedAt?: number;
+  restrictedPages?: string[];
+  isLocked?: boolean;
+  lastLoginAt?: number;
+}
 
 export interface UserProfile {
   id?: string;
@@ -7,6 +25,14 @@ export interface UserProfile {
   name?: string;
   role: UserRole;
   agentId?: string;
+  dispensaryId?: string;
+  dispensaryName?: string;
+  dispensaryRole?: "Doctor" | "Pharmacist" | "Receptionist";
+  location?: string;
+  district?: string;
+  state?: string;
+  phone?: string;
+  status?: "active" | "inactive";
   dob?: string;
   birthday?: string;
   photoURL?: string | null;
@@ -75,6 +101,8 @@ export interface Facility {
   address: string;
   district: string;
   state: string;
+  city?: string;
+  location?: string;
   block?: string;
   pincode?: string;
   lat?: number | null;
@@ -236,7 +264,8 @@ export type NotificationType =
   | "doubt"
   | "report"
   | "qna"
-  | "facility";
+  | "facility"
+  | "dispensary_opd";
 
 export interface AppNotification {
   id: string;
@@ -245,6 +274,8 @@ export interface AppNotification {
   type: NotificationType;
   targetEmail: string | "all"; // Specific user email or "all"
   targetRole?: NotificationTargetRole; // Role filter: "all" (default), "admin", or "agent"
+  targetDispensary?: string;   // For dispensary OPD alerts
+  targetDispensaryRole?: "Doctor" | "Pharmacist" | "Receptionist" | "all";
   celebrantEmail?: string;     // For birthday notifications
   readBy?: string[];           // Emails of users who marked as read
   closedBy?: string[];         // Emails of users who dismissed/closed

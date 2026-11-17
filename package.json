@@ -9,6 +9,11 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@capacitor/status-bar": "^8.0.4",
     "clsx": "^2.1.1",
     "firebase": "^10.13.1",
     "lucide-react": "^0.439.0",
@@ -20,6 +25,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
     "@netlify/plugin-nextjs": "^5.6.0",
     "@types/node": "^20.16.5",
     "@types/react": "^18.3.5",

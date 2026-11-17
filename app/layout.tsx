@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Roboto } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
@@ -9,12 +9,24 @@ import AppLoader from "@/components/common/AppLoader";
 import ActivityTracker from "@/components/common/ActivityTracker";
 import PageAccessGuard from "@/components/auth/PageAccessGuard";
 import PageTitleUpdater from "@/components/common/PageTitleUpdater";
+import NativeNotificationSync from "@/components/common/NativeNotificationSync";
+import AppUpdateBanner from "@/components/common/AppUpdateBanner";
 
 const roboto = Roboto({
   weight: ["300", "400", "500", "700", "900"],
   subsets: ["latin"],
   variable: "--font-roboto",
+  display: "swap",
 });
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+  themeColor: "#2563eb",
+};
 
 export const metadata: Metadata = {
   title: "Home",
@@ -33,6 +45,12 @@ export default function RootLayout({
   return (
     <html lang="en" className={roboto.variable}>
       <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100;0,300;0,400;0,500;0,700;0,900;1,400;1,700&display=swap"
+          rel="stylesheet"
+        />
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -43,6 +61,7 @@ export default function RootLayout({
                   var titles = {
                     '/': 'Home',
                     '/booking': 'Booking',
+                    '/appointment': 'Appointment',
                     '/files': 'Files',
                     '/doubts': 'Doubts',
                     '/facility': 'Facilities',
@@ -62,6 +81,8 @@ export default function RootLayout({
                     '/admin/doubts': 'Manage Doubts',
                     '/admin/facilities': 'Manage Facilities',
                     '/admin/facility': 'Manage Facilities',
+                    '/admin/appointment': 'Manage Appointment',
+                    '/admin/dispensary': 'Manage Appointment',
                     '/admin/qa': 'Manage Q&A',
                     '/admin/quiz': 'Manage Quizzes',
                     '/admin/onboarding': 'Manage Onboarding',
@@ -103,6 +124,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
         <PopupProvider>
           <AuthProvider>
+            <NativeNotificationSync />
             <PageTitleUpdater />
             <AppLoader />
             <ActivityTracker />
@@ -111,6 +133,7 @@ export default function RootLayout({
             </PageAccessGuard>
             <LoginModal />
             <MaintenanceModal />
+            <AppUpdateBanner />
           </AuthProvider>
         </PopupProvider>
       </body>

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { collection, query, where, getDocs, doc, getDoc, onSnapshot } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, getDoc, onSnapshot, limit } from "firebase/firestore";
 import { sendPasswordResetEmail } from "firebase/auth";
 import { auth, db, logsDb } from "@/lib/firebase";
 import { usePopup } from "@/context/PopupContext";
@@ -27,10 +27,12 @@ import {
   Shield,
   Crown,
   Headphones,
+  Building2,
   Check,
   X,
   Activity,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 
 function getTodayDateString(): string {
@@ -80,44 +82,75 @@ export default function ProfilePage() {
   const [dailyActivity, setDailyActivity] = useState<DailyActivityLog | null>(null);
   const [activityLoading, setActivityLoading] = useState(true);
 
-  // 1. Subscribe to User's Daily Activity Log in Real Time from logsDb
-  useEffect(() => {
+  // In-memory + SessionStorage cache for user activity to minimize Firebase reads to 0
+  const activityCacheRef = React.useRef<Record<string, DailyActivityLog>>({});
+  const lastFetchedDocIdRef = React.useRef<string>("");
+
+  const fetchActivity = async (forceRefresh = false) => {
     if (!user?.email) return;
     const email = user.email.toLowerCase().trim();
     const docId = `${email}_${dateFilter}`;
+
+    // 1. Check in-memory ref cache
+    if (!forceRefresh && activityCacheRef.current[docId]) {
+      setDailyActivity(activityCacheRef.current[docId]);
+      setActivityLoading(false);
+      return;
+    }
+
+    // 2. Check sessionStorage cache
+    if (!forceRefresh && typeof window !== "undefined") {
+      try {
+        const stored = sessionStorage.getItem(`ekms_act_${docId}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          activityCacheRef.current[docId] = parsed;
+          setDailyActivity(parsed);
+          setActivityLoading(false);
+          return;
+        }
+      } catch (e) {}
+    }
+
     setActivityLoading(true);
-
-    let dailyData: DailyActivityLog | null = null;
-    let sysLogs: any[] = [];
-
-    const syncCombinedActivity = () => {
-      if (!dailyData && sysLogs.length === 0) {
-        setDailyActivity(null);
-        setActivityLoading(false);
-        return;
+    try {
+      // Single read to daily_activity
+      const dailySnap = await getDoc(doc(logsDb, "daily_activity", docId));
+      let dailyData: DailyActivityLog | null = null;
+      if (dailySnap.exists()) {
+        dailyData = dailySnap.data() as DailyActivityLog;
       }
 
-      const existingEvents = dailyData?.timelineEvents || [];
-      const eventTimes = new Set(existingEvents.map((e) => e.time || (e as any).timestamp));
+      // Only query userActivityLogs if dailyData has no timeline events or if forceRefresh
+      let mergedEvents = dailyData?.timelineEvents ? [...dailyData.timelineEvents] : [];
+      if (forceRefresh || mergedEvents.length === 0) {
+        const qLogs = query(
+          collection(logsDb, "userActivityLogs"),
+          where("email", "==", email),
+          where("date", "==", dateFilter),
+          limit(30)
+        );
+        const logsSnap = await getDocs(qLogs);
+        const eventTimes = new Set(mergedEvents.map((e) => e.time || (e as any).timestamp));
 
-      // Merge events from userActivityLogs that match dateFilter
-      const mergedEvents = [...existingEvents];
-      sysLogs.forEach((sl) => {
-        if (sl.timestamp && !eventTimes.has(sl.timestamp)) {
-          eventTimes.add(sl.timestamp);
-          mergedEvents.push({
-            time: sl.timestamp,
-            desc: sl.desc,
-            type: sl.type,
-            color: sl.color,
-            icon: sl.icon,
-          });
-        }
-      });
+        logsSnap.forEach((d) => {
+          const sl = d.data();
+          if (sl.timestamp && !eventTimes.has(sl.timestamp)) {
+            eventTimes.add(sl.timestamp);
+            mergedEvents.push({
+              time: sl.timestamp,
+              desc: sl.desc,
+              type: sl.type,
+              color: sl.color,
+              icon: sl.icon,
+            });
+          }
+        });
+      }
 
       mergedEvents.sort((a, b) => (a.time || 0) - (b.time || 0));
 
-      setDailyActivity({
+      const combined: DailyActivityLog = {
         id: docId,
         email,
         name: userProfile?.displayName || user.displayName || email.split("@")[0],
@@ -129,48 +162,30 @@ export default function ProfilePage() {
         totalSeconds: dailyData?.totalSeconds || 0,
         pageVisits: dailyData?.pageVisits || {},
         timelineEvents: mergedEvents,
-      });
-      setActivityLoading(false);
-    };
+      };
 
-    // A. Listen to daily_activity in logsDb
-    const unsubDaily = onSnapshot(
-      doc(logsDb, "daily_activity", docId),
-      (snap) => {
-        if (snap.exists()) {
-          dailyData = snap.data() as DailyActivityLog;
-        } else {
-          dailyData = null;
-        }
-        syncCombinedActivity();
-      },
-      (err) => {
-        console.error("Daily activity sync error:", err);
-        setActivityLoading(false);
+      activityCacheRef.current[docId] = combined;
+      if (typeof window !== "undefined") {
+        try {
+          sessionStorage.setItem(`ekms_act_${docId}`, JSON.stringify(combined));
+        } catch (e) {}
       }
-    );
+      setDailyActivity(combined);
+    } catch (err) {
+      console.warn("Activity fetch error:", err);
+    } finally {
+      setActivityLoading(false);
+    }
+  };
 
-    // B. Listen to userActivityLogs in logsDb for matching email and date
-    const unsubSysLogs = onSnapshot(
-      query(
-        collection(logsDb, "userActivityLogs"),
-        where("email", "==", email),
-        where("date", "==", dateFilter)
-      ),
-      (snap) => {
-        const list: any[] = [];
-        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-        sysLogs = list;
-        syncCombinedActivity();
-      },
-      (err) => console.warn("userActivityLogs profile sync notice:", err)
-    );
-
-    return () => {
-      unsubDaily();
-      unsubSysLogs();
-    };
-  }, [user?.email, userProfile, dateFilter]);
+  // 1. Fetch User's Daily Activity Log on date/email change only (Strictly deduped to prevent loops)
+  useEffect(() => {
+    if (!user?.email) return;
+    const docId = `${user.email.toLowerCase().trim()}_${dateFilter}`;
+    if (lastFetchedDocIdRef.current === docId) return;
+    lastFetchedDocIdRef.current = docId;
+    fetchActivity(false);
+  }, [user?.email, dateFilter]);
 
   // 2. Profile Completion Percentage
   const { completionPct, missingItems } = useMemo(() => {
@@ -381,6 +396,8 @@ export default function ProfilePage() {
                       ? "bg-rose-50 text-rose-700 border border-rose-200"
                       : role === "Admin"
                       ? "bg-purple-50 text-purple-700 border border-purple-200"
+                      : role === "Dispensary" || role === "Dispensary Staff"
+                      ? "bg-teal-50 text-teal-700 border border-teal-200"
                       : "bg-blue-50 text-blue-700 border border-blue-200"
                   }`}
                 >
@@ -388,11 +405,25 @@ export default function ProfilePage() {
                     <Crown className="w-3.5 h-3.5" />
                   ) : role === "Admin" ? (
                     <Shield className="w-3.5 h-3.5" />
+                  ) : role === "Dispensary" || role === "Dispensary Staff" ? (
+                    <Building2 className="w-3.5 h-3.5" />
                   ) : (
                     <Headphones className="w-3.5 h-3.5" />
                   )}
-                  <span>{role}</span>
+                  <span>
+                    {role === "Dispensary Staff" || role === "Dispensary"
+                      ? userProfile?.dispensaryRole
+                        ? `Dispensary ${userProfile.dispensaryRole}`
+                        : "Dispensary Staff"
+                      : role}
+                  </span>
                 </span>
+                {(role === "Dispensary Staff" || role === "Dispensary") && userProfile?.dispensaryName && (
+                  <div className="mt-1 text-xs text-teal-700 font-medium flex items-center justify-center gap-1">
+                    <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <span>{userProfile.dispensaryName}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -532,14 +563,25 @@ export default function ProfilePage() {
                   {(dailyActivity?.timelineEvents || []).length} Actions
                 </span>
               </div>
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 shadow-xs">
-                <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                <input
-                  type="date"
-                  value={dateFilter}
-                  onChange={(e) => setDateFilter(e.target.value)}
-                  className="bg-transparent outline-none cursor-pointer text-xs"
-                />
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 shadow-xs">
+                  <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                  <input
+                    type="date"
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className="bg-transparent outline-none cursor-pointer text-xs"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchActivity(true)}
+                  disabled={activityLoading}
+                  className="p-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-600 rounded-xl transition-all disabled:opacity-50 cursor-pointer"
+                  title="Refresh Activity"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${activityLoading ? "animate-spin text-blue-600" : ""}`} />
+                </button>
               </div>
             </div>
 

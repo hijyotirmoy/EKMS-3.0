@@ -1,4 +1,4 @@
-﻿# dependencies
+# dependencies
 /node_modules
 /.pnp
 .pnp.js
@@ -32,3 +32,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# android & capacitor
+*.apk
+android/app/build/
+android/.gradle/
+android/local.properties
+mobile-app/dist/
+mobile-app/node_modules/
+mobile-app/android/app/build/
+mobile-app/android/.gradle/
+mobile-app/android/local.properties

@@ -46,6 +46,9 @@ export interface SystemLogDoc {
   extraData?: Record<string, any>;
 }
 
+// In-memory deduplication cache to prevent duplicate activity logging (e.g. React Strict Mode or duplicate triggers)
+const recentLogMap = new Map<string, number>();
+
 export async function logUserActivity(
   email: string | null | undefined,
   event: {
@@ -61,6 +64,20 @@ export async function logUserActivity(
   const today = getTodayDateString();
   const docId = `${cleanEmail}_${today}`;
   const now = Date.now();
+
+  // Deduplication check: ignore identical event for the same user within 4 seconds
+  const dedupeKey = `${cleanEmail}:${event.desc.trim()}`;
+  const lastLogged = recentLogMap.get(dedupeKey);
+  if (lastLogged && (now - lastLogged) < 4000) {
+    return;
+  }
+  recentLogMap.set(dedupeKey, now);
+  if (recentLogMap.size > 200) {
+    // Purge old keys
+    recentLogMap.forEach((v, k) => {
+      if (now - v > 10000) recentLogMap.delete(k);
+    });
+  }
 
   const colorMap: Record<string, ActivityEvent["color"]> = {
     auth: "blue",
