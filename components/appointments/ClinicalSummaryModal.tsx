@@ -82,7 +82,7 @@ export function parseClinicalDossier(app: any) {
     if (ccMatch && ccMatch[1]) {
       chiefComplaints = ccMatch[1]
         .split("\n")
-        .map((s) => s.replace(/^\s*•\s*/, "").trim())
+        .map((s: string) => s.replace(/^\s*•\s*/, "").trim())
         .filter(Boolean);
     }
     if (chiefComplaints.length === 0 && (app.chiefComplaint || app.purpose)) {
@@ -95,8 +95,8 @@ export function parseClinicalDossier(app: any) {
     if (rfMatch && rfMatch[1]) {
       redFlags = rfMatch[1]
         .split("\n")
-        .map((s) => s.replace(/^\s*•\s*/, "").trim())
-        .filter((s) => Boolean(s) && !/none reported/i.test(s));
+        .map((s: string) => s.replace(/^\s*•\s*/, "").trim())
+        .filter((s: string) => Boolean(s) && !/none reported/i.test(s));
     }
     if (redFlags.length === 0 && Array.isArray(app.redFlags)) {
       redFlags = app.redFlags
@@ -170,8 +170,8 @@ export function parseClinicalDossier(app: any) {
         if (rfMatch && rfMatch[1] && !/none reported/i.test(rfMatch[1])) {
           parsedRfs = rfMatch[1]
             .split(/;|,/)
-            .map((s) => s.trim())
-            .filter((s) => Boolean(s) && !/none reported/i.test(s));
+            .map((s: string) => s.trim())
+            .filter((s: string) => Boolean(s) && !/none reported/i.test(s));
         }
 
         const caseRefCode = callNum === "1" ? "CA0335AB01" : callNum === "2" ? "CA0334AB01" : callNum === "3" ? "CA0329AB01" : `CA033${5 - Number(callNum)}AB01`;
@@ -248,13 +248,14 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
 
   useEffect(() => {
     if (!isOpen || !appointment) return;
+    const appRecord = appointment;
 
     let isMounted = true;
     async function fetchVisits() {
       try {
-        const phone = appointment.phone || appointment.patientPhone;
-        const ipNumber = appointment.ipNumber && appointment.ipNumber !== "N/A" ? appointment.ipNumber : null;
-        const name = (appointment.ipName || appointment.patientName || "").trim().toLowerCase();
+        const phone = appRecord.phone || appRecord.patientPhone;
+        const ipNumber = appRecord.ipNumber && appRecord.ipNumber !== "N/A" ? appRecord.ipNumber : null;
+        const name = (appRecord.ipName || appRecord.patientName || "").trim().toLowerCase();
 
         const snap = await getDocs(
           query(collection(bookingDb, "dispensary_appointments"), limit(100))
@@ -265,14 +266,14 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
 
         // Always seed with the active appointment if it has diagnosis, prescriptions, or vitals
         if (
-          appointment.diagnosis ||
-          appointment.prescriptions?.length ||
-          appointment.vitals ||
-          appointment.status === "completed" ||
-          appointment.status === "visited"
+          appRecord.diagnosis ||
+          appRecord.prescriptions?.length ||
+          appRecord.vitals ||
+          appRecord.status === "completed" ||
+          appRecord.status === "visited"
         ) {
-          list.push({ ...appointment });
-          if (appointment.tokenNo) seenTokens.add(appointment.tokenNo);
+          list.push({ ...appRecord });
+          if (appRecord.tokenNo) seenTokens.add(appRecord.tokenNo);
         }
 
         snap.forEach((doc) => {
@@ -319,13 +320,13 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
         console.warn("Could not fetch dispensary visits:", err);
         if (isMounted) {
           if (
-            appointment.diagnosis ||
-            appointment.prescriptions?.length ||
-            appointment.vitals ||
-            appointment.status === "completed" ||
-            appointment.status === "visited"
+            appRecord.diagnosis ||
+            appRecord.prescriptions?.length ||
+            appRecord.vitals ||
+            appRecord.status === "completed" ||
+            appRecord.status === "visited"
           ) {
-            setDispensaryVisits([{ ...appointment }]);
+            setDispensaryVisits([{ ...appRecord }]);
           } else {
             setDispensaryVisits([]);
           }
@@ -503,7 +504,7 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
                     : typeof item.red_flags === "string" && item.red_flags
                     ? [item.red_flags]
                     : []
-                ).filter((f) => !/none reported/i.test(String(f)));
+                ).filter((f: any) => !/none reported/i.test(String(f)));
                 const refCode = item.case_ref || item.id || `CA033${5 - idx}AB01`;
 
                 return (

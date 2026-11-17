@@ -567,7 +567,6 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                       href={item.href}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onClick={(item as any).isTriage ? handleOpenTriage : undefined}
                       className="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all group"
                       title={item.label}
                     >
