@@ -358,17 +358,11 @@ export default function AppointmentPage() {
       // Status filter
       if (statusFilter !== "all") {
         if (statusFilter === "scheduled") {
-          if (app.status !== "scheduled") return false;
+          // In schedule & queue: include all that are not completed (whether with recip, doc, pharma, or in any stage)
+          if (app.status === "completed" || app.status === "cancelled") return false;
         } else if (statusFilter === "visited") {
-          // Completed visits / In-OPD visits (with_doctor, pharmacy_queue, completed, visited)
-          if (
-            app.status !== "visited" &&
-            app.status !== "completed" &&
-            app.status !== "with_doctor" &&
-            app.status !== "pharmacy_queue"
-          ) {
-            return false;
-          }
+          // Completed visits
+          if (app.status !== "completed") return false;
         } else if (statusFilter === "cancelled") {
           if (app.status !== "cancelled") return false;
         }
@@ -381,14 +375,9 @@ export default function AppointmentPage() {
   const metrics = useMemo(() => {
     const list = dateScopedAppointments;
     const total = list.length;
-    const scheduled = list.filter((a) => a.status === "scheduled").length;
-    const visited = list.filter(
-      (a) =>
-        a.status === "visited" ||
-        a.status === "completed" ||
-        a.status === "with_doctor" ||
-        a.status === "pharmacy_queue"
-    ).length;
+    // In schedule and queue put all numbers which are not completed!
+    const scheduled = list.filter((a) => a.status !== "completed" && a.status !== "cancelled").length;
+    const visited = list.filter((a) => a.status === "completed").length;
     const cancelled = list.filter((a) => a.status === "cancelled").length;
     return { total, scheduled, visited, cancelled };
   }, [dateScopedAppointments]);
@@ -714,7 +703,7 @@ export default function AppointmentPage() {
           }`}
         >
           <div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Scheduled / Upcoming</div>
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Scheduled & In-Queue</div>
             <div className="text-2xl font-black text-slate-900 mt-0.5">{metrics.scheduled}</div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
@@ -814,6 +803,14 @@ export default function AppointmentPage() {
                         <span>Token: {app.tokenNo}</span>
                         {copiedId === app.id ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3 text-teal-500" />}
                       </span>
+
+                      {/* Beautiful Dispensary Name Badge */}
+                      {app.dispensaryName && (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-800 border border-teal-200/90 rounded-lg text-xs font-bold shadow-2xs">
+                          <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                          <span>{app.dispensaryName}</span>
+                        </span>
+                      )}
 
                       <span className="text-[11px] text-slate-400 font-mono">
                         Booked: {app.date} • {app.timeSlot}

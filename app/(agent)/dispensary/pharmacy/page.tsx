@@ -498,6 +498,14 @@ export default function PharmacyDeskPage() {
                       )}
                     </span>
 
+                    {/* Beautiful Dispensary Name Badge */}
+                    {(apt.dispensaryName || apt.dispensary) && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-800 border border-teal-200/90 rounded-lg text-xs font-bold shadow-2xs">
+                        <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                        <span>{apt.dispensaryName || apt.dispensary}</span>
+                      </span>
+                    )}
+
                     <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
                       <span>Booked: {apt.date || apt.appointmentDate} • {apt.timeSlot}</span>

@@ -291,8 +291,11 @@ export default function AdminManageAppointmentPage() {
       }
 
       if (statusFilter !== "all") {
-        if (statusFilter === "visited") {
-          if (app.status !== "visited" && app.status !== "completed") return false;
+        if (statusFilter === "scheduled") {
+          // In schedule and queue: include all that are not completed (whether with recip, doc, pharma, or in any stage)
+          if (app.status === "completed" || app.status === "cancelled") return false;
+        } else if (statusFilter === "visited") {
+          if (app.status !== "completed") return false;
         } else if (app.status !== statusFilter) {
           return false;
         }
@@ -323,9 +326,10 @@ export default function AdminManageAppointmentPage() {
   const metrics = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const total = appointments.length;
-    const scheduled = appointments.filter((a) => a.status === "scheduled").length;
-    const visited = appointments.filter((a) => a.status === "visited" || a.status === "completed").length;
-    const todayQueue = appointments.filter((a) => a.date === todayStr && a.status === "scheduled").length;
+    // In schedule & queue: put all numbers that are not completed (with recip, with doc, with pharma, or in any stage)
+    const scheduled = appointments.filter((a) => a.status !== "completed" && a.status !== "cancelled").length;
+    const visited = appointments.filter((a) => a.status === "completed").length;
+    const todayQueue = appointments.filter((a) => a.date === todayStr && a.status !== "completed" && a.status !== "cancelled").length;
     const cancelled = appointments.filter((a) => a.status === "cancelled").length;
     return { total, scheduled, visited, todayQueue, cancelled };
   }, [appointments]);

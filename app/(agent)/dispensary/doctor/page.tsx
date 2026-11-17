@@ -497,6 +497,14 @@ export default function DoctorDeskPage() {
                       )}
                     </span>
 
+                    {/* Beautiful Dispensary Name Badge */}
+                    {app.dispensaryName && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-800 border border-teal-200/90 rounded-lg text-xs font-bold shadow-2xs">
+                        <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                        <span>{app.dispensaryName}</span>
+                      </span>
+                    )}
+
                     <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
                       <span>Booked: {app.date} • {app.timeSlot}</span>

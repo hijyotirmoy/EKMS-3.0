@@ -77,6 +77,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const [receptionQueueCount, setReceptionQueueCount] = useState(0);
   const [doctorQueueCount, setDoctorQueueCount] = useState(0);
   const [pharmacyQueueCount, setPharmacyQueueCount] = useState(0);
+  const [activeAppointmentsQueueCount, setActiveAppointmentsQueueCount] = useState(0);
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -164,6 +165,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       setReceptionQueueCount(0);
       setDoctorQueueCount(0);
       setPharmacyQueueCount(0);
+      setActiveAppointmentsQueueCount(0);
       return;
     }
 
@@ -181,6 +183,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
         let recCount = 0;
         let docCount = 0;
         let pharmCount = 0;
+        let totalActive = 0;
 
         snap.forEach((docSnap) => {
           const data = docSnap.data();
@@ -188,6 +191,10 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
             if (!isDispensaryMatch(data.dispensaryName, staffDispensary, data.dispensaryId, userProfile?.dispensaryId)) {
               return;
             }
+          }
+
+          if (data.status !== "completed" && data.status !== "cancelled") {
+            totalActive++;
           }
 
           if (data.status === "scheduled") {
@@ -202,6 +209,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
         setReceptionQueueCount(recCount);
         setDoctorQueueCount(docCount);
         setPharmacyQueueCount(pharmCount);
+        setActiveAppointmentsQueueCount(totalActive);
       },
       (err) => console.warn("Dispensary queue sync error:", err)
     );
@@ -275,7 +283,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   ];
 
   const dispensaryLinks = [
-    { href: "/appointment", label: "Appointments", icon: CalendarClock, color: "text-teal-600" },
+    { href: "/appointment", label: "Appointments", icon: CalendarClock, color: "text-teal-600", badge: activeAppointmentsQueueCount },
     { href: "/admin/appointment", label: "Manage Appointments", icon: CalendarCheck, color: "text-emerald-600", adminOnly: true },
     { href: "/dispensary/reception", label: "Reception Desk", icon: UserCheck, color: "text-blue-600", badge: receptionQueueCount },
     { href: "/dispensary/doctor", label: "Doctor Desk", icon: Stethoscope, color: "text-teal-600", badge: doctorQueueCount },
@@ -359,7 +367,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const miniLinks = [
     { href: "/", label: "Home", icon: Home, color: "text-rose-500", isExternal: false },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500", isExternal: false },
-    { href: "/appointment", label: "Appt", icon: CalendarClock, color: "text-teal-600", isExternal: false },
+    { href: "/appointment", label: "Appt", icon: CalendarClock, color: "text-teal-600", isExternal: false, badge: activeAppointmentsQueueCount },
     { href: "/dispensary/reception", label: "Reception", icon: UserCheck, color: "text-blue-600", isExternal: false, dispensaryStaffOnly: true, badge: receptionQueueCount },
     { href: "/dispensary/doctor", label: "Doctor", icon: Stethoscope, color: "text-teal-600", isExternal: false, dispensaryStaffOnly: true, badge: doctorQueueCount },
     { href: "/dispensary/pharmacy", label: "Pharmacy", icon: Pill, color: "text-amber-500", isExternal: false, dispensaryStaffOnly: true, badge: pharmacyQueueCount },

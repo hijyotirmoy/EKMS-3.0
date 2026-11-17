@@ -42,7 +42,7 @@ import Link from "next/link";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
 
 export default function ReceptionDeskPage() {
-  const { user, userProfile } = useAuth();
+  const { user, userProfile, isAdmin } = useAuth();
   const { toast } = usePopup();
 
   const todayStr = useMemo(() => {
@@ -137,15 +137,22 @@ export default function ReceptionDeskPage() {
   }, [appointments, isDispensaryStaff, staffDispensary, userProfile?.dispensaryId, selectedDate]);
 
   // Filtered by search & queue tab
+  // For Admin account: put all appointments that are not completed (with recip, with doc, with pharma, or in any stage!)
   const queuePatients = useMemo(() => {
+    if (isAdmin) {
+      return scopedList.filter((a) => a.status !== "completed" && a.status !== "cancelled");
+    }
     return scopedList.filter((a) => a.status === "scheduled");
-  }, [scopedList]);
+  }, [scopedList, isAdmin]);
 
   const checkedInPatients = useMemo(() => {
+    if (isAdmin) {
+      return scopedList.filter((a) => a.status === "completed");
+    }
     return scopedList.filter(
       (a) => a.status === "with_doctor" || a.status === "visited" || a.status === "pharmacy_queue" || a.status === "completed"
     );
-  }, [scopedList]);
+  }, [scopedList, isAdmin]);
 
   const currentList = activeTab === "queue" ? queuePatients : checkedInPatients;
 
@@ -240,9 +247,13 @@ export default function ReceptionDeskPage() {
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 select-none">
         <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
           <div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Awaiting Check-In</div>
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              {isAdmin ? "Active OPD Queue" : "Awaiting Check-In"}
+            </div>
             <div className="text-2xl font-black text-amber-600 mt-0.5">{queuePatients.length}</div>
-            <div className="text-[11px] text-slate-400 mt-1">Pending arrival at reception</div>
+            <div className="text-[11px] text-slate-400 mt-1">
+              {isAdmin ? "Uncompleted in all desks" : "Pending arrival at reception"}
+            </div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600 shrink-0">
             <Clock className="w-5 h-5" />
@@ -251,9 +262,13 @@ export default function ReceptionDeskPage() {
 
         <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
           <div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Checked In / With Doctor</div>
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              {isAdmin ? "Completed Visits" : "Checked In / With Doctor"}
+            </div>
             <div className="text-2xl font-black text-blue-600 mt-0.5">{checkedInPatients.length}</div>
-            <div className="text-[11px] text-slate-400 mt-1">Vitals recorded & queued</div>
+            <div className="text-[11px] text-slate-400 mt-1">
+              {isAdmin ? "Consultations & medicines dispensed" : "Vitals recorded & queued"}
+            </div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shrink-0">
             <Stethoscope className="w-5 h-5" />
@@ -291,7 +306,7 @@ export default function ReceptionDeskPage() {
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            Arrival Queue ({queuePatients.length})
+            {isAdmin ? `Active Queue (${queuePatients.length})` : `Arrival Queue (${queuePatients.length})`}
           </button>
           <button
             onClick={() => setActiveTab("checked_in")}
@@ -301,7 +316,7 @@ export default function ReceptionDeskPage() {
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            Checked-In ({checkedInPatients.length})
+            {isAdmin ? `Completed Visits (${checkedInPatients.length})` : `Checked-In (${checkedInPatients.length})`}
           </button>
         </div>
 
@@ -428,6 +443,14 @@ export default function ReceptionDeskPage() {
                         <Copy className="w-3 h-3 text-teal-500" />
                       )}
                     </span>
+
+                    {/* Beautiful Dispensary Name Badge */}
+                    {app.dispensaryName && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-800 border border-teal-200/90 rounded-lg text-xs font-bold shadow-2xs">
+                        <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                        <span>{app.dispensaryName}</span>
+                      </span>
+                    )}
 
                     <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
