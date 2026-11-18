@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { UserRole } from "@/lib/types";
-import { Users, Headphones, Briefcase, ShieldAlert, Lock, X, ChevronRight, AlertCircle, Building2 } from "lucide-react";
+import { Users, Headphones, Briefcase, ShieldAlert, Lock, X, ChevronRight, AlertCircle, Building2, Eye, EyeOff } from "lucide-react";
 
 export default function LoginModal() {
   const { showLoginModal, closeLoginModal, loginWithRole } = useAuth();
@@ -14,6 +14,7 @@ export default function LoginModal() {
   const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -23,6 +24,7 @@ export default function LoginModal() {
     setErrorMsg(null);
     setEmail("");
     setPassword("");
+    setShowPassword(false);
     if (pathname !== "/") {
       router.push("/");
     }
@@ -38,6 +40,7 @@ export default function LoginModal() {
     setErrorMsg(null);
     setEmail("");
     setPassword("");
+    setShowPassword(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -184,25 +187,19 @@ export default function LoginModal() {
               Sign In as {selectedRole}
             </h2>
             <p className="text-xs text-center text-slate-500 mb-6">
-              {selectedRole === "Dispensary Staff" || selectedRole === "Dispensary"
-                ? "Enter your Dispensary Staff ID / Email and password"
-                : "Enter your registered work credentials"}
+              Enter your registered email and password
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                  {selectedRole === "Dispensary Staff" || selectedRole === "Dispensary" ? "Dispensary Staff ID or Email" : "Email Address"}
+                  Email Address
                 </label>
                 <input
-                  type={selectedRole === "Dispensary Staff" || selectedRole === "Dispensary" ? "text" : "email"}
+                  type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder={
-                    selectedRole === "Dispensary Staff" || selectedRole === "Dispensary"
-                      ? "e.g. DISP-001 or dispensary@ekms.in"
-                      : "name@piramalswasthya.org"
-                  }
+                  placeholder="example@email.com"
                   required
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                 />
@@ -212,14 +209,24 @@ export default function LoginModal() {
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                   Password
                 </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter password"
-                  required
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter password"
+                    required
+                    className="w-full px-3.5 py-2.5 pr-10 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               {errorMsg && (

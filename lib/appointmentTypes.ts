@@ -95,6 +95,109 @@ export interface AppointmentRecord {
   pastCallsCount?: number;
   triageLevel?: string;
   triageScore?: number | null;
+  callType?: string;
+  enquiryType?: string;
+  chiefIssue?: string;
+  remarks?: string;
+  appointmentType?: string;
+}
+
+export function isNonClinicalAppointment(data: any): boolean {
+  if (!data) return false;
+  const ct = String(data.callType || data.call_type || "").toLowerCase().trim();
+  if (ct === "clinical") return false;
+  if (ct === "non_clinical") return true;
+  if (data.isNonClinical === false || data.is_non_clinical === false) return false;
+  if (data.isNonClinical === true || data.is_non_clinical === true) return true;
+
+  const dept = String(data.department || "").toLowerCase();
+  const apptType = String(data.appointmentType || data.appointment_type || "").toLowerCase();
+  if (dept.includes("regular opd") || dept.includes("general medicine") || dept.includes("primary care")) return false;
+  if (apptType.includes("regular opd")) return false;
+  if (dept.includes("non-clinical") || apptType.includes("non-clinical")) return true;
+
+  const sanitizeStr = (val: any) => {
+    if (!val || typeof val !== "string") return "";
+    const trimmed = val.trim();
+    if (/^(na|none|n\/a|select enquiry type|null|undefined)$/i.test(trimmed)) return "";
+    return trimmed;
+  };
+
+  const enq = sanitizeStr(data.enquiryType) || sanitizeStr(data.enquiry_type);
+  if (enq && !/^(regular|clinical|general)/i.test(enq)) return true;
+
+  if (typeof data.clinicalSummary === "string" && data.clinicalSummary.includes("[NON-CLINICAL")) return true;
+  
+  const purp = typeof data.purpose === "string" ? data.purpose : "";
+  const cc = typeof data.chiefComplaint === "string" ? data.chiefComplaint : "";
+  const pc = typeof data.primaryComplaint === "string" ? data.primaryComplaint : "";
+
+  if (purp.includes("Non-Clinical") || cc.includes("Non-Clinical") || pc.includes("Non-Clinical")) return true;
+  if (
+    /\[(cash|medical|maternity|disablement|pension|dependent|grievance|other|general|non-clinical|benefit|scheme|ip)/i.test(purp) ||
+    /\[(cash|medical|maternity|disablement|pension|dependent|grievance|other|general|non-clinical|benefit|scheme|ip)/i.test(cc) ||
+    /\[(cash|medical|maternity|disablement|pension|dependent|grievance|other|general|non-clinical|benefit|scheme|ip)/i.test(pc)
+  ) return true;
+  if (
+    /benefit|enquiry|grievance|claim|reimbursement/i.test(purp) ||
+    /benefit|enquiry|grievance|claim|reimbursement/i.test(cc) ||
+    /benefit|enquiry|grievance|claim|reimbursement/i.test(pc)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function extractIpNumber(data: any): string {
+  if (!data) return "N/A";
+  const raw =
+    data.ipNumber ??
+    data.ipNo ??
+    data.ip_no ??
+    data.ip_number ??
+    data.esicNumber ??
+    data.esicNo ??
+    data.esic_no ??
+    data.esic_number ??
+    data.insuranceNumber ??
+    data.insuranceNo ??
+    data.insurance_no ??
+    data.insuredPersonNumber ??
+    data.insured_person_number ??
+    data.patientIp ??
+    data.patient_ip ??
+    data.patientEsic ??
+    data.patient_esic ??
+    data.beneficiaryId ??
+    data.beneficiary_id ??
+    data.ip ??
+    data.esic ??
+    data.clinicalRecord?.ipNumber ??
+    data.clinicalRecord?.ipNo ??
+    data.clinicalRecord?.esicNumber ??
+    data.clinicalOverview?.ipNumber ??
+    data.clinicalOverview?.ipNo ??
+    data.triageData?.ipNumber ??
+    data.triageData?.ipNo ??
+    data.triageData?.esicNumber ??
+    "";
+
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (s && s.toLowerCase() !== "n/a" && s.toLowerCase() !== "null" && s.toLowerCase() !== "undefined") {
+      return s;
+    }
+  } else if (typeof raw === "number" && !isNaN(raw)) {
+    return String(raw);
+  }
+
+  // Check if callerId contains an IP number pattern (e.g. IP-1234567890)
+  const caller = data.callerId || data.caller_id || "";
+  if (typeof caller === "string" && /^IP-?\d+/i.test(caller.trim())) {
+    return caller.trim().replace(/^IP-?/i, "");
+  }
+
+  return "N/A";
 }
 
 export function getStatusDisplay(status: string): {
@@ -166,3 +269,34 @@ export function isDispensaryMatch(dispA: string, dispB: string, idA?: string, id
   if (normA && normB && (normA === normB || normA.includes(normB) || normB.includes(normA))) return true;
   return false;
 }
+
+export function formatStaffTimestamp(val: any): string {
+  if (!val) return "";
+  try {
+    let d: Date | null = null;
+    if (typeof val === "object" && typeof val.toDate === "function") {
+      d = val.toDate();
+    } else if (typeof val === "object" && typeof val.seconds === "number") {
+      d = new Date(val.seconds * 1000);
+    } else if (typeof val === "number") {
+      d = val < 10000000000 ? new Date(val * 1000) : new Date(val);
+    } else if (typeof val === "string") {
+      const num = Number(val);
+      if (!isNaN(num) && num > 1000000000) {
+        d = num < 10000000000 ? new Date(num * 1000) : new Date(num);
+      } else {
+        d = new Date(val);
+      }
+    }
+    if (!d || isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hours = String(d.getHours()).padStart(2, "0");
+    const mins = String(d.getMinutes()).padStart(2, "0");
+    return `${y}-${m}-${day} , ${hours}:${mins}`;
+  } catch {
+    return "";
+  }
+}
+

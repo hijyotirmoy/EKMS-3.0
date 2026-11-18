@@ -13,10 +13,10 @@ import {
 import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
 import { auth, db, getSecondaryAuth } from "@/lib/firebase";
 import { getOrFetchCollection, touchMetadata } from "@/lib/cache";
+import { invalidateStaffDirectory } from "@/lib/useStaffDirectory";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { UserProfile, UserRole, OrganogramTier, OrganogramConfig, OrganogramBranch, OrganogramLeader, Quiz, Doubt, Course, Facility } from "@/lib/types";
-import OrganogramCanvas from "@/components/team/OrganogramCanvas";
+import { UserProfile, UserRole, Quiz, Doubt, Course, Facility } from "@/lib/types";
 import { getBase64Image } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
 import {
@@ -57,20 +57,10 @@ export default function AdminTeamsPage() {
   const { userProfile: currentAdminProfile, isMasterAdmin } = useAuth();
   const { toast, showAlert, showConfirm } = usePopup();
 
-  const [activeTab, setActiveTab] = useState<"directory" | "organogram">("directory");
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [doubts, setDoubts] = useState<Doubt[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
-  const [orgConfig, setOrgConfig] = useState<OrganogramConfig>({
-    branches: [],
-    tiers: [],
-  });
-  const [orgTiers, setOrgTiers] = useState<OrganogramTier[]>([
-    { id: "tier-directors", name: "Platform Directors" },
-    { id: "tier-admins", name: "Supervisors & Admins" },
-    { id: "tier-agents", name: "ESIC Agents & Specialists" },
-  ]);
   const [loading, setLoading] = useState(true);
 
   // Filters & Search
@@ -95,11 +85,6 @@ export default function AdminTeamsPage() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
-
-  // Category Tier Modal
-  const [catModalOpen, setCatModalOpen] = useState(false);
-  const [editTierId, setEditTierId] = useState<string | null>(null);
-  const [tierName, setTierName] = useState("");
 
   // 1. Fetch Users in Realtime
   useEffect(() => {
@@ -155,20 +140,9 @@ export default function AdminTeamsPage() {
     };
     loadExtras();
 
-    const unsubSettings = onSnapshot(doc(db, "settings", "organogram"), (snap) => {
-      if (snap.exists() && isMounted) {
-        const data = snap.data() as OrganogramConfig;
-        setOrgConfig(data);
-        if (data.tiers) {
-          setOrgTiers(data.tiers);
-        }
-      }
-    });
-
     return () => {
       isMounted = false;
       unsubUsers();
-      unsubSettings();
     };
   }, []);
 
@@ -268,8 +242,7 @@ export default function AdminTeamsPage() {
       const birthdayVal = formBirthday.trim() || null;
 
       if (!editEmail) {
-        const initialPass =
-          formPassword.trim() || `ESIC@${Math.floor(100000 + Math.random() * 900000)}`;
+        const initialPass = formPassword.trim() || "ekms123";
         // Create user in Firebase Auth with initial password using secondary app instance
         const secAuth = getSecondaryAuth();
         try {
@@ -322,9 +295,14 @@ export default function AdminTeamsPage() {
           type: "add",
         });
 
+        const hasCustomPass = Boolean(formPassword.trim());
         showAlert({
           title: "Team Member Added Successfully",
-          message: `Agent ID: ${formAgentId || nextGeneratedAgentId}\nAssigned Password: ${initialPass}\n\nPlease copy and share these credentials with the user. For security, the password is not pre-filled or shown on the website interface.`,
+          message: `Agent ID: ${formAgentId || nextGeneratedAgentId}\nAccount Email: ${emailKey}\n${
+            hasCustomPass
+              ? `Assigned Password: ${initialPass}`
+              : `Password: System default password assigned.`
+          }\n\nPlease copy and share these credentials with the user. User can sign in and change their password anytime from their profile.`,
           type: "success",
         });
       } else {
@@ -409,6 +387,7 @@ export default function AdminTeamsPage() {
       }
 
       await touchMetadata("users");
+      invalidateStaffDirectory();
       setUserModalOpen(false);
     } catch (err: any) {
       toast.error("Error saving member: " + err.message);
@@ -430,6 +409,7 @@ export default function AdminTeamsPage() {
     try {
       await deleteDoc(doc(db, "users", email.toLowerCase()));
       await touchMetadata("users");
+      invalidateStaffDirectory();
       logUserActivity(currentAdminProfile?.email, {
         desc: `Deleted user profile for ${email}`,
         type: "delete",
@@ -437,173 +417,6 @@ export default function AdminTeamsPage() {
       toast.success("Member profile deleted successfully.");
     } catch (e: any) {
       toast.error("Delete error: " + e.message);
-    }
-  };
-
-  // Organogram Move Tier
-  const handleMoveUserTier = async (email: string, targetTierId: string) => {
-    try {
-      await setDoc(doc(db, "users", email.toLowerCase()), { orgTier: targetTierId }, { merge: true });
-      toast.info("Member tier updated.");
-    } catch (e: any) {
-      toast.error("Move failed: " + e.message);
-    }
-  };
-
-  // Save Tiers to Firestore
-  const saveTiersToDb = async (updatedTiers: OrganogramTier[]) => {
-    try {
-      await setDoc(doc(db, "settings", "organogram"), { tiers: updatedTiers }, { merge: true });
-    } catch (e: any) {
-      console.error("Save tiers error:", e);
-    }
-  };
-
-  // Save Category Tier
-  const handleSaveTier = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tierName.trim()) return;
-
-    let updated: OrganogramTier[];
-    if (editTierId) {
-      updated = orgTiers.map((t) => (t.id === editTierId ? { ...t, name: tierName.trim() } : t));
-    } else {
-      updated = [...orgTiers, { id: "tier-" + Date.now(), name: tierName.trim() }];
-    }
-
-    setOrgTiers(updated);
-    await saveTiersToDb(updated);
-    setCatModalOpen(false);
-    toast.success("Tier saved.");
-  };
-
-  // Delete Category Tier
-  const handleDeleteTier = async (tierId: string) => {
-    const confirmed = await showConfirm({
-      title: "Delete Tier?",
-      message: "Are you sure? Members in this tier will be moved to Unassigned.",
-      isDestructive: true,
-      confirmText: "Delete Tier",
-    });
-    if (!confirmed) return;
-
-    const updated = orgTiers.filter((t) => t.id !== tierId);
-    setOrgTiers(updated);
-
-    const batch = writeBatch(db);
-    users.forEach((u) => {
-      if (u.orgTier === tierId) {
-        batch.set(doc(db, "users", u.email.toLowerCase()), { orgTier: "unassigned" }, { merge: true });
-      }
-    });
-
-    await batch.commit();
-    await saveTiersToDb(updated);
-    toast.info("Tier deleted and members moved to Unassigned.");
-  };
-
-  // Drag & Drop State
-  const [draggedTierIndex, setDraggedTierIndex] = useState<number | null>(null);
-  const [dragOverTierIndex, setDragOverTierIndex] = useState<number | null>(null);
-  const [draggedUserEmail, setDraggedUserEmail] = useState<string | null>(null);
-  const [dragOverTierId, setDragOverTierId] = useState<string | null>(null);
-
-  // Tier Drag and Drop Reordering
-  const handleTierDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedTierIndex(index);
-    e.dataTransfer.setData("text/tier-index", String(index));
-  };
-
-  const handleTierDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    if (draggedTierIndex !== null && draggedTierIndex !== index) {
-      setDragOverTierIndex(index);
-    }
-  };
-
-  const handleTierDrop = async (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault();
-    setDragOverTierIndex(null);
-    if (draggedTierIndex === null || draggedTierIndex === dropIndex) return;
-
-    const reordered = [...orgTiers];
-    const [moved] = reordered.splice(draggedTierIndex, 1);
-    reordered.splice(dropIndex, 0, moved);
-
-    setOrgTiers(reordered);
-    setDraggedTierIndex(null);
-    await saveTiersToDb(reordered);
-    toast.success("Tier order updated.");
-  };
-
-  // User Drag & Drop Reassignment
-  const handleUserDragStart = (e: React.DragEvent, email: string) => {
-    e.stopPropagation();
-    setDraggedUserEmail(email);
-    e.dataTransfer.setData("text/user-email", email);
-  };
-
-  const handleUserDropOnTier = async (e: React.DragEvent, targetTierId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOverTierId(null);
-
-    const email = e.dataTransfer.getData("text/user-email") || draggedUserEmail;
-    if (!email) return;
-
-    // Optimistic local state update
-    setUsers((prev) =>
-      prev.map((u) => (u.email.toLowerCase() === email.toLowerCase() ? { ...u, orgTier: targetTierId } : u))
-    );
-    setDraggedUserEmail(null);
-
-    await handleMoveUserTier(email, targetTierId);
-  };
-
-  // Save Organogram Config (Branches & Leader)
-  const handleSaveOrgConfig = async (newConfig: OrganogramConfig) => {
-    try {
-      await setDoc(doc(db, "settings", "organogram"), newConfig, { merge: true });
-      await touchMetadata("settings");
-      setOrgConfig(newConfig);
-      toast.success("Organogram hierarchy updated successfully");
-      logUserActivity(currentAdminProfile?.email || "admin", {
-        desc: "Updated organogram hierarchy & branches",
-        type: "edit",
-      });
-    } catch (err: any) {
-      console.error("Save orgConfig error:", err);
-      showAlert({ title: "Error Saving", message: err.message || "Failed to save organogram", type: "error" });
-    }
-  };
-
-  // Assign User to Branch
-  const handleAssignUserBranch = async (userEmail: string, branchId: string) => {
-    try {
-      await setDoc(
-        doc(db, "users", userEmail.toLowerCase()),
-        { orgBranch: branchId, updatedAt: Date.now() },
-        { merge: true }
-      );
-      toast.success("Member assigned successfully");
-    } catch (err: any) {
-      console.error("Assign user branch error:", err);
-      showAlert({ title: "Error Assigning", message: err.message || "Failed to assign member", type: "error" });
-    }
-  };
-
-  // Remove User from Branch
-  const handleRemoveUserFromBranch = async (userEmail: string) => {
-    try {
-      await setDoc(
-        doc(db, "users", userEmail.toLowerCase()),
-        { orgBranch: "unassigned", updatedAt: Date.now() },
-        { merge: true }
-      );
-      toast.info("Member unassigned");
-    } catch (err: any) {
-      console.error("Remove user branch error:", err);
-      showAlert({ title: "Error Unassigning", message: err.message || "Failed to unassign member", type: "error" });
     }
   };
 
@@ -623,84 +436,52 @@ export default function AdminTeamsPage() {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-200">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="space-y-6 animate-in fade-in duration-200">
+      {/* Top Header with Search, Role Filter, and Add Team Member */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Admin Team Management</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Team Management</h1>
         </div>
 
-        <button
-          onClick={() => handleOpenUserModal()}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors self-start"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add Team Member</span>
-        </button>
-      </div>
-
-      {/* Tabs Navigation */}
-      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 select-none overflow-x-auto scrollbar-none">
-        <button
-          onClick={() => setActiveTab("directory")}
-          className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
-            activeTab === "directory"
-              ? "bg-blue-600 text-white shadow-xs"
-              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-          }`}
-        >
-          <Contact className="w-4 h-4" />
-          <span>Member Directory</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab("organogram")}
-          className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
-            activeTab === "organogram"
-              ? "bg-blue-600 text-white shadow-xs"
-              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-          }`}
-        >
-          <Network className="w-4 h-4" />
-          <span>Organogram Tiers</span>
-        </button>
-      </div>
-
-      {/* ----------------------------------------------------
-          TAB 1: MEMBER DIRECTORY (MATCHING AGENT TEAM CARDS + EDIT/DELETE)
-          ---------------------------------------------------- */}
-      {activeTab === "directory" && (
-        <div className="space-y-6">
-          {/* Search & Filter Bar */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
-            <div className="relative w-full sm:w-80">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search member by name, email, agent ID..."
-                className="w-full pl-9 pr-4 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <select
-                value={selectedRole}
-                onChange={(e) => setSelectedRole(e.target.value)}
-                className="w-full sm:w-auto px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-semibold text-slate-700 outline-none"
-              >
-                <option value="All">All Roles</option>
-                <option value="Agent">Agents</option>
-                <option value="Dispensary Staff">Dispensary Staff</option>
-                <option value="Admin">Admins</option>
-                <option value="Master Admin">Master Admins</option>
-              </select>
-            </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Search Bar */}
+          <div className="relative w-full sm:w-64">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search member by name, email, ID..."
+              className="w-full pl-9 pr-4 py-2 text-xs bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+            />
           </div>
 
-          {/* Cards Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-4 animate-in fade-in duration-150">
+          {/* All Role Filter */}
+          <select
+            value={selectedRole}
+            onChange={(e) => setSelectedRole(e.target.value)}
+            className="px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl font-semibold text-slate-700 outline-none shadow-2xs cursor-pointer"
+          >
+            <option value="All">All Roles</option>
+            <option value="Agent">Agents</option>
+            <option value="Dispensary Staff">Dispensary Staff</option>
+            <option value="Admin">Admins</option>
+            <option value="Master Admin">Master Admins</option>
+          </select>
+
+          {/* Add Team Member Button */}
+          <button
+            onClick={() => handleOpenUserModal()}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors shrink-0 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Team Member</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Cards Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-4 animate-in fade-in duration-150">
             {loading ? (
               <div className="col-span-full text-center py-16 text-slate-400 text-xs">
                 Loading team directory...
@@ -831,31 +612,6 @@ export default function AdminTeamsPage() {
               })
             )}
           </div>
-        </div>
-      )}
-
-      {/* ----------------------------------------------------
-          TAB 2: INTERACTIVE MULTI-BRANCH ORGANOGRAM BUILDER
-          ---------------------------------------------------- */}
-      {activeTab === "organogram" && (
-        <div className="space-y-4 animate-in fade-in duration-150">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
-            <p className="text-xs text-slate-500 font-medium">
-              Pan, drag, and explore the multi-branch structure. Click on branch actions to edit or add branches, and drag members between branches to reassign.
-            </p>
-          </div>
-
-          <OrganogramCanvas
-            config={orgConfig}
-            users={users}
-            isAdminMode={true}
-            onSaveConfig={handleSaveOrgConfig}
-            onEditUser={handleOpenUserModal}
-            onAssignUserBranch={handleAssignUserBranch}
-            onRemoveUserFromBranch={handleRemoveUserFromBranch}
-          />
-        </div>
-      )}
 
       {/* ====================================================
           MODAL: ADD / EDIT TEAM MEMBER (WITH PHOTO & BIRTHDAY)
@@ -928,7 +684,7 @@ export default function AdminTeamsPage() {
                   value={formEmail}
                   disabled={!!editEmail}
                   onChange={(e) => setFormEmail(e.target.value)}
-                  placeholder="name@piramalswasthya.org"
+                  placeholder="example@email.com"
                   required
                   className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
                 />
@@ -1048,7 +804,7 @@ export default function AdminTeamsPage() {
                     placeholder={
                       editEmail
                         ? "Enter new password to update (or leave blank to keep unchanged)..."
-                        : "Leave blank to auto-generate temporary password..."
+                        : "Leave blank for default password..."
                     }
                     className="w-full px-3.5 py-2 pr-10 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 font-mono tracking-wider"
                   />
@@ -1081,49 +837,6 @@ export default function AdminTeamsPage() {
                   className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs"
                 >
                   {savingUser ? "Saving..." : "Save Member"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* --- ADD / EDIT TIER CATEGORY MODAL --- */}
-      {catModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
-          <div className="bg-white max-w-xs w-full rounded-3xl shadow-2xl p-6 border border-slate-100 space-y-4">
-            <h3 className="text-base font-bold text-slate-900">
-              {editTierId ? "Rename Tier Category" : "Add Category Tier"}
-            </h3>
-
-            <form onSubmit={handleSaveTier} className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Tier Name
-                </label>
-                <input
-                  type="text"
-                  value={tierName}
-                  onChange={(e) => setTierName(e.target.value)}
-                  placeholder="e.g. Regional Coordinators"
-                  required
-                  className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 font-semibold"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setCatModalOpen(false)}
-                  className="px-3.5 py-1.5 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs"
-                >
-                  Save Tier
                 </button>
               </div>
             </form>

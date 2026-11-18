@@ -127,42 +127,9 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
         Boolean(userProfile?.dispensaryRole);
 
       combinedMap.forEach((data) => {
-        // Handle Dispensary OPD Notifications
-        if (data.type === "dispensary_opd") {
-          if (!isUserDispensary) return;
-          if (
-            data.targetDispensary &&
-            userProfile?.dispensaryName &&
-            !data.targetDispensary.toLowerCase().includes(userProfile.dispensaryName.toLowerCase().replace(/[^a-z0-9]/g, "")) &&
-            !userProfile.dispensaryName.toLowerCase().includes(data.targetDispensary.toLowerCase().replace(/[^a-z0-9]/g, ""))
-          ) {
-            return;
-          }
-          if (
-            data.targetDispensaryRole &&
-            data.targetDispensaryRole !== "all" &&
-            userProfile?.dispensaryRole &&
-            data.targetDispensaryRole.toLowerCase() !== userProfile.dispensaryRole.toLowerCase()
-          ) {
-            return;
-          }
-
-          seenIds.add(data.id);
-          const isRead = Array.isArray(data.readBy)
-            ? data.readBy.map((e: string) => e.toLowerCase().trim()).includes(userEmail)
-            : readOverrideIds.has(data.id);
-          const isClosed = Array.isArray(data.closedBy)
-            ? data.closedBy.map((e: string) => e.toLowerCase().trim()).includes(userEmail)
-            : false;
-
-          if (!isRead && !isClosed) {
-            unread++;
-          }
-          return;
-        }
-
-        // Stop all standard booking notifications for agents, admins, and master admins
+        // Stop all action notifications (dispensary OPD, bookings, etc.) from lighting up the navbar badge
         if (
+          data.type === "dispensary_opd" ||
           data.type === "booking" ||
           (data.title && /booking|appointment/i.test(data.title)) ||
           (data.link && data.link.includes("/booking"))
@@ -207,7 +174,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
 
     try {
       unsubNotifs = onSnapshot(
-        query(collection(logsDb, "notifications"), orderBy("createdAt", "desc"), limit(50)),
+        query(collection(logsDb, "notifications"), orderBy("createdAt", "desc"), limit(30)),
         (snap) => {
           if (!isMounted) return;
           rawNotifs = [];
@@ -218,7 +185,7 @@ export default function EkmsNavbar({ onToggleSidebar }: EkmsNavbarProps) {
       );
 
       unsubAnn = onSnapshot(
-        collection(logsDb, "announcements"),
+        query(collection(logsDb, "announcements"), orderBy("createdAt", "desc"), limit(20)),
         (snap) => {
           if (!isMounted) return;
           const list: any[] = [];

@@ -40,6 +40,68 @@ export function maskPhone(phone: string): string {
 }
 
 /**
+ * Dispensary Staff IP Number Masking:
+ * Masks all previous numbers and keeps only the last 3 digits.
+ * E.g., '1324514465' -> '*******465', '21126830784' -> '********784'.
+ */
+export function maskDispensaryIpNumber(ipNo?: string | null): string {
+  if (!ipNo || typeof ipNo !== "string") return "N/A";
+  const trimmed = ipNo.trim();
+  if (!trimmed || trimmed.toLowerCase() === "n/a" || trimmed === "-" || trimmed === "--") {
+    return "N/A";
+  }
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length === 0) return trimmed;
+  if (digits.length <= 3) {
+    return `*******${digits}`;
+  }
+  const last3 = digits.slice(-3);
+  const starCount = Math.max(7, digits.length - 3);
+  return `${"*".repeat(starCount)}${last3}`;
+}
+
+/**
+ * Dispensary Staff Mobile Number Masking:
+ * Masks mobile number showing 7 stars and last 3 digits.
+ * E.g., '9876543645' -> '*******645', '8135060278' -> '*******278'.
+ */
+export function maskDispensaryMobile(phone?: string | null): string {
+  if (!phone || typeof phone !== "string") return "";
+  const trimmed = phone.trim();
+  if (!trimmed || trimmed.toLowerCase() === "n/a" || trimmed === "-" || trimmed === "--") {
+    return "";
+  }
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length === 0) return trimmed;
+  if (digits.length <= 3) {
+    return `*******${digits}`;
+  }
+  const last3 = digits.slice(-3);
+  const starCount = Math.max(7, digits.length - 3);
+  return `${"*".repeat(starCount)}${last3}`;
+}
+
+/**
+ * Determines whether a user profile belongs to a Dispensary Staff account
+ * (Receptionist, Doctor, Pharmacist, Dispensary Staff at ESIS Dispensaries).
+ * Admins and Master Admins return false.
+ */
+export function isDispensaryStaffAccount(userProfile?: any): boolean {
+  if (!userProfile) return false;
+  const roleStr = String(userProfile.role || "").toLowerCase().trim();
+  if (roleStr === "admin" || roleStr === "master admin" || roleStr === "administrator") {
+    return false;
+  }
+  return (
+    roleStr === "dispensary staff" ||
+    roleStr === "dispensary" ||
+    Boolean(userProfile.dispensaryRole) ||
+    Boolean(userProfile.dispensaryName) ||
+    Boolean(userProfile.dispensaryId)
+  );
+}
+
+/**
  * Dynamically formats notification text based on the global mask policy.
  * When mask === true: Applies 3-letter + 3-star name and last-4-digit phone masking.
  * When mask === false: Restores / ensures full name and full phone numbers are displayed.

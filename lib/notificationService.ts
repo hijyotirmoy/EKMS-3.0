@@ -48,43 +48,8 @@ export async function createDispensaryNotification(data: {
   link: string;
   tokenNo?: string;
 }) {
-  try {
-    const docId = `disp_notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const notifRef = doc(logsDb, "notifications", docId);
-
-    const payload: Record<string, any> = {
-      id: docId,
-      title: data.title || "Dispensary OPD Alert",
-      message: data.message || "",
-      type: "dispensary_opd",
-      targetEmail: "all",
-      targetRole: "all",
-      targetDispensary: (data.targetDispensary || "").trim(),
-      targetDispensaryRole: data.targetDispensaryRole || "all",
-      link: data.link || "/appointment",
-      readBy: [],
-      closedBy: [],
-      createdAt: Date.now(),
-      metadata: {
-        tokenNo: data.tokenNo || "",
-        targetDispensary: data.targetDispensary,
-        targetDispensaryRole: data.targetDispensaryRole,
-      },
-    };
-
-    await setDoc(notifRef, payload, { merge: true }).catch((e) => {
-      console.warn("Write to logsDb dispensary notification:", e);
-    });
-
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("ekms-notification-created"));
-    }
-
-    return docId;
-  } catch (err) {
-    console.warn("createDispensaryNotification error:", err);
-    return null;
-  }
+  // All action notifications stopped per policy
+  return null;
 }
 
 /**
@@ -104,12 +69,9 @@ export async function createNotification(
     createdAt?: number;
   }
 ) {
-  // Stop all booking notifications for agents, admins, and master admins
-  if (
-    data.type === "booking" ||
-    (data.title && /booking|appointment/i.test(data.title)) ||
-    (data.link && data.link.includes("/booking"))
-  ) {
+  // All notifications for actions stopped per policy
+  // Only allow manual admin broadcasts (type === "announcement")
+  if (data.type !== "announcement") {
     return null;
   }
 
@@ -183,18 +145,8 @@ export async function notifyAdmins(data: {
   link?: string;
   metadata?: Record<string, any>;
 }) {
-  if (
-    data.type === "booking" ||
-    (data.title && /booking|appointment/i.test(data.title)) ||
-    (data.link && data.link.includes("/booking"))
-  ) {
-    return null;
-  }
-  return createNotification({
-    ...data,
-    targetEmail: "all",
-    targetRole: "admin",
-  });
+  // All notifications for actions stopped per policy
+  return null;
 }
 
 /**
@@ -208,11 +160,8 @@ export async function notifyAgents(data: {
   link?: string;
   metadata?: Record<string, any>;
 }) {
-  return createNotification({
-    ...data,
-    targetEmail: "all",
-    targetRole: "agent",
-  });
+  // All notifications for actions stopped per policy
+  return null;
 }
 
 /**
@@ -366,55 +315,8 @@ export function formatNotificationTime(timestamp?: number): string {
  * and creates celebratory reminder notifications for other team members.
  */
 export async function checkAndCreateBirthdayNotifications(users: UserProfile[]) {
-  if (!users || users.length === 0) return;
-
-  const now = new Date();
-
-  for (const user of users) {
-    const dobString = user.birthday || (user as any).dob;
-    if (!dobString || !user.email) continue;
-
-    const bdayInfo = parseBirthdayDaysRemaining(dobString);
-    if (!bdayInfo) continue;
-
-    const { daysRemaining, formattedBday, nextBdayYear } = bdayInfo;
-
-    // Check if birthday is within the next 7 days (including today = 0)
-    if (daysRemaining >= 0 && daysRemaining <= 7) {
-      const sanitizedEmail = user.email.toLowerCase().replace(/[^a-z0-9]/g, "_");
-      const notifId = `bday_${sanitizedEmail}_${nextBdayYear}`;
-
-      let relativeText = "";
-      if (daysRemaining === 0) {
-        relativeText = "Today";
-      } else if (daysRemaining === 1) {
-        relativeText = "Tomorrow";
-      } else {
-        relativeText = `in ${daysRemaining} days`;
-      }
-
-      const displayName = user.displayName || user.name || user.email.split("@")[0];
-
-      await createNotification({
-        id: notifId,
-        title: daysRemaining === 0 ? `🎂 Happy Birthday ${displayName}! 🎉` : `🎂 Upcoming Birthday: ${displayName}!`,
-        message:
-          daysRemaining === 0
-            ? `**${displayName}** is celebrating their birthday today (${formattedBday})! Send them your warmest wishes and greetings! 🎈🎉`
-            : `**${displayName}**'s birthday is **${relativeText}** (${formattedBday})! Don't forget to wish them! 🎈🎉`,
-        type: "birthday",
-        targetEmail: "all",
-        celebrantEmail: user.email.toLowerCase(),
-        link: "/team",
-        metadata: {
-          bdayUserEmail: user.email,
-          bdayUserName: displayName,
-          bdayDate: formattedBday,
-          daysRemaining,
-        },
-      });
-    }
-  }
+  // All action notifications stopped per policy
+  return;
 }
 
 /**

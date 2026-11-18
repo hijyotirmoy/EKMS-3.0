@@ -135,9 +135,9 @@ export default function AdminOverviewPage() {
         let maCount = 0;
 
         try {
-          const userSnap = await getDocs(collection(db, "users"));
-          userSnap.forEach((d) => {
-            const role = d.data().role;
+          const userList = await getOrFetchCollection<any>("users");
+          userList.forEach((d) => {
+            const role = d.role;
             if (role === "Master Admin") maCount++;
             else if (role === "Admin") adCount++;
             else agCount++;
@@ -147,26 +147,26 @@ export default function AdminOverviewPage() {
         }
 
         try {
-          const doubtsSnap = await getDocs(collection(db, "doubts"));
-          doubtsCount = doubtsSnap.size;
+          const doubtsSnap = await getCountFromServer(collection(db, "doubts"));
+          doubtsCount = doubtsSnap.data().count;
         } catch (e) {
           console.warn("Doubts count error:", e);
         }
 
         try {
-          const missSnap = await getDocs(collection(db, "missing_searches"));
-          missingCount = missSnap.size;
+          const missSnap = await getCountFromServer(collection(db, "missing_searches"));
+          missingCount = missSnap.data().count;
         } catch (e) {
           console.warn("Missing searches count error:", e);
         }
 
         try {
-          const repSnap = await getDocs(query(collection(db, "reports"), where("status", "!=", "solved")));
-          reportsCount = repSnap.size;
+          const repSnap = await getCountFromServer(query(collection(db, "reports"), where("status", "!=", "solved")));
+          reportsCount = repSnap.data().count;
         } catch (e) {
           try {
-            const allRepSnap = await getDocs(collection(db, "reports"));
-            reportsCount = allRepSnap.size;
+            const allRepSnap = await getCountFromServer(collection(db, "reports"));
+            reportsCount = allRepSnap.data().count;
           } catch (err) {}
         }
 

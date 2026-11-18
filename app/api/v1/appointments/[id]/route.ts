@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { doc, getDoc, updateDoc, setDoc, deleteDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { bookingDb } from "@/lib/firebase";
 import { validateApiKey, corsHeaders } from "@/lib/apiKeyAuth";
+import { extractIpNumber } from "@/lib/appointmentTypes";
+import { getTriageBaseUrl } from "@/lib/triageSync";
 
 export async function OPTIONS() {
   return new NextResponse(null, {
@@ -124,6 +126,13 @@ export async function PATCH(
     };
 
     if (body.status !== undefined) updatePayload.status = body.status;
+    const ipVal = extractIpNumber(body);
+    if (ipVal !== "N/A" || body.ipNumber !== undefined || body.ipNo !== undefined || body.esicNumber !== undefined) {
+      const finalIp = ipVal !== "N/A" ? ipVal : (body.ipNumber || body.ipNo || body.esicNumber || "N/A");
+      updatePayload.ipNumber = finalIp;
+      updatePayload.ipNo = finalIp;
+      updatePayload.esicNumber = finalIp;
+    }
     if (body.cancellationReason !== undefined) {
       const cr = String(body.cancellationReason);
       updatePayload.cancellationReason = cr
@@ -133,6 +142,8 @@ export async function PATCH(
         .replace(/triage/gi, "Source");
     }
     if (body.cancelledAt !== undefined) updatePayload.cancelledAt = body.cancelledAt;
+    if (body.completedAt !== undefined) updatePayload.completedAt = body.completedAt;
+    if (body.completedBy !== undefined) updatePayload.completedBy = body.completedBy;
     if (body.visitedNotes !== undefined) updatePayload.visitedNotes = body.visitedNotes;
     if (body.visitedAt !== undefined) updatePayload.visitedAt = body.visitedAt;
     if (body.visitedBy !== undefined) updatePayload.visitedBy = body.visitedBy;
@@ -151,6 +162,18 @@ export async function PATCH(
     if (body.dispensedAt !== undefined) updatePayload.dispensedAt = body.dispensedAt;
     if (body.dispensedBy !== undefined) updatePayload.dispensedBy = body.dispensedBy;
     if (body.dispensationNotes !== undefined) updatePayload.dispensationNotes = body.dispensationNotes;
+    if (body.clinicalSummary !== undefined) updatePayload.clinicalSummary = body.clinicalSummary;
+    if (body.clinicalRecord !== undefined) updatePayload.clinicalRecord = body.clinicalRecord;
+    if (body.enquiryType !== undefined) updatePayload.enquiryType = body.enquiryType;
+    if (body.chiefIssue !== undefined) updatePayload.chiefIssue = body.chiefIssue;
+    if (body.remarks !== undefined) updatePayload.remarks = body.remarks;
+    if (body.callType !== undefined) updatePayload.callType = body.callType;
+    if (body.isNonClinical !== undefined) updatePayload.isNonClinical = body.isNonClinical;
+    if (body.purpose !== undefined) updatePayload.purpose = body.purpose;
+    if (body.chiefComplaint !== undefined) updatePayload.chiefComplaint = body.chiefComplaint;
+    if (body.appointmentType !== undefined) updatePayload.appointmentType = body.appointmentType;
+    if (body.redFlags !== undefined) updatePayload.redFlags = body.redFlags;
+    if (body.past3Calls !== undefined) updatePayload.past3Calls = body.past3Calls;
 
     await updateDoc(target.ref, updatePayload);
 
@@ -193,6 +216,36 @@ export async function DELETE(
       return NextResponse.json(
         { success: false, error: `Appointment not found for ID/token: ${params.id}` },
         { status: 404, headers: corsHeaders() }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const isHardDelete = searchParams.get("hard") === "true" || searchParams.get("purge") === "true";
+
+    if (isHardDelete) {
+      // Hard delete from EKMS Firestore
+      await deleteDoc(target.ref);
+
+      // Also delete from Triage database via API
+      try {
+        const triageUrl = getTriageBaseUrl();
+        await fetch(`${triageUrl}/api/appointments/delete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: params.id,
+            tokenNo: (target.data as any)?.tokenNo,
+            referenceNo: (target.data as any)?.referenceNo,
+          }),
+        });
+      } catch (e) {}
+
+      return NextResponse.json(
+        {
+          success: true,
+          message: "Appointment permanently deleted from all databases.",
+        },
+        { status: 200, headers: corsHeaders() }
       );
     }
 

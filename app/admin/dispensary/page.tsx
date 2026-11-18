@@ -18,6 +18,8 @@ import { usePopup } from "@/context/PopupContext";
 import { UserProfile, DispensaryAccount } from "@/lib/types";
 import { ALL_AGENT_PAGES } from "@/lib/pageAccess";
 import { logUserActivity } from "@/lib/activityLogger";
+import { touchMetadata } from "@/lib/cache";
+import { invalidateStaffDirectory } from "@/lib/useStaffDirectory";
 import * as XLSX from "xlsx";
 import {
   Building2,
@@ -68,7 +70,7 @@ export default function ManageDispensaryPage() {
   const [formName, setFormName] = useState("");
   const [formId, setFormId] = useState("");
   const [formEmail, setFormEmail] = useState("");
-  const [formPassword, setFormPassword] = useState("esic123");
+  const [formPassword, setFormPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [formPhone, setFormPhone] = useState("");
   const [formState, setFormState] = useState("");
@@ -78,16 +80,16 @@ export default function ManageDispensaryPage() {
   const [formRestrictedPages, setFormRestrictedPages] = useState<string[]>([]);
   const [showPagesAccordion, setShowPagesAccordion] = useState(false);
 
-  // 1. Live Sync from Firestore users collection where role === 'Dispensary'
+  // 1. Live Sync from Firestore users collection where role is Dispensary or Dispensary Staff
   useEffect(() => {
     let isMounted = true;
     const unsub = onSnapshot(
-      collection(db, "users"),
+      query(collection(db, "users"), where("role", "in", ["Dispensary", "Dispensary Staff"])),
       (snap) => {
         const list: DispensaryAccount[] = [];
         snap.forEach((d) => {
           const data = d.data();
-          if (data.role === "Dispensary") {
+          if (data.role === "Dispensary" || data.role === "Dispensary Staff") {
             const email = (data.email || d.id || "").toLowerCase().trim();
             list.push({
               id: d.id,
@@ -193,7 +195,7 @@ export default function ManageDispensaryPage() {
     setFormName("");
     setFormId(nextGeneratedId);
     setFormEmail("");
-    setFormPassword("esic123");
+    setFormPassword("");
     setShowPassword(false);
     setFormPhone("");
     setFormState("");
@@ -254,8 +256,9 @@ export default function ManageDispensaryPage() {
       if (!editingAccount) {
         // 1. Create in Firebase Auth using secondary instance (prevents admin logout)
         const secAuth = getSecondaryAuth();
+        const finalPassword = formPassword.trim() || "ekms123";
         try {
-          await createUserWithEmailAndPassword(secAuth, cleanEmail, formPassword.trim() || "esic123");
+          await createUserWithEmailAndPassword(secAuth, cleanEmail, finalPassword);
           await secAuth.signOut();
         } catch (authErr: any) {
           console.warn("Dispensary Auth User creation notice:", authErr.message);
@@ -277,7 +280,7 @@ export default function ManageDispensaryPage() {
           restrictedPages: formRestrictedPages,
           createdAt: Date.now(),
           mustChangePassword: true,
-          password: formPassword.trim() || "esic123",
+          password: finalPassword,
           passwordUpdatedAt: Date.now(),
         };
 
@@ -289,15 +292,21 @@ export default function ManageDispensaryPage() {
           id: cleanId,
         });
 
+        await touchMetadata("users");
+        invalidateStaffDirectory();
+
         logUserActivity(currentAdminProfile?.email, {
           desc: `Created Dispensary account ${formName.trim()} (${cleanId} / ${cleanEmail})`,
           type: "add",
         });
 
+        const hasCustomPass = Boolean(formPassword.trim());
         showAlert({
           title: "Dispensary Account Created!",
-          message: `Dispensary ID: ${cleanId}\nLogin Email: ${cleanEmail}\nTemporary Password: ${
-            formPassword.trim() || "esic123"
+          message: `Dispensary ID: ${cleanId}\nLogin Email: ${cleanEmail}\n${
+            hasCustomPass
+              ? `Password: ${finalPassword}`
+              : `Password: System default password assigned.`
           }\n\nThe dispensary can now sign in using their Dispensary ID or Email at the Dispensary login portal.`,
           type: "success",
         });
@@ -326,7 +335,7 @@ export default function ManageDispensaryPage() {
           try {
             const secAuth = getSecondaryAuth();
             const existingDisp = dispensaries.find((a: DispensaryAccount) => a.email.toLowerCase() === cleanEmail);
-            const prevPass = (existingDisp as any)?.password || "esic123";
+            const prevPass = (existingDisp as any)?.password || "ekms123";
             const secCred = await signInWithEmailAndPassword(secAuth, cleanEmail, prevPass).catch(() => null);
             if (secCred) {
               const { updatePassword: updateSecPassword } = await import("firebase/auth");
@@ -344,6 +353,9 @@ export default function ManageDispensaryPage() {
         await setDoc(doc(db, "dispensaries", cleanId.toLowerCase()), updatePayload, {
           merge: true,
         });
+
+        await touchMetadata("users");
+        invalidateStaffDirectory();
 
         // Vanish password from component state instantly
         setFormPassword("");
@@ -376,6 +388,9 @@ export default function ManageDispensaryPage() {
         { status: newStatus },
         { merge: true }
       );
+
+      await touchMetadata("users");
+      invalidateStaffDirectory();
 
       logUserActivity(currentAdminProfile?.email, {
         desc: `Changed dispensary status of ${acc.dispensaryName} to ${newStatus.toUpperCase()}`,
@@ -429,6 +444,9 @@ export default function ManageDispensaryPage() {
     try {
       await deleteDoc(doc(db, "users", acc.email));
       await deleteDoc(doc(db, "dispensaries", acc.dispensaryId.toLowerCase()));
+
+      await touchMetadata("users");
+      invalidateStaffDirectory();
 
       logUserActivity(currentAdminProfile?.email, {
         desc: `Deleted dispensary account ${acc.dispensaryName} (${acc.email})`,
@@ -927,7 +945,7 @@ export default function ManageDispensaryPage() {
                   <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
                     <span>SET / UPDATE PASSWORD</span>
                     <span className="text-[10px] font-normal text-slate-400">
-                      {editingAccount ? "Optional" : "Default: esic123"}
+                      {editingAccount ? "Optional" : "Default"}
                     </span>
                   </label>
                   <div className="relative">
@@ -935,7 +953,7 @@ export default function ManageDispensaryPage() {
                       type={showPassword ? "text" : "password"}
                       value={formPassword}
                       onChange={(e) => setFormPassword(e.target.value)}
-                      placeholder={editingAccount ? "Enter new password to update..." : "Enter password (or leave for esic123)"}
+                      placeholder={editingAccount ? "Enter new password to update..." : "Leave blank for default password..."}
                       className="w-full px-3.5 py-2 pr-10 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-teal-500 font-mono tracking-wider"
                     />
                     <button

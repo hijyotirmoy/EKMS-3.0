@@ -3,6 +3,7 @@ import { collection, doc, getDocs, setDoc, query, orderBy, limit as firestoreLim
 import { bookingDb } from "@/lib/firebase";
 import { validateApiKey, corsHeaders } from "@/lib/apiKeyAuth";
 import { createDispensaryNotification } from "@/lib/notificationService";
+import { extractIpNumber } from "@/lib/appointmentTypes";
 
 export async function OPTIONS() {
   return new NextResponse(null, {
@@ -144,13 +145,17 @@ export async function POST(request: NextRequest) {
     const referenceNo = body.referenceNo || tokenNo;
     const docId = (body.id || referenceNo || tokenNo).replace(/[^a-zA-Z0-9_-]/g, "_");
 
+    const ipNumber = extractIpNumber(body);
+
     const appointmentPayload = {
       id: docId,
       tokenNo,
       referenceNo,
       ipName: patientName,
       patientName,
-      ipNumber: (body.ipNumber || body.esicNumber || "N/A").trim(),
+      ipNumber,
+      ipNo: ipNumber,
+      esicNumber: ipNumber,
       phone: phone || "N/A",
       patientPhone: phone || "N/A",
       age: String(body.age || body.patientAge || "").trim(),

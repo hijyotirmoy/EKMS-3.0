@@ -19,6 +19,7 @@ export default function ActivityTracker() {
   const { user, userProfile, isLoggedIn } = useAuth();
   const pathname = usePathname();
   const lastActiveTimestampRef = useRef<number>(Date.now());
+  const lastOnlineSyncRef = useRef<number>(0);
 
   // Track user interaction to determine idle state
   useEffect(() => {
@@ -41,11 +42,15 @@ export default function ActivityTracker() {
     };
   }, []);
 
-  // Periodic heartbeat every 15s to accumulate active time spent
+  // Periodic heartbeat every 45s (batched) to record active time and throttle presence writes
   useEffect(() => {
     if (!isLoggedIn || !user?.email) return;
 
     const email = user.email.toLowerCase();
+    const HEARTBEAT_SECONDS = 45;
+    const HEARTBEAT_MS = HEARTBEAT_SECONDS * 1000;
+    const USER_PRESENCE_THROTTLE_MS = 2 * 60 * 1000; // Only update user presence every 2 minutes
+
     const heartbeatInterval = setInterval(async () => {
       // Only count active time if tab is visible and user interacted in the last 3 minutes
       const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
@@ -62,15 +67,19 @@ export default function ActivityTracker() {
 
       try {
         await updateDoc(activityDocRef, {
-          totalSeconds: increment(15),
-          [`pageVisits.${cleanPath}`]: increment(15),
+          totalSeconds: increment(HEARTBEAT_SECONDS),
+          [`pageVisits.${cleanPath}`]: increment(HEARTBEAT_SECONDS),
           lastActive: now,
         });
 
-        await updateDoc(userDocRef, {
-          lastActive: now,
-          isOnline: true,
-        });
+        // Throttle presence write to once every 2 minutes to prevent snapshot storm for other agents
+        if (now - lastOnlineSyncRef.current >= USER_PRESENCE_THROTTLE_MS) {
+          lastOnlineSyncRef.current = now;
+          await updateDoc(userDocRef, {
+            lastActive: now,
+            isOnline: true,
+          }).catch(() => {});
+        }
       } catch (e) {
         try {
           const userName = userProfile?.displayName || userProfile?.name || email.split("@")[0];
@@ -84,14 +93,22 @@ export default function ActivityTracker() {
               firstLogin: now,
               lastActive: now,
               loginCount: 1,
-              totalSeconds: 15,
-              pageVisits: { [cleanPath]: 15 },
+              totalSeconds: HEARTBEAT_SECONDS,
+              pageVisits: { [cleanPath]: HEARTBEAT_SECONDS },
             },
             { merge: true }
           );
+
+          if (now - lastOnlineSyncRef.current >= USER_PRESENCE_THROTTLE_MS) {
+            lastOnlineSyncRef.current = now;
+            await updateDoc(userDocRef, {
+              lastActive: now,
+              isOnline: true,
+            }).catch(() => {});
+          }
         } catch {}
       }
-    }, 15000);
+    }, HEARTBEAT_MS);
 
     return () => clearInterval(heartbeatInterval);
   }, [isLoggedIn, user?.email, pathname, userProfile]);

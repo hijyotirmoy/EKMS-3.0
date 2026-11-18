@@ -12,7 +12,11 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const { isLoggedIn, loading, openLoginModal } = useAuth();
 
-  const isPublicPage = pathname === "/";
+  const isPublicPage =
+    pathname === "/" ||
+    pathname === "/contact" ||
+    pathname === "/privacy" ||
+    pathname === "/terms";
 
   // Trigger login modal automatically if trying to access any protected page while logged out
   useEffect(() => {

@@ -19,75 +19,35 @@ import { usePopup } from "@/context/PopupContext";
 import { Facility, UserProfile } from "@/lib/types";
 import { getOrFetchCollection } from "@/lib/cache";
 import { logUserActivity } from "@/lib/activityLogger";
-import * as XLSX from "xlsx";
 import {
   CalendarClock,
   CalendarCheck,
-  Plus,
   Search,
   Calendar,
   Clock,
-  MapPin,
   Building2,
   Phone,
-  User,
   CheckCircle2,
   AlertCircle,
   XCircle,
   Trash2,
-  Filter,
   X,
   Copy,
   Check,
   FileText,
   Stethoscope,
-  ShieldCheck,
-  Download,
-  RotateCcw,
   UserCheck,
-  Activity,
-  HeartPulse,
   Pill,
+  PackageCheck,
 } from "lucide-react";
 import { AppointmentRecord } from "@/app/(agent)/appointment/page";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
-
-const COMMON_CHIEF_COMPLAINTS = [
-  "Fever & Chills",
-  "Cough, Cold & Flu",
-  "Diabetes Regular Follow-Up",
-  "Hypertension / Blood Pressure Check",
-  "Joint & Body Pain",
-  "Routine OPD Consultation",
-  "Medication Refill",
-  "Skin Rash / Allergy",
-];
-
-const OPD_TIME_SLOTS = [
-  "10:00 AM - 11:00 AM (Morning OPD)",
-  "11:00 AM - 12:00 PM (Morning OPD)",
-  "12:00 PM - 01:00 PM (Mid-day OPD)",
-  "02:00 PM - 03:00 PM (Afternoon OPD)",
-  "03:00 PM - 04:00 PM (Evening OPD)",
-];
-
-function formatDateTime(val: any): string {
-  if (!val) return "N/A";
-  try {
-    const d = typeof val === "number" ? new Date(val) : new Date(String(val));
-    if (isNaN(d.getTime())) return String(val);
-    return d.toLocaleString("en-IN", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
-  } catch {
-    return String(val);
-  }
-}
+import { CancelAppointmentModal } from "@/components/appointments/CancelAppointmentModal";
+import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";
+import { useStaffDirectory } from "@/lib/useStaffDirectory";
+import { extractIpNumber, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
+import { deleteAppointmentFromTriageApi } from "@/lib/triageSync";
+import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
 
 function normalizeDispensaryName(str: string): string {
   if (!str) return "";
@@ -112,9 +72,22 @@ function isDispensaryMatch(dispA: string, dispB: string, idA?: string, idB?: str
   return false;
 }
 
+function formatCancellationReason(reason?: string): string {
+  if (!reason) return "";
+  return reason
+    .replace(/cancelled in ekms triage/gi, "Cancelled in Source")
+    .replace(/cancelled via triage/gi, "Cancelled in Source")
+    .replace(/ekms triage/gi, "Source")
+    .replace(/triage/gi, "Source");
+}
+
+const ITEMS_PER_PAGE = 30;
+
 export default function AdminManageAppointmentPage() {
-  const { user, userProfile, isAdmin, isMasterAdmin } = useAuth();
+  const { user, userProfile } = useAuth();
   const { toast, showConfirm } = usePopup();
+  const { getStaffName, getDoctorName } = useStaffDirectory();
+  const isDispensaryStaff = isDispensaryStaffAccount(userProfile);
 
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [dispensaries, setDispensaries] = useState<Facility[]>([]);
@@ -122,36 +95,44 @@ export default function AdminManageAppointmentPage() {
 
   // Filters & Search
   const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "visited" | "cancelled">("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "reception" | "doctor" | "pharmacy" | "completed" | "cancelled"
+  >("all");
   const [dateFilter, setDateFilter] = useState("");
   const [dispensaryFilter, setDispensaryFilter] = useState("all");
+
+  // Sync date filter with mini-bar icons
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("ekms-date-filter-change", { detail: dateFilter }));
+    }
+  }, [dateFilter]);
   const [staffFilter, setStaffFilter] = useState("all");
   const [dispensaryStaffUsers, setDispensaryStaffUsers] = useState<UserProfile[]>([]);
-
-  // Booking Modal State
-  const [bookingModalOpen, setBookingModalOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Details Modal State
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [activeAppointment, setActiveAppointment] = useState<AppointmentRecord | null>(null);
 
+  // Cancel Modal State
+  const [cancelModalApp, setCancelModalApp] = useState<AppointmentRecord | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [copiedPhoneId, setCopiedPhoneId] = useState<string | null>(null);
+  const [doctorAvailabilityOpen, setDoctorAvailabilityOpen] = useState(false);
+
+  const handleCopyPhone = (e: React.MouseEvent, phone: string, id: string) => {
+    e.stopPropagation();
+    if (!phone) return;
+    navigator.clipboard.writeText(phone);
+    setCopiedPhoneId(id);
+    toast.success(`Copied phone: ${phone}`);
+    setTimeout(() => setCopiedPhoneId(null), 2000);
+  };
+
   // Selection & Bulk Actions
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
-
-  // Booking Form Fields
-  const [ipName, setIpName] = useState("");
-  const [ipNumber, setIpNumber] = useState("");
-  const [phone, setPhone] = useState("");
-  const [age, setAge] = useState("");
-  const [gender, setGender] = useState("Male");
-  const [selectedDispensary, setSelectedDispensary] = useState("");
-  const [appointmentDate, setAppointmentDate] = useState("");
-  const [timeSlot, setTimeSlot] = useState(OPD_TIME_SLOTS[0]);
-  const [purpose, setPurpose] = useState("Fever & Chills");
-  const [notes, setNotes] = useState("");
 
   // 1. Live Sync from ekmsbooking database with query limit for minimum Firestore reads
   useEffect(() => {
@@ -160,7 +141,7 @@ export default function AdminManageAppointmentPage() {
     const q = query(
       collection(bookingDb, "dispensary_appointments"),
       orderBy("createdAt", "desc"),
-      limit(200)
+      limit(500)
     );
 
     const unsub = onSnapshot(
@@ -175,7 +156,7 @@ export default function AdminManageAppointmentPage() {
             tokenNo: data.tokenNo || d.id,
             referenceNo: data.referenceNo || data.tokenNo || d.id,
             ipName: data.ipName || data.patientName || "Insured Person",
-            ipNumber: data.ipNumber || data.esicNumber || "N/A",
+            ipNumber: extractIpNumber(data),
             phone: data.phone || data.patientPhone || "",
             age: data.age || data.patientAge || "",
             gender: data.gender || data.patientSex || "Male",
@@ -196,26 +177,36 @@ export default function AdminManageAppointmentPage() {
             createdAt: data.createdAt || Date.now(),
             visitedAt: data.visitedAt,
             visitedBy: data.visitedBy,
-            visitedNotes: data.visitedNotes || data.doctorNotes,
+            visitedNotes: data.visitedNotes,
+            receptionCheckedInAt: data.receptionCheckedInAt,
+            receptionCheckedInBy: data.receptionCheckedInBy,
+            doctorConsultedAt: data.doctorConsultedAt,
+            doctorName: data.doctorName,
+            doctorEmail: data.doctorEmail,
+            diagnosis: data.diagnosis,
+            doctorNotes: data.doctorNotes,
+            prescriptions: data.prescriptions || [],
+            dispensedAt: data.dispensedAt,
+            dispensedBy: data.dispensedBy,
+            dispensationNotes: data.dispensationNotes,
             vitals: data.vitals,
             cancellationReason: data.cancellationReason,
-          } as any);
+            updatedAt: data.updatedAt,
+            source: data.source,
+          });
         });
-
-        list.sort((a, b) => b.createdAt - a.createdAt);
-
         if (isMounted) {
           setAppointments(list);
           setLoading(false);
         }
       },
       (err) => {
-        console.warn("Appointments live sync error:", err);
+        console.warn("Dispensary appointments sync warning:", err);
         if (isMounted) setLoading(false);
       }
     );
 
-    // Load facility dispensaries
+    // Fetch Dispensaries
     const loadDispensaries = async () => {
       try {
         const allFacilities = await getOrFetchCollection<Facility>("facilities");
@@ -291,13 +282,18 @@ export default function AdminManageAppointmentPage() {
       }
 
       if (statusFilter !== "all") {
-        if (statusFilter === "scheduled") {
-          // In schedule and queue: include all that are not completed (whether with recip, doc, pharma, or in any stage)
-          if (app.status === "completed" || app.status === "cancelled") return false;
-        } else if (statusFilter === "visited") {
+        if (statusFilter === "reception") {
+          if (app.status !== "scheduled") return false;
+        } else if (statusFilter === "doctor") {
+          if (isNonClinicalAppointment(app)) return false;
+          if (app.status !== "with_doctor" && app.status !== "visited") return false;
+        } else if (statusFilter === "pharmacy") {
+          if (isNonClinicalAppointment(app)) return false;
+          if (app.status !== "pharmacy_queue") return false;
+        } else if (statusFilter === "completed") {
           if (app.status !== "completed") return false;
-        } else if (app.status !== statusFilter) {
-          return false;
+        } else if (statusFilter === "cancelled") {
+          if (app.status !== "cancelled") return false;
         }
       }
 
@@ -322,176 +318,96 @@ export default function AdminManageAppointmentPage() {
     });
   }, [appointments, searchTerm, statusFilter, dateFilter, dispensaryFilter, staffFilter, dispensaryStaffUsers]);
 
+  // Reset pagination on filter change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, dateFilter, dispensaryFilter, staffFilter]);
+
   // Metrics
   const metrics = useMemo(() => {
-    const todayStr = new Date().toISOString().slice(0, 10);
     const total = appointments.length;
-    // In schedule & queue: put all numbers that are not completed (with recip, with doc, with pharma, or in any stage)
-    const scheduled = appointments.filter((a) => a.status !== "completed" && a.status !== "cancelled").length;
-    const visited = appointments.filter((a) => a.status === "completed").length;
-    const todayQueue = appointments.filter((a) => a.date === todayStr && a.status !== "completed" && a.status !== "cancelled").length;
+    const pendingReception = appointments.filter((a) => a.status === "scheduled").length;
+    const pendingDoctor = appointments.filter((a) => !isNonClinicalAppointment(a) && (a.status === "with_doctor" || a.status === "visited")).length;
+    const pendingPharmacy = appointments.filter((a) => !isNonClinicalAppointment(a) && a.status === "pharmacy_queue").length;
+    const completed = appointments.filter((a) => a.status === "completed").length;
     const cancelled = appointments.filter((a) => a.status === "cancelled").length;
-    return { total, scheduled, visited, todayQueue, cancelled };
+
+    return {
+      total,
+      pendingReception,
+      pendingDoctor,
+      pendingPharmacy,
+      completed,
+      cancelled,
+    };
   }, [appointments]);
 
-  // Open booking modal
-  const handleOpenBooking = () => {
-    const today = new Date().toISOString().slice(0, 10);
-    setAppointmentDate(today);
-    setIpName("");
-    setIpNumber("");
-    setPhone("");
-    setAge("");
-    setGender("Male");
-    setNotes("");
-    setPurpose("Fever & Chills");
-    setTimeSlot(OPD_TIME_SLOTS[0]);
-    if (dispensaries.length > 0 && !selectedDispensary) {
-      setSelectedDispensary(dispensaries[0].name);
-    }
-    setBookingModalOpen(true);
-  };
+  // Pagination calculation
+  const totalPages = Math.ceil(filteredAppointments.length / ITEMS_PER_PAGE) || 1;
+  const paginatedAppointments = useMemo(() => {
+    const start = (currentPage - 1) * ITEMS_PER_PAGE;
+    return filteredAppointments.slice(start, start + ITEMS_PER_PAGE);
+  }, [filteredAppointments, currentPage]);
 
-  // Submit appointment booking
-  const handleCreateAppointment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ipName.trim() || !phone.trim() || !selectedDispensary || !appointmentDate) {
-      toast.error("Please fill in patient name, phone, dispensary, and appointment date.");
-      return;
-    }
-
-    setSubmitting(true);
-
-    // Generate token in exact EKMS Triage format: ESIC-XXXXX-DISP (or HOSP for hospital)
-    const isHospital = (selectedDispensary || "").toLowerCase().includes("hospital");
-    const prefix = "ESIC";
-    const suffix = isHospital ? "HOSP" : "DISP";
-
-    let maxSeq = 0;
-    const tokenRegex = /^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i;
-    appointments.forEach((a) => {
-      const raw = a.tokenNo || a.referenceNo || "";
-      const match = raw.match(tokenRegex);
-      if (match && match[1]) {
-        const n = parseInt(match[1], 10);
-        if (!isNaN(n) && n > maxSeq && n < 99999) maxSeq = n;
-      } else {
-        const anyDigits = raw.match(/\b(\d{3,5})\b/);
-        if (anyDigits && anyDigits[1]) {
-          const n = parseInt(anyDigits[1], 10);
-          if (!isNaN(n) && n > maxSeq && n < 99999) maxSeq = n;
-        }
-      }
-    });
-
-    const nextSeq = maxSeq > 0 ? maxSeq + 1 : 336;
-    const seqPadded = String(nextSeq).padStart(5, "0");
-    const tokenNo = `${prefix}-${seqPadded}-${suffix}`;
-    const newId = tokenNo.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const bookedByName = userProfile?.displayName || userProfile?.name || "Admin Desk";
-
-    const targetDispObj = dispensaries.find((d) => d.name === selectedDispensary);
-
-    const payload: Omit<AppointmentRecord, "id"> = {
-      tokenNo,
-      referenceNo: tokenNo,
-      ipName: ipName.trim(),
-      ipNumber: ipNumber.trim() || "N/A",
-      phone: phone.trim(),
-      age: age.trim() || "N/A",
-      gender,
-      dispensaryName: selectedDispensary,
-      dispensaryId: targetDispObj?.id || "",
-      district: targetDispObj?.district || targetDispObj?.city || "",
-      location: targetDispObj?.address || targetDispObj?.location || "",
-      date: appointmentDate,
-      timeSlot,
-      department: "General Medicine / Primary Care OPD",
-      purpose,
-      chiefComplaint: purpose,
-      notes: notes.trim(),
-      status: "scheduled",
-      bookedByEmail: user?.email || "admin@ekms.in",
-      bookedByName,
-      bookedAt: new Date().toLocaleString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true,
-      }),
-      createdAt: Date.now(),
-    };
-
-    try {
-      await setDoc(doc(bookingDb, "dispensary_appointments", newId), payload);
-      try {
-        await setDoc(doc(db, "dispensary_appointments", newId), payload, { merge: true });
-      } catch (e) {}
-
-      logUserActivity(user?.email, {
-        desc: `Admin scheduled appointment ${tokenNo} for ${ipName} at ${selectedDispensary}`,
-        type: "add",
-      });
-
-      toast.success(`Appointment Confirmed! Token: ${tokenNo}`);
-      setBookingModalOpen(false);
-    } catch (err: any) {
-      toast.error("Failed to schedule appointment.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-
-
-  // Cancel Appointment
-  const handleCancelAppointment = async (app: AppointmentRecord) => {
-    const confirmed = await showConfirm({
-      title: `Cancel Appointment ${app.tokenNo}?`,
-      message: `Are you sure you want to cancel the scheduled appointment for ${app.ipName}?`,
-      isDestructive: true,
-      confirmText: "Yes, Cancel Appointment",
-    });
-    if (!confirmed) return;
+  // Cancel Appointment Confirmation Handler
+  const handleConfirmCancel = async (reason: string) => {
+    if (!cancelModalApp) return;
+    setCancelling(true);
+    const finalReason = reason.trim() || "Cancelled by staff/beneficiary request";
 
     try {
       await setDoc(
-        doc(bookingDb, "dispensary_appointments", app.id),
-        { status: "cancelled", cancellationReason: "Cancelled by admin" },
+        doc(bookingDb, "dispensary_appointments", cancelModalApp.id),
+        { status: "cancelled", cancellationReason: finalReason },
         { merge: true }
       );
-      toast.info(`Appointment ${app.tokenNo} cancelled.`);
+      toast.info(`Appointment ${cancelModalApp.tokenNo} cancelled.`);
       logUserActivity(user?.email, {
-        desc: `Admin cancelled appointment ${app.tokenNo} for ${app.ipName}`,
+        desc: `Admin cancelled appointment ${cancelModalApp.tokenNo} for ${cancelModalApp.ipName}. Reason: ${finalReason}`,
         type: "edit",
       });
+      setCancelModalApp(null);
     } catch (e: any) {
       toast.error("Failed to cancel appointment.");
+    } finally {
+      setCancelling(false);
     }
   };
 
   // Helper to ensure an appointment is completely purged from all databases
   const deleteAppointmentFromAllDatabases = async (app: AppointmentRecord) => {
+    // 0. Instantly notify Triage tab and local EKMS state with 0 ms latency
+    try {
+      const delPayload = {
+        tokenNo: app.tokenNo,
+        referenceNo: app.referenceNo,
+        tokens: [app.tokenNo, app.referenceNo].filter(Boolean),
+        id: app.id,
+        ids: [app.id].filter(Boolean),
+        timestamp: Date.now(),
+      };
+      localStorage.setItem("ekms_deleted_appointment", JSON.stringify(delPayload));
+      if (typeof window !== "undefined" && typeof (window as any).BroadcastChannel !== "undefined") {
+        const channel = new BroadcastChannel("ekms_triage_sync_v1");
+        channel.postMessage({ type: "APPOINTMENT_DELETED", payload: delPayload });
+      }
+    } catch (_) {}
+
+    setAppointments((prev) =>
+      prev.filter((a) => a.id !== app.id && (!app.tokenNo || a.tokenNo !== app.tokenNo))
+    );
+
     const promises: Promise<any>[] = [];
 
-    // 1. Delete from bookingDb by ID
     if (app.id) {
       promises.push(deleteDoc(doc(bookingDb, "dispensary_appointments", app.id)).catch(() => {}));
-    }
-
-    // 2. Delete from default db by ID if exists
-    if (app.id) {
       promises.push(deleteDoc(doc(db, "dispensary_appointments", app.id)).catch(() => {}));
       promises.push(deleteDoc(doc(db, "appointments", app.id)).catch(() => {}));
       promises.push(deleteDoc(doc(bookingDb, "appointments", app.id)).catch(() => {}));
     }
 
-    // 3. Query and delete any matching records by tokenNo or referenceNo in both bookingDb & db
     const identifiers = [app.tokenNo, app.referenceNo, app.id].filter(Boolean) as string[];
     for (const ident of identifiers) {
-      // bookingDb dispensary_appointments
       promises.push(
         getDocs(query(collection(bookingDb, "dispensary_appointments"), where("tokenNo", "==", ident)))
           .then((snap) => Promise.all(snap.docs.map((d) => deleteDoc(d.ref).catch(() => {}))))
@@ -502,8 +418,6 @@ export default function AdminManageAppointmentPage() {
           .then((snap) => Promise.all(snap.docs.map((d) => deleteDoc(d.ref).catch(() => {}))))
           .catch(() => {})
       );
-
-      // db dispensary_appointments
       promises.push(
         getDocs(query(collection(db, "dispensary_appointments"), where("tokenNo", "==", ident)))
           .then((snap) => Promise.all(snap.docs.map((d) => deleteDoc(d.ref).catch(() => {}))))
@@ -516,10 +430,19 @@ export default function AdminManageAppointmentPage() {
       );
     }
 
+    // Delete from Triage database via API
+    promises.push(
+      deleteAppointmentFromTriageApi({
+        id: app.id,
+        tokenNo: app.tokenNo,
+        referenceNo: app.referenceNo,
+      }).catch((e) => console.warn("Triage API appointment delete notice:", e))
+    );
+
     await Promise.all(promises);
   };
 
-  // Delete Single Appointment (Permanent from all databases)
+  // Delete Single Appointment
   const handleDeleteAppointment = async (app: AppointmentRecord) => {
     const confirmed = await showConfirm({
       title: `Permanently Delete ${app.tokenNo}?`,
@@ -548,10 +471,10 @@ export default function AdminManageAppointmentPage() {
 
   // Selection handlers
   const handleToggleSelectAll = () => {
-    if (selectedIds.size === filteredAppointments.length && filteredAppointments.length > 0) {
+    if (selectedIds.size === paginatedAppointments.length && paginatedAppointments.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredAppointments.map((a) => a.id)));
+      setSelectedIds(new Set(paginatedAppointments.map((a) => a.id)));
     }
   };
 
@@ -567,7 +490,7 @@ export default function AdminManageAppointmentPage() {
     });
   };
 
-  // Bulk Delete Selected Appointments (Permanent from all databases)
+  // Bulk Delete Selected Appointments
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
@@ -583,7 +506,32 @@ export default function AdminManageAppointmentPage() {
     setBulkDeleting(true);
     try {
       const appsToDelete = appointments.filter((a) => selectedIds.has(a.id));
+      const tokens = appsToDelete.map((a) => a.tokenNo).filter(Boolean);
+      const ids = appsToDelete.map((a) => a.id).filter(Boolean);
+
+      try {
+        const bulkPayload = {
+          tokens,
+          ids,
+          timestamp: Date.now(),
+        };
+        localStorage.setItem("ekms_deleted_appointment", JSON.stringify(bulkPayload));
+        if (typeof window !== "undefined" && typeof (window as any).BroadcastChannel !== "undefined") {
+          const channel = new BroadcastChannel("ekms_triage_sync_v1");
+          channel.postMessage({ type: "APPOINTMENT_DELETED", payload: bulkPayload });
+        }
+      } catch (_) {}
+
+      // Immediately filter local state
+      setAppointments((prev) => prev.filter((a) => !selectedIds.has(a.id)));
+
       await Promise.all(appsToDelete.map((app) => deleteAppointmentFromAllDatabases(app)));
+
+      // Purge in bulk from Triage database via API
+      await deleteAppointmentFromTriageApi({
+        tokens: appsToDelete.map((a) => a.tokenNo).filter(Boolean),
+        ids: appsToDelete.map((a) => a.id).filter(Boolean),
+      }).catch((e) => console.warn("Triage bulk delete notice:", e));
 
       toast.success(`Successfully deleted ${count} appointment(s) from all databases.`);
       logUserActivity(user?.email, {
@@ -599,76 +547,56 @@ export default function AdminManageAppointmentPage() {
     }
   };
 
-  // Export to Excel
-  const handleExportExcel = () => {
-    if (filteredAppointments.length === 0) {
-      toast.error("No appointments to export.");
-      return;
-    }
-
-    const dataToExport = filteredAppointments.map((a) => ({
-      "Token No": a.tokenNo,
-      "Patient Name": a.ipName,
-      "IP / ESIC Number": a.ipNumber,
-      "Phone": a.phone,
-      "Age": a.age || "N/A",
-      "Gender": a.gender || "Male",
-      "Dispensary": a.dispensaryName,
-      "District": a.district || "N/A",
-      "Date": a.date,
-      "Time Slot": a.timeSlot,
-      "Chief Complaint": a.purpose,
-      "Status": a.status.toUpperCase(),
-      "Booked By": a.bookedByName,
-      "Booked At": a.bookedAt || "N/A",
-      "Visited At": a.visitedAt ? new Date(a.visitedAt).toLocaleString() : "N/A",
-      "Visited By": a.visitedBy || "N/A",
-      "Doctor Remarks": a.visitedNotes || "N/A",
-    }));
-
-    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Appointments");
-    XLSX.writeFile(workbook, `ESIS_Appointments_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    toast.success("Appointments exported to Excel!");
-  };
-
-  // Copy helper
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    toast.success(`Copied "${text}"`);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
-      {/* 1. Header with Filters & Actions */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pt-1">
+      {/* 1. Header & Filters Row */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-1">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Manage Dispensary Appointments</h1>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Date Picker */}
-          <div className="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 shadow-2xs">
-            <Calendar className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+          {/* Date Filter */}
+          <div className="inline-flex items-center p-1 bg-slate-100 rounded-xl text-xs font-bold gap-1 shadow-2xs">
+            <button
+              onClick={() => setDateFilter("")}
+              className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                !dateFilter ? "bg-white text-teal-700 shadow-2xs" : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All
+            </button>
+            <button
+              onClick={() => setDateFilter("today")}
+              className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                dateFilter === "today" ? "bg-white text-teal-700 shadow-2xs" : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Today
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 px-2.5 py-1 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 shadow-2xs">
+            <Calendar className="w-3.5 h-3.5 text-teal-600" />
             <input
               type="date"
-              value={dateFilter === "today" ? new Date().toISOString().slice(0, 10) : dateFilter}
+              value={dateFilter === "today" ? "" : dateFilter}
               onChange={(e) => setDateFilter(e.target.value)}
-              className="bg-transparent outline-none cursor-pointer text-xs"
+              className="bg-transparent text-xs text-slate-700 outline-none cursor-pointer"
+              title="Pick specific date"
             />
-            {dateFilter && (
-              <button
-                onClick={() => setDateFilter("")}
-                className="text-[10px] font-bold text-slate-400 hover:text-slate-700 ml-1 px-1 py-0.5 rounded bg-slate-100"
-                title="Show all dates"
-              >
-                All
-              </button>
-            )}
           </div>
+
+          {/* Doctor Availability Management Button */}
+          <button
+            type="button"
+            onClick={() => setDoctorAvailabilityOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-teal-50 border border-teal-200 text-teal-800 hover:text-teal-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer active:scale-95 group"
+            title="Set doctor availability & leaves for all platform doctors"
+          >
+            <CalendarCheck className="w-3.5 h-3.5 text-teal-600 group-hover:scale-110 transition-transform" />
+            <span>Doctor Availability</span>
+          </button>
 
           {/* Dispensary Filter */}
           <select
@@ -703,183 +631,179 @@ export default function AdminManageAppointmentPage() {
               </option>
             ))}
           </select>
-
-          <button
-            onClick={handleExportExcel}
-            className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer shadow-2xs"
-            title="Export to Excel"
-          >
-            <Download className="w-3.5 h-3.5 text-slate-500" />
-            <span>Export</span>
-          </button>
-
-          <button
-            onClick={handleOpenBooking}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors shrink-0 cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Schedule Appointment</span>
-          </button>
         </div>
       </div>
 
       {/* 2. Top Metrics (Clickable Filters) */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 select-none">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3 select-none">
+        {/* Card 1: Total Bookings */}
         <div
           onClick={() => setStatusFilter("all")}
-          className={`bg-white border rounded-2xl p-4 transition-all cursor-pointer flex items-center justify-between ${
+          className={`bg-white border rounded-2xl p-3 sm:p-3.5 transition-all cursor-pointer flex items-center justify-between ${
             statusFilter === "all"
-              ? "border-teal-500 ring-2 ring-teal-500 shadow-md bg-teal-50/10"
+              ? "border-blue-500 ring-2 ring-blue-500 shadow-md bg-blue-50/10"
               : "border-slate-200/80 shadow-2xs hover:border-slate-300"
           }`}
           title="Filter all appointments"
         >
-          <div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total Bookings</div>
-            <div className="text-2xl font-black text-slate-900 mt-0.5">{metrics.total}</div>
+          <div className="min-w-0 pr-1">
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Total Bookings</div>
+            <div className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{metrics.total}</div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
-            <Calendar className="w-5 h-5" />
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+            <Calendar className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
+        {/* Card 2: Pending with Receptionist */}
         <div
-          onClick={() => setStatusFilter("scheduled")}
-          className={`bg-white border rounded-2xl p-4 transition-all cursor-pointer flex items-center justify-between ${
-            statusFilter === "scheduled"
-              ? "border-blue-500 ring-2 ring-blue-500 shadow-md bg-blue-50/10"
+          onClick={() => setStatusFilter(statusFilter === "reception" ? "all" : "reception")}
+          className={`bg-white border rounded-2xl p-3 sm:p-3.5 transition-all cursor-pointer flex items-center justify-between ${
+            statusFilter === "reception"
+              ? "border-sky-500 ring-2 ring-sky-500 shadow-md bg-sky-50/10"
               : "border-slate-200/80 shadow-2xs hover:border-slate-300"
           }`}
-          title="Filter scheduled & queue"
+          title="Filter: Pending with Receptionist (Scheduled / Arrival Queue)"
         >
-          <div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Scheduled / Queue</div>
-            <div className="text-2xl font-black text-slate-900 mt-0.5">{metrics.scheduled}</div>
+          <div className="min-w-0 pr-1">
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Pending with Receptionist</div>
+            <div className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{metrics.pendingReception}</div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
-            <Clock className="w-5 h-5" />
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-sky-600 shrink-0">
+            <UserCheck className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
+        {/* Card 3: Pending with Doctor */}
         <div
-          onClick={() => setStatusFilter("visited")}
-          className={`bg-white border rounded-2xl p-4 transition-all cursor-pointer flex items-center justify-between ${
-            statusFilter === "visited"
+          onClick={() => setStatusFilter(statusFilter === "doctor" ? "all" : "doctor")}
+          className={`bg-white border rounded-2xl p-3 sm:p-3.5 transition-all cursor-pointer flex items-center justify-between ${
+            statusFilter === "doctor"
+              ? "border-teal-500 ring-2 ring-teal-500 shadow-md bg-teal-50/10"
+              : "border-slate-200/80 shadow-2xs hover:border-slate-300"
+          }`}
+          title="Filter: Pending with Doctor (Consultation Queue)"
+        >
+          <div className="min-w-0 pr-1">
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Pending with Doctor</div>
+            <div className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{metrics.pendingDoctor}</div>
+          </div>
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center text-teal-600 shrink-0">
+            <Stethoscope className="w-4 h-4 sm:w-5 sm:h-5" />
+          </div>
+        </div>
+
+        {/* Card 4: Pending with Pharmacist */}
+        <div
+          onClick={() => setStatusFilter(statusFilter === "pharmacy" ? "all" : "pharmacy")}
+          className={`bg-white border rounded-2xl p-3 sm:p-3.5 transition-all cursor-pointer flex items-center justify-between ${
+            statusFilter === "pharmacy"
+              ? "border-amber-500 ring-2 ring-amber-500 shadow-md bg-amber-50/10"
+              : "border-slate-200/80 shadow-2xs hover:border-slate-300"
+          }`}
+          title="Filter: Pending with Pharmacist (Dispensation Queue)"
+        >
+          <div className="min-w-0 pr-1">
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Pending with Pharmacist</div>
+            <div className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{metrics.pendingPharmacy}</div>
+          </div>
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600 shrink-0">
+            <Pill className="w-4 h-4 sm:w-5 sm:h-5" />
+          </div>
+        </div>
+
+        {/* Card 5: Completed Visits */}
+        <div
+          onClick={() => setStatusFilter(statusFilter === "completed" ? "all" : "completed")}
+          className={`bg-white border rounded-2xl p-3 sm:p-3.5 transition-all cursor-pointer flex items-center justify-between ${
+            statusFilter === "completed"
               ? "border-emerald-500 ring-2 ring-emerald-500 shadow-md bg-emerald-50/10"
               : "border-slate-200/80 shadow-2xs hover:border-slate-300"
           }`}
-          title="Filter completed visits"
+          title="Filter: Completed visits"
         >
-          <div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Completed Visits</div>
-            <div className="text-2xl font-black text-slate-900 mt-0.5">{metrics.visited}</div>
+          <div className="min-w-0 pr-1">
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Completed Visits</div>
+            <div className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{metrics.completed}</div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center text-teal-600">
-            <CheckCircle2 className="w-5 h-5" />
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600 shrink-0">
+            <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
+        {/* Card 6: Cancelled / No-Show */}
         <div
-          onClick={() => setStatusFilter("cancelled")}
-          className={`bg-white border rounded-2xl p-4 transition-all cursor-pointer flex items-center justify-between ${
+          onClick={() => setStatusFilter(statusFilter === "cancelled" ? "all" : "cancelled")}
+          className={`bg-white border rounded-2xl p-3 sm:p-3.5 transition-all cursor-pointer flex items-center justify-between ${
             statusFilter === "cancelled"
               ? "border-rose-500 ring-2 ring-rose-500 shadow-md bg-rose-50/10"
               : "border-slate-200/80 shadow-2xs hover:border-slate-300"
           }`}
-          title="Filter cancelled appointments"
+          title="Filter: Cancelled / No-Show"
         >
-          <div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Cancelled</div>
-            <div className="text-2xl font-black text-slate-900 mt-0.5">{metrics.cancelled}</div>
+          <div className="min-w-0 pr-1">
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Cancelled / No-Show</div>
+            <div className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{metrics.cancelled}</div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-500">
-            <XCircle className="w-5 h-5" />
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+            <XCircle className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
       </div>
 
-      {/* 3. Search Bar */}
-      <div className="bg-white border border-slate-200/80 rounded-2xl p-3 shadow-2xs">
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+      {/* 3. Search Bar & Bulk Actions */}
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="relative flex-1 w-full">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search by Token, Patient Name, Phone, IP Number, Dispensary, or Complaint..."
-            className="w-full pl-10 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500 font-medium"
+            placeholder="Search by Token, IP Name, Phone, IP Number, Dispensary, or Complaint..."
+            className="w-full pl-10 pr-8 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 shadow-2xs transition"
           />
           {searchTerm && (
             <button
+              type="button"
               onClick={() => setSearchTerm("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
-      </div>
 
-      {/* 3.5. Bulk Selection Action Bar */}
-      {selectedIds.size > 0 && (
-        <div className="bg-slate-900 text-white rounded-2xl p-3 px-4 shadow-xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-200">
-          <div className="flex items-center gap-3">
-            <span className="bg-teal-500/20 text-teal-300 border border-teal-500/40 text-xs font-bold px-2.5 py-1 rounded-lg">
-              {selectedIds.size} of {filteredAppointments.length} Selected
+        {/* Bulk Selection Actions */}
+        {selectedIds.size > 0 && (
+          <div className="flex items-center gap-2 animate-in fade-in shrink-0">
+            <span className="text-xs font-bold text-teal-800 bg-teal-50 px-2.5 py-1.5 rounded-lg border border-teal-200">
+              {selectedIds.size} Selected
             </span>
             <button
-              type="button"
-              onClick={handleToggleSelectAll}
-              className="text-xs text-slate-300 hover:text-white underline cursor-pointer"
-            >
-              {selectedIds.size === filteredAppointments.length ? "Deselect All" : "Select All"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(new Set())}
-              className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
-            >
-              Clear Selection
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
               onClick={handleBulkDelete}
               disabled={bulkDeleting}
-              className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer"
+              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
-              <Trash2 className="w-4 h-4" />
-              <span>{bulkDeleting ? "Deleting from All Databases..." : `Delete Selected (${selectedIds.size})`}</span>
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>{bulkDeleting ? "Deleting..." : "Delete Selected"}</span>
             </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* 4. Table */}
-      <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-2xs">
+      {/* 4. Table Records */}
+      <div className="bg-white border border-slate-200/80 rounded-2xl shadow-2xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider font-extrabold text-[10px]">
+              <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
                 <th className="py-3 px-3 w-10 text-center">
                   <input
                     type="checkbox"
-                    checked={
-                      filteredAppointments.length > 0 &&
-                      selectedIds.size === filteredAppointments.length
-                    }
-                    ref={(el) => {
-                      if (el) {
-                        el.indeterminate =
-                          selectedIds.size > 0 &&
-                          selectedIds.size < filteredAppointments.length;
-                      }
-                    }}
+                    checked={selectedIds.size === paginatedAppointments.length && paginatedAppointments.length > 0}
                     onChange={handleToggleSelectAll}
                     className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 cursor-pointer"
-                    title="Select all"
+                    title="Select all on this page"
                   />
                 </th>
                 <th className="py-3 px-4">Token / Ref</th>
@@ -905,7 +829,7 @@ export default function AdminManageAppointmentPage() {
                   </td>
                 </tr>
               ) : (
-                filteredAppointments.map((app) => {
+                paginatedAppointments.map((app) => {
                   const isVisited = app.status === "visited" || app.status === "completed";
                   const isCancelled = app.status === "cancelled";
 
@@ -924,23 +848,54 @@ export default function AdminManageAppointmentPage() {
                           className="w-4 h-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 cursor-pointer"
                         />
                       </td>
+
+                      {/* Clean Plain Text Token (No grey button box, no copy icon) */}
                       <td className="py-3.5 px-4 font-mono font-bold">
-                        <span
-                          onClick={() => handleCopy(app.tokenNo, app.id)}
-                          className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-teal-800 rounded text-[11px] inline-flex items-center gap-1 cursor-pointer"
-                          title="Click to copy"
-                        >
-                          <span>{app.tokenNo}</span>
-                          {copiedId === app.id ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3 text-slate-400" />}
+                        <span className="text-xs text-slate-800 select-all font-mono font-bold">
+                          {app.tokenNo}
                         </span>
                       </td>
 
-                      <td className="py-3.5 px-4">
-                        <div className="font-extrabold text-slate-900">{app.ipName}</div>
-                        <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
-                          <span>IP: <strong className="font-mono text-blue-600">{app.ipNumber}</strong></span>
-                          <span>•</span>
-                          <span>{app.phone}</span>
+                      {/* 3-Row Stacked Clean Layout: 1. Name, 2. Phone, 3. IP Number */}
+                      <td className="py-3.5 px-4 min-w-[200px]">
+                        {/* 1. Name */}
+                        <div className="font-extrabold text-slate-900 text-sm leading-snug">
+                          {app.ipName}
+                          {app.age && (
+                            <span className="text-xs font-normal text-slate-500 ml-1.5">
+                              ({app.age} yrs{app.gender ? `, ${app.gender}` : ""})
+                            </span>
+                          )}
+                        </div>
+
+                        {/* 2. Phone Number below Name */}
+                        <div className="text-xs text-slate-700 flex items-center gap-1.5 mt-1 font-medium">
+                          <Phone className="w-3 h-3 text-slate-400 shrink-0" />
+                          {app.phone ? (
+                            <div className="inline-flex items-center gap-1 font-mono text-slate-800">
+                              <span>{isDispensaryStaff ? maskDispensaryMobile(app.phone) : app.phone}</span>
+                              <button
+                                type="button"
+                                onClick={(e) => handleCopyPhone(e, app.phone, app.id)}
+                                className="p-0.5 hover:bg-slate-200/80 rounded text-slate-400 hover:text-teal-700 transition cursor-pointer"
+                                title="Copy phone number"
+                              >
+                                {copiedPhoneId === app.id ? (
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 font-normal">N/A</span>
+                          )}
+                        </div>
+
+                        {/* 3. IP Number below Phone Number */}
+                        <div className="text-[11px] text-slate-500 font-mono mt-0.5 flex items-center gap-1">
+                          <span className="text-slate-500 font-sans font-medium">IP:</span>
+                          <strong className="font-mono text-blue-600 font-semibold">{isDispensaryStaff ? maskDispensaryIpNumber(app.ipNumber) : (app.ipNumber || "N/A")}</strong>
                         </div>
                       </td>
 
@@ -954,16 +909,78 @@ export default function AdminManageAppointmentPage() {
 
                       <td className="py-3.5 px-4">
                         <div className="font-semibold text-slate-800">{app.date}</div>
-                        <div className="text-[10px] text-slate-400">{app.timeSlot}</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">{app.timeSlot}</div>
                       </td>
 
                       <td className="py-3.5 px-4">
-                        <div className="max-w-xs truncate font-medium text-slate-700" title={app.purpose}>
-                          {app.purpose}
+                        <div className="max-w-xs font-bold text-slate-800" title={app.purpose}>
+                          {app.purpose || app.chiefComplaint || "General Health Check"}
+                        </div>
+
+                        {/* Audit Lines: Clean Plain Text (No Boxes) */}
+                        <div className="mt-1 text-[11px] text-slate-700 space-y-0.5">
+                          {/* Receptionist */}
+                          {(app.receptionCheckedInBy || app.visitedBy) && (
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="font-semibold text-slate-800">
+                                Reception by {getStaffName(app.receptionCheckedInBy || app.visitedBy)}
+                              </span>
+                              {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null)) && (
+                                <span className="font-normal text-slate-500">
+                                  , {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null))}
+                                </span>
+                              )}
+                              {(app.visitedNotes || (app as any).receptionNotes) && (app.visitedNotes || (app as any).receptionNotes).trim() && (
+                                <span className="text-slate-500 font-normal pl-0.5">• Note: {(app.visitedNotes || (app as any).receptionNotes).trim()}</span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Doctor */}
+                          {(app.doctorName || app.doctorNotes) && (
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="font-semibold text-slate-800">
+                                Prescribed by {getDoctorName(app.doctorName)}
+                              </span>
+                              {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null)) && (
+                                <span className="font-normal text-slate-500">
+                                  , {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null))}
+                                </span>
+                              )}
+                              {app.doctorNotes && app.doctorNotes.trim() && (
+                                <span className="text-slate-500 font-normal pl-0.5">• Note: {app.doctorNotes}</span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Pharmacist */}
+                          {app.dispensedBy && (
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="font-semibold text-slate-800">
+                                Dispensed by {getStaffName(app.dispensedBy)}
+                              </span>
+                              {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null)) && (
+                                <span className="font-normal text-slate-500">
+                                  , {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null))}
+                                </span>
+                              )}
+                              {app.dispensationNotes && app.dispensationNotes.trim() && (
+                                <span className="text-slate-500 font-normal pl-0.5">• Note: {app.dispensationNotes}</span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Cancel Reason */}
+                          {isCancelled && (
+                            <div className="flex items-center gap-1 text-rose-600 font-medium pt-0.5">
+                              <AlertCircle className="w-3 h-3 text-rose-500 shrink-0" />
+                              <span>Reason: {formatCancellationReason(app.cancellationReason) || "Cancelled by staff/beneficiary request"}</span>
+                            </div>
+                          )}
                         </div>
                       </td>
 
-                      <td className="py-3.5 px-4">
+                      <td className="py-3.5 px-4 whitespace-nowrap">
                         {app.status === "completed" ? (
                           <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3 text-emerald-600" />
@@ -971,7 +988,6 @@ export default function AdminManageAppointmentPage() {
                           </span>
                         ) : app.status === "pharmacy_queue" ? (
                           <span className="px-2.5 py-0.5 bg-purple-50 text-purple-800 border border-purple-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1">
-                            <Pill className="w-3 h-3 text-purple-600" />
                             <span>With Pharmacist</span>
                           </span>
                         ) : app.status === "with_doctor" || app.status === "visited" ? (
@@ -999,16 +1015,20 @@ export default function AdminManageAppointmentPage() {
                               setActiveAppointment(app as any);
                               setDetailsModalOpen(true);
                             }}
-                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-[11px] transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
-                            title="View Clinical Summary"
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs whitespace-nowrap border ${
+                              isNonClinicalAppointment(app)
+                                ? "text-orange-700 hover:bg-orange-50 border-orange-300 bg-white"
+                                : "text-slate-700 bg-slate-100 hover:bg-slate-200 border-transparent"
+                            }`}
+                            title={isNonClinicalAppointment(app) ? "View Non-Clinical Summary" : "View Clinical Summary"}
                           >
-                            <FileText className="w-3 h-3 text-slate-500" />
-                            <span>Clinical summary</span>
+                            <FileText className={`w-3 h-3 ${isNonClinicalAppointment(app) ? "text-orange-600" : "text-slate-500"}`} />
+                            <span>{isNonClinicalAppointment(app) ? "Non-Clinical Summary" : "Clinical summary"}</span>
                           </button>
 
                           {!isVisited && !isCancelled && (
                             <button
-                              onClick={() => handleCancelAppointment(app)}
+                              onClick={() => setCancelModalApp(app)}
                               className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold rounded-lg text-[11px] transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
                               title="Cancel appointment"
                             >
@@ -1033,9 +1053,64 @@ export default function AdminManageAppointmentPage() {
             </tbody>
           </table>
         </div>
+
+        {/* 5. Pagination Bar (after 30 items) */}
+        {filteredAppointments.length > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 bg-slate-50/70 border-t border-slate-200 text-xs">
+            <div className="text-slate-500 font-medium">
+              Showing <strong className="text-slate-800 font-bold">{(currentPage - 1) * ITEMS_PER_PAGE + 1}</strong> to{" "}
+              <strong className="text-slate-800 font-bold">
+                {Math.min(currentPage * ITEMS_PER_PAGE, filteredAppointments.length)}
+              </strong>{" "}
+              of <strong className="text-slate-800 font-bold">{filteredAppointments.length}</strong> appointments
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition"
+              >
+                Previous
+              </button>
+
+              {Array.from({ length: totalPages }, (_, i) => i + 1)
+                .filter((p) => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 2)
+                .map((pageNum, idx, arr) => {
+                  const showEllipsis = idx > 0 && pageNum - arr[idx - 1] > 1;
+                  return (
+                    <React.Fragment key={pageNum}>
+                      {showEllipsis && <span className="px-1 text-slate-400">...</span>}
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage(pageNum)}
+                        className={`w-7 h-7 rounded-lg font-bold transition flex items-center justify-center cursor-pointer shadow-2xs ${
+                          currentPage === pageNum
+                            ? "bg-teal-600 text-white shadow-xs"
+                            : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
+
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
+                className="px-3 py-1 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs transition"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* --- CLINICAL SUMMARY MODAL (MATCHING TRIAGE FORMAT) --- */}
+      {/* Clinical Summary Modal */}
       <ClinicalSummaryModal
         isOpen={detailsModalOpen}
         onClose={() => {
@@ -1045,211 +1120,21 @@ export default function AdminManageAppointmentPage() {
         appointment={activeAppointment as any}
       />
 
-      {/* --- BOOK APPOINTMENT MODAL --- */}
-      {bookingModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in overflow-y-auto">
-          <div className="bg-white max-w-xl w-full rounded-3xl shadow-2xl p-6 border border-slate-100 space-y-4 my-8 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2 text-teal-800 font-extrabold text-base">
-                <CalendarClock className="w-5 h-5 text-teal-600" />
-                <span>Admin Schedule OPD Appointment</span>
-              </div>
-              <button
-                onClick={() => setBookingModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* Cancel Appointment Modal with optional reason */}
+      <CancelAppointmentModal
+        isOpen={Boolean(cancelModalApp)}
+        onClose={() => setCancelModalApp(null)}
+        onConfirm={handleConfirmCancel}
+        tokenNo={cancelModalApp?.tokenNo || ""}
+        patientName={cancelModalApp?.ipName || ""}
+        loading={cancelling}
+      />
 
-            <form onSubmit={handleCreateAppointment} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Patient / IP Full Name <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={ipName}
-                    onChange={(e) => setIpName(e.target.value)}
-                    placeholder="e.g. Ramesh Kalita"
-                    required
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    IP / ESIC Insurance Number
-                  </label>
-                  <input
-                    type="text"
-                    value={ipNumber}
-                    onChange={(e) => setIpNumber(e.target.value)}
-                    placeholder="e.g. 1312345678"
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-blue-600 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Phone / Mobile <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="tel"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="e.g. 9876543210"
-                    required
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Age
-                  </label>
-                  <input
-                    type="number"
-                    value={age}
-                    onChange={(e) => setAge(e.target.value)}
-                    placeholder="e.g. 38"
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Gender
-                  </label>
-                  <select
-                    value={gender}
-                    onChange={(e) => setGender(e.target.value)}
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500 cursor-pointer"
-                  >
-                    <option value="Male">Male</option>
-                    <option value="Female">Female</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Select ESIS Dispensary <span className="text-rose-500">*</span>
-                </label>
-                <select
-                  value={selectedDispensary}
-                  onChange={(e) => setSelectedDispensary(e.target.value)}
-                  required
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-teal-900 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500 cursor-pointer"
-                >
-                  <option value="">-- Choose Target Dispensary --</option>
-                  {dispensaries.map((d) => (
-                    <option key={d.id} value={d.name}>
-                      {d.name} {d.district ? `(${d.district})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Appointment Date <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="date"
-                    value={appointmentDate}
-                    onChange={(e) => setAppointmentDate(e.target.value)}
-                    required
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Time Slot
-                  </label>
-                  <select
-                    value={timeSlot}
-                    onChange={(e) => setTimeSlot(e.target.value)}
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500 cursor-pointer"
-                  >
-                    {OPD_TIME_SLOTS.map((slot) => (
-                      <option key={slot} value={slot}>
-                        {slot}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Chief Complaint
-                </label>
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {COMMON_CHIEF_COMPLAINTS.map((comp) => (
-                    <button
-                      key={comp}
-                      type="button"
-                      onClick={() => setPurpose(comp)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer ${
-                        purpose === comp
-                          ? "bg-teal-700 text-white shadow-2xs"
-                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                      }`}
-                    >
-                      {comp}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  type="text"
-                  value={purpose}
-                  onChange={(e) => setPurpose(e.target.value)}
-                  placeholder="Enter complaint / symptoms..."
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Notes / Clinical Observation
-                </label>
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Additional notes for dispensary doctor..."
-                  rows={2}
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setBookingModalOpen(false)}
-                  className="px-4 py-2 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-5 py-2 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs flex items-center gap-2 cursor-pointer"
-                >
-                  <CalendarCheck className="w-4 h-4" />
-                  <span>{submitting ? "Booking Token..." : "Confirm & Issue OPD Token"}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* Doctor Availability Management Modal */}
+      <DoctorAvailabilityModal
+        isOpen={doctorAvailabilityOpen}
+        onClose={() => setDoctorAvailabilityOpen(false)}
+      />
     </div>
   );
 }

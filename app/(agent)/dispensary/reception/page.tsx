@@ -9,11 +9,13 @@ import {
   query,
   orderBy,
   limit,
+  where,
+  getDocs,
 } from "firebase/firestore";
 import { bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { AppointmentRecord, isDispensaryMatch, AppointmentVitals } from "@/lib/appointmentTypes";
+import { AppointmentRecord, isDispensaryMatch, AppointmentVitals, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createDispensaryNotification } from "@/lib/notificationService";
 import {
@@ -31,19 +33,26 @@ import {
   ChevronRight,
   Building2,
   Calendar,
+  Lock,
   Copy,
   Check,
   Edit3,
   FileText,
   Thermometer,
   Pill,
+  PackageCheck,
 } from "lucide-react";
 import Link from "next/link";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
+import { useStaffDirectory } from "@/lib/useStaffDirectory";
+import { extractIpNumber } from "@/lib/appointmentTypes";
+import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
 
 export default function ReceptionDeskPage() {
   const { user, userProfile, isAdmin } = useAuth();
   const { toast } = usePopup();
+  const { getStaffName, getDoctorName } = useStaffDirectory();
+  const isStaff = isDispensaryStaffAccount(userProfile) || !isAdmin;
 
   const todayStr = useMemo(() => {
     const d = new Date();
@@ -72,6 +81,13 @@ export default function ReceptionDeskPage() {
     const day = String(d.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   });
+
+  // Sync date filter with mini-bar icons
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("ekms-date-filter-change", { detail: selectedDate }));
+    }
+  }, [selectedDate]);
   const [activeTab, setActiveTab] = useState<"queue" | "checked_in">("queue");
 
   // Check-In Modal State
@@ -109,7 +125,13 @@ export default function ReceptionDeskPage() {
       (snap) => {
         const list: AppointmentRecord[] = [];
         snap.forEach((d) => {
-          list.push({ id: d.id, ...d.data() } as AppointmentRecord);
+          const data = d.data();
+          list.push({
+            id: d.id,
+            ...data,
+            ipNumber: extractIpNumber(data),
+            ipName: data.ipName || data.patientName || "Beneficiary",
+          } as AppointmentRecord);
         });
         setAppointments(list);
         setLoading(false);
@@ -168,10 +190,52 @@ export default function ReceptionDeskPage() {
     );
   }, [currentList, searchTerm]);
 
+  const currentStaffEmail = (user?.email || "").toLowerCase().trim();
+  const currentStaffName = (
+    userProfile?.displayName ||
+    userProfile?.name ||
+    (userProfile as any)?.fullName ||
+    user?.displayName ||
+    ""
+  ).toLowerCase().trim();
+
+  // Helper: check if another receptionist already checked in this booking
+  const isOtherReceptionist = (patient: AppointmentRecord): boolean => {
+    if (isAdmin) return false;
+    const recEmail = (
+      (patient as any).receptionCheckedInByEmail ||
+      (patient as any).receptionByEmail ||
+      (patient as any).visitedByEmail ||
+      ""
+    ).toLowerCase().trim();
+    const recName = (
+      patient.receptionCheckedInBy ||
+      (patient as any).receptionBy ||
+      patient.visitedBy ||
+      ""
+    ).toLowerCase().trim();
+
+    if (!recEmail && !recName) return false;
+
+    if (recEmail && currentStaffEmail) {
+      return recEmail !== currentStaffEmail;
+    }
+    if (recName && currentStaffName) {
+      return !recName.includes(currentStaffName) && !currentStaffName.includes(recName);
+    }
+    return false;
+  };
+
   // Open check-in modal
   const handleOpenCheckIn = (patient: AppointmentRecord) => {
     if (patient.status === "completed") {
       toast.info("This visit has already been completed and finalized. Reception records cannot be edited.");
+      return;
+    }
+    if (isOtherReceptionist(patient)) {
+      toast.warning(
+        `Locked: Checked in by ${patient.receptionCheckedInBy || patient.visitedBy || "another staff member"}. Only that staff member can edit this record.`
+      );
       return;
     }
     setActivePatient(patient);
@@ -179,7 +243,7 @@ export default function ReceptionDeskPage() {
     setCheckInModalOpen(true);
   };
 
-  // Submit check-in -> Send to Doctor Desk
+  // Submit check-in -> Send to Doctor Desk (Clinical) OR Finalize & Complete Visit (Non-Clinical)
   const handleConfirmCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activePatient) return;
@@ -188,36 +252,94 @@ export default function ReceptionDeskPage() {
       setCheckInModalOpen(false);
       return;
     }
+    if (isOtherReceptionist(activePatient)) {
+      toast.error(
+        `Permission denied: Checked in by ${activePatient.receptionCheckedInBy || "another staff member"}. Only that staff member can edit.`
+      );
+      setCheckInModalOpen(false);
+      return;
+    }
     setSubmitting(true);
 
     try {
-      const docRef = doc(bookingDb, "dispensary_appointments", activePatient.id);
-      await updateDoc(docRef, {
-        status: "with_doctor",
-        visitedAt: Date.now(),
-        visitedBy: userProfile?.displayName || userProfile?.name || user?.email || "Receptionist",
+      const isNonClin = isNonClinicalAppointment(activePatient);
+      const now = Date.now();
+      const staffName =
+        userProfile?.displayName?.trim() ||
+        userProfile?.name?.trim() ||
+        (userProfile as any)?.fullName?.trim() ||
+        user?.displayName?.trim() ||
+        "Receptionist";
+      const staffEmail = (user?.email || "").toLowerCase().trim();
+
+      const updates: any = {
+        visitedAt: now,
+        visitedBy: staffName,
+        visitedByEmail: staffEmail,
+        receptionBy: staffName,
+        receptionByEmail: staffEmail,
         visitedNotes: receptionNotes.trim(),
-        receptionCheckedInAt: Date.now(),
-        receptionCheckedInBy: userProfile?.displayName || userProfile?.name || user?.email || "Receptionist",
-        updatedAt: Date.now(),
-      });
+        receptionNotes: receptionNotes.trim(),
+        receptionCheckedInAt: now,
+        receptionCheckedInBy: staffName,
+        receptionCheckedInByEmail: staffEmail,
+        updatedAt: now,
+      };
 
-      // Real-time notification delivered to the Doctor of that dispensary
-      createDispensaryNotification({
-        targetDispensary: activePatient.dispensaryName || staffDispensary,
-        targetDispensaryRole: "Doctor",
-        title: "Patient Ready for Consultation",
-        message: `${activePatient.ipName} (${activePatient.tokenNo}) has checked in at Reception and is waiting for clinical consultation.`,
-        link: "/dispensary/doctor",
-        tokenNo: activePatient.tokenNo,
-      }).catch((e) => console.warn("Doctor notification dispatch warning:", e));
+      if (isNonClin) {
+        // NON-CLINICAL BOOKINGS: Handled exclusively by receptionist.
+        // Once checked in, visit is immediately completed and never goes to doctor or pharmacist!
+        updates.status = "completed";
+        updates.completedAt = now;
+        updates.completedBy = staffName;
+      } else {
+        // CLINICAL BOOKINGS: Forward to Doctor consultation queue
+        updates.status = "with_doctor";
+      }
 
-      logUserActivity(user?.email, {
-        desc: `Reception Check-in: ${activePatient.ipName} (Token ${activePatient.tokenNo}) sent to Doctor queue`,
-        type: "edit",
-      });
+      const docRef = doc(bookingDb, "dispensary_appointments", activePatient.id);
+      await updateDoc(docRef, updates);
 
-      toast.success(`Patient Checked In! Forwarded to Doctor consultation queue.`);
+      // Synchronize across duplicate entries or tokens in bookingDb
+      const tIdentifier = activePatient.tokenNo || activePatient.referenceNo;
+      if (tIdentifier) {
+        try {
+          const qB = query(collection(bookingDb, "dispensary_appointments"), where("tokenNo", "==", tIdentifier));
+          const snapB = await getDocs(qB);
+          snapB.forEach(async (d) => {
+            if (d.id !== activePatient.id) {
+              await updateDoc(d.ref, updates).catch(() => {});
+            }
+          });
+        } catch (e) {}
+      }
+
+      if (isNonClin) {
+        logUserActivity(user?.email, {
+          desc: `Reception Check-in & Completed: ${activePatient.ipName} (Token ${activePatient.tokenNo}) - Non-Clinical Visit Finalized at Reception`,
+          type: "edit",
+        });
+
+        toast.success(`Non-Clinical Visit Checked In & Completed at Reception! (Visit finalized)`);
+      } else {
+        // Real-time notification delivered to the Doctor of that dispensary
+        createDispensaryNotification({
+          targetDispensary: activePatient.dispensaryName || staffDispensary,
+          targetDispensaryRole: "Doctor",
+          title: "Patient Ready for Consultation",
+          message: `${activePatient.ipName} (${activePatient.tokenNo}) has checked in at Reception and is waiting for clinical consultation.`,
+          link: "/dispensary/doctor",
+          tokenNo: activePatient.tokenNo,
+        }).catch((e) => console.warn("Doctor notification dispatch warning:", e));
+
+        logUserActivity(user?.email, {
+          desc: `Reception Check-in: ${activePatient.ipName} (Token ${activePatient.tokenNo}) sent to Doctor queue`,
+          type: "edit",
+        });
+
+        toast.success(`Patient Checked In! Forwarded to Doctor consultation queue.`);
+      }
+
       setCheckInModalOpen(false);
       setActivePatient(null);
     } catch (err: any) {
@@ -458,8 +580,21 @@ export default function ReceptionDeskPage() {
                     </span>
                   </div>
 
-                  {/* Beautiful Status Badge (Top-Right) */}
-                  <div className="shrink-0">
+                  {/* Beautiful Clinical summary & Status Badge (Top-Right) */}
+                  <div className="shrink-0 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSummaryApp(app);
+                        setSummaryModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                      title={isNonClinicalAppointment(app) ? "View Non-Clinical Summary" : "View Clinical Summary"}
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-600" />
+                      <span>{isNonClinicalAppointment(app) ? "Non-Clinical summary" : "Clinical summary"}</span>
+                    </button>
+
                     {isCompleted ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-xs font-black uppercase tracking-wider shadow-2xs">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
@@ -489,7 +624,7 @@ export default function ReceptionDeskPage() {
                   </div>
                 </div>
 
-                {/* 2. Body: Patient info, Complaint, Vitals, Action button */}
+                {/* 2. Body: Patient info, Complaint, Audit Trail, Vitals, Action button below */}
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pt-3">
                   <div className="space-y-2 flex-1 min-w-0">
                     {/* Patient Identification Line */}
@@ -501,20 +636,83 @@ export default function ReceptionDeskPage() {
                         </span>
                       )}
                       <span className="text-xs font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded font-semibold">
-                        IP: {app.ipNumber || "N/A"}
+                        IP: {isStaff ? maskDispensaryIpNumber(app.ipNumber) : (app.ipNumber || "N/A")}
                       </span>
                       {app.phone && (
                         <span className="text-xs text-slate-600 flex items-center gap-1 font-medium">
                           <Phone className="w-3 h-3 text-slate-400" />
-                          <span>{app.phone}</span>
+                          <span>{isStaff ? maskDispensaryMobile(app.phone) : app.phone}</span>
                         </span>
                       )}
                     </div>
 
-                    {/* Clinical Context: Chief Complaint (No Dispensary Name) */}
+                    {/* Clinical Context: Chief Complaint */}
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700 font-medium">
                       <Activity className="w-3.5 h-3.5 shrink-0 text-blue-500" />
                       <span>Chief Complaint: <strong className="text-slate-900 font-bold">{app.chiefComplaint || app.purpose || "General OPD"}</strong></span>
+                    </div>
+
+                    {/* Audit Lines: Clean Plain Text (No Boxes) */}
+                    <div className="text-xs text-slate-700 space-y-1 pt-0.5">
+                      {/* Receptionist Audit Line */}
+                      {(app.receptionCheckedInBy || app.visitedBy) && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <UserCheck className="w-3.5 h-3.5 text-blue-600 inline shrink-0" />
+                          <span className="font-semibold text-slate-800">
+                            Reception by {getStaffName(app.receptionCheckedInBy || app.visitedBy)}
+                          </span>
+                          {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null)) && (
+                            <span className="font-normal text-slate-500">
+                              , {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null))}
+                            </span>
+                          )}
+                          {(app.visitedNotes || (app as any).receptionNotes) && (app.visitedNotes || (app as any).receptionNotes).trim() && (
+                            <span className="text-slate-500 font-normal pl-1">
+                              • Note: {(app.visitedNotes || (app as any).receptionNotes).trim()}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Doctor Audit Line */}
+                      {(app.doctorName || app.doctorNotes) && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Stethoscope className="w-3.5 h-3.5 text-indigo-600 inline shrink-0" />
+                          <span className="font-semibold text-slate-800">
+                            Prescribed by {getDoctorName(app.doctorName)}
+                          </span>
+                          {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null)) && (
+                            <span className="font-normal text-slate-500">
+                              , {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null))}
+                            </span>
+                          )}
+                          {app.doctorNotes && app.doctorNotes.trim() && (
+                            <span className="text-slate-500 font-normal pl-1">
+                              • Note: {app.doctorNotes}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Pharmacist Audit Line */}
+                      {app.dispensedBy && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <PackageCheck className="w-3.5 h-3.5 text-teal-600 inline shrink-0" />
+                          <span className="font-semibold text-slate-800">
+                            Dispensed by {getStaffName(app.dispensedBy)}
+                          </span>
+                          {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null)) && (
+                            <span className="font-normal text-slate-500">
+                              , {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null))}
+                            </span>
+                          )}
+                          {app.dispensationNotes && app.dispensationNotes.trim() && (
+                            <span className="text-slate-500 font-normal pl-1">
+                              • Note: {app.dispensationNotes}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {/* Vitals Ribbon */}
@@ -553,29 +751,28 @@ export default function ReceptionDeskPage() {
                     )}
                   </div>
 
-                  {/* 3. Action Area on Right */}
-                  <div className="shrink-0 self-start sm:self-center pt-1 sm:pt-0 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedSummaryApp(app);
-                        setSummaryModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                      title="View Clinical Summary"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-blue-600" />
-                      <span>Clinical summary</span>
-                    </button>
-
+                  {/* 3. Action Area on Right (Below top status row) */}
+                  <div className="shrink-0 self-start sm:self-center pt-1 sm:pt-0">
                     {!isCompleted && (
-                      app.status === "scheduled" ? (
+                      isOtherReceptionist(app) ? (
+                        <div
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl border border-slate-200 select-none shadow-2xs"
+                          title={`Checked in by ${app.receptionCheckedInBy || app.visitedBy || "another receptionist"}. Only that staff member can edit.`}
+                        >
+                          <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span>Checked in by {app.receptionCheckedInBy || app.visitedBy || "Reception"}</span>
+                        </div>
+                      ) : app.status === "scheduled" ? (
                         <button
                           onClick={() => handleOpenCheckIn(app)}
-                          className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer active:scale-95"
+                          className={`flex items-center gap-1.5 px-4 py-2 font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer active:scale-95 ${
+                            isNonClinicalAppointment(app)
+                              ? "bg-amber-600 hover:bg-amber-700 text-white"
+                              : "bg-blue-600 hover:bg-blue-700 text-white"
+                          }`}
                         >
                           <UserCheck className="w-4 h-4" />
-                          <span>Check In Patient</span>
+                          <span>{isNonClinicalAppointment(app) ? "Check In & Complete Visit" : "Check In Patient"}</span>
                         </button>
                       ) : (
                         <button
@@ -602,12 +799,26 @@ export default function ReceptionDeskPage() {
           <div className="bg-white rounded-3xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-5 animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <div
+                  className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+                    isNonClinicalAppointment(activePatient)
+                      ? "bg-amber-50 text-amber-600"
+                      : "bg-blue-50 text-blue-600"
+                  }`}
+                >
                   <UserCheck className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-slate-900">Reception Check-In</h4>
-                  <p className="text-[11px] text-slate-500">Verify arriving patient and queue for Doctor.</p>
+                  <h4 className="text-sm font-bold text-slate-900">
+                    {isNonClinicalAppointment(activePatient)
+                      ? "Non-Clinical Visit Check-In & Finalize"
+                      : "Reception Check-In"}
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    {isNonClinicalAppointment(activePatient)
+                      ? "Non-clinical visit will be finalized and marked completed at Reception (will not go to Doctor or Pharmacy)."
+                      : "Verify arriving patient and queue for Doctor."}
+                  </p>
                 </div>
               </div>
               <button
@@ -623,7 +834,7 @@ export default function ReceptionDeskPage() {
               <div>
                 <div className="font-bold text-slate-900">{activePatient.ipName}</div>
                 <div className="text-slate-500 font-mono text-[11px]">
-                  Token: {activePatient.tokenNo} • Phone: {activePatient.phone}
+                  Token: {activePatient.tokenNo} • Phone: {isStaff ? maskDispensaryMobile(activePatient.phone) : activePatient.phone}
                 </div>
               </div>
               <div className="text-right">
@@ -657,10 +868,22 @@ export default function ReceptionDeskPage() {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  className={`px-5 py-2 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer ${
+                    isNonClinicalAppointment(activePatient)
+                      ? "bg-amber-600 hover:bg-amber-700"
+                      : "bg-blue-600 hover:bg-blue-700"
+                  }`}
                 >
                   <UserCheck className="w-3.5 h-3.5" />
-                  <span>{submitting ? "Checking In..." : "Check In & Send to Doctor"}</span>
+                  <span>
+                    {submitting
+                      ? isNonClinicalAppointment(activePatient)
+                        ? "Completing Visit..."
+                        : "Checking In..."
+                      : isNonClinicalAppointment(activePatient)
+                      ? "Check In & Complete Visit"
+                      : "Check In & Send to Doctor"}
+                  </span>
                 </button>
               </div>
             </form>

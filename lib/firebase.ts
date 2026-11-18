@@ -43,13 +43,16 @@ const logsFirebaseConfig = {
 export const app = getApps().find((a) => a.name === "[DEFAULT]") || (getApps().length > 0 ? getApp() : initializeApp(firebaseConfig));
 export const auth = getAuth(app);
 
-// Use persistentLocalCache with persistentMultipleTabManager for modern zero-warning multi-tab persistence
+// Use persistentLocalCache with persistentMultipleTabManager for modern multi-tab persistence in browser
 export const db = (() => {
   try {
-    return initializeFirestore(app, {
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-      experimentalAutoDetectLongPolling: true,
-    });
+    if (typeof window !== "undefined") {
+      return initializeFirestore(app, {
+        localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+        experimentalAutoDetectLongPolling: true,
+      });
+    }
+    return initializeFirestore(app, { localCache: memoryLocalCache() });
   } catch (e) {
     return getFirestore(app);
   }

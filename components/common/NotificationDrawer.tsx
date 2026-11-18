@@ -78,8 +78,10 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
     }
   }, [userEmail]);
 
-  // 1. Sync User Notifications & Announcements (Reading exclusively from new logsDb account)
+  // 1. Sync User Notifications & Announcements (Reading exclusively from new logsDb account only when open)
   useEffect(() => {
+    if (!isOpen) return;
+
     let notifsFromLogsDb: AppNotification[] = [];
     let notifsFromAnn: AppNotification[] = [];
     let announcementsFromDb: Announcement[] = [];
@@ -121,9 +123,9 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
       (err) => console.warn("logsDb notifications notice:", err)
     );
 
-    // B. Real-time Announcements Query from logsDb & main db
+    // B. Real-time Announcements Query from logsDb (limited to 30)
     const unsubAnn = onSnapshot(
-      collection(logsDb, "announcements"),
+      query(collection(logsDb, "announcements"), orderBy("createdAt", "desc"), limit(30)),
       (snapshot) => {
         const notifList: AppNotification[] = [];
         const aList: Announcement[] = [];
@@ -177,7 +179,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
         unsubStatus();
       } catch (e) {}
     };
-  }, []);
+  }, [isOpen]);
 
   // Birthday notifications check: runs at most once per session per day to conserve Firestore quota
   useEffect(() => {
@@ -216,30 +218,9 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
       Boolean(userProfile?.dispensaryRole);
 
     const directNotifs = notifications.filter((item) => {
-      // Handle Dispensary OPD Notifications
-      if (item.type === "dispensary_opd") {
-        if (!isUserDispensary) return false;
-        if (
-          item.targetDispensary &&
-          userProfile?.dispensaryName &&
-          !item.targetDispensary.toLowerCase().includes(userProfile.dispensaryName.toLowerCase().replace(/[^a-z0-9]/g, "")) &&
-          !userProfile.dispensaryName.toLowerCase().includes(item.targetDispensary.toLowerCase().replace(/[^a-z0-9]/g, ""))
-        ) {
-          return false;
-        }
-        if (
-          item.targetDispensaryRole &&
-          item.targetDispensaryRole !== "all" &&
-          userProfile?.dispensaryRole &&
-          item.targetDispensaryRole.toLowerCase() !== userProfile.dispensaryRole.toLowerCase()
-        ) {
-          return false;
-        }
-        return true;
-      }
-
-      // Stop all booking notifications for agents, admins, and master admins
+      // Stop all action notifications (dispensary OPD, bookings, etc.)
       if (
+        item.type === "dispensary_opd" ||
         item.type === "booking" ||
         (item.title && /booking|appointment/i.test(item.title)) ||
         (item.link && item.link.includes("/booking"))

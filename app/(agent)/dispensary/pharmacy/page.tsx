@@ -15,7 +15,7 @@ import {
 import { db, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { AppointmentRecord, isDispensaryMatch } from "@/lib/appointmentTypes";
+import { AppointmentRecord, isDispensaryMatch, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
 import { logUserActivity } from "@/lib/activityLogger";
 import {
   Pill,
@@ -36,13 +36,19 @@ import {
   Copy,
   Check,
   Activity,
+  UserCheck,
 } from "lucide-react";
 import Link from "next/link";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
+import { useStaffDirectory } from "@/lib/useStaffDirectory";
+import { extractIpNumber } from "@/lib/appointmentTypes";
+import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
 
 export default function PharmacyDeskPage() {
   const { user, userProfile } = useAuth();
   const { toast } = usePopup();
+  const { getStaffName, getDoctorName } = useStaffDirectory();
+  const isStaff = isDispensaryStaffAccount(userProfile) || (userProfile?.role !== "Admin" && userProfile?.role !== "Master Admin");
 
   const todayStr = useMemo(() => {
     const d = new Date();
@@ -71,6 +77,13 @@ export default function PharmacyDeskPage() {
     const day = String(d.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   });
+
+  // Sync date filter with mini-bar icons
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("ekms-date-filter-change", { detail: selectedDate }));
+    }
+  }, [selectedDate]);
   const [activeTab, setActiveTab] = useState<"pending_dispensation" | "completed">("pending_dispensation");
 
   // Dispense Modal State
@@ -109,7 +122,13 @@ export default function PharmacyDeskPage() {
       (snap) => {
         const list: AppointmentRecord[] = [];
         snap.forEach((d) => {
-          list.push({ id: d.id, ...d.data() } as AppointmentRecord);
+          const data = d.data();
+          list.push({
+            id: d.id,
+            ...data,
+            ipNumber: extractIpNumber(data),
+            ipName: data.ipName || data.patientName || "Beneficiary",
+          } as AppointmentRecord);
         });
         setAppointments(list);
         setLoading(false);
@@ -126,6 +145,9 @@ export default function PharmacyDeskPage() {
   // Filter by dispensary and date
   const scopedList = useMemo(() => {
     return appointments.filter((apt) => {
+      // Non-clinical bookings are handled solely at Reception and never routed to Pharmacy
+      if (isNonClinicalAppointment(apt)) return false;
+
       if (isDispensaryStaff && !isDispensaryMatch(apt.dispensaryName, staffDispensary)) {
         return false;
       }
@@ -221,11 +243,15 @@ export default function PharmacyDeskPage() {
     try {
       const now = new Date().toISOString();
       const pharmacistName =
-        (userProfile as any)?.fullName || user?.displayName || user?.email || "Pharmacist";
+        userProfile?.displayName?.trim() ||
+        userProfile?.name?.trim() ||
+        (userProfile as any)?.fullName?.trim() ||
+        user?.displayName?.trim() ||
+        "Pharmacist";
 
-      const updatedPrescriptions = (activePatient.prescriptions || []).map((rx, idx) => ({
+      const updatedPrescriptions = (activePatient.prescriptions || []).map((rx) => ({
         ...rx,
-        dispensed: Boolean(dispensedItems[idx]),
+        dispensed: true,
       }));
 
       const docRef = doc(bookingDb, "dispensary_appointments", activePatient.id);
@@ -234,6 +260,7 @@ export default function PharmacyDeskPage() {
         prescriptions: updatedPrescriptions,
         dispensedAt: now,
         dispensedBy: pharmacistName,
+        dispensedByEmail: user?.email || "",
         dispensationNotes: dispensationNotes.trim(),
         updatedAt: now,
       });
@@ -279,7 +306,7 @@ export default function PharmacyDeskPage() {
         type: "edit",
       });
 
-      toast.success(`Visit completed for token ${tNo}. Medicines dispensed successfully.`);
+      toast.success(`Visit completed for token ${tNo}. Marked as dispensed successfully.`);
 
       setDispenseModalOpen(false);
       setActivePatient(null);
@@ -512,8 +539,21 @@ export default function PharmacyDeskPage() {
                     </span>
                   </div>
 
-                  {/* Beautiful Status Badge (Top-Right) */}
-                  <div className="shrink-0">
+                  {/* Beautiful Clinical summary & Status Badge (Top-Right) */}
+                  <div className="shrink-0 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSummaryApp(apt);
+                        setSummaryModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                      title={isNonClinicalAppointment(apt) ? "View Non-Clinical Summary" : "View Clinical Summary"}
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-600" />
+                      <span>{isNonClinicalAppointment(apt) ? "Non-Clinical summary" : "Clinical summary"}</span>
+                    </button>
+
                     {isCompleted ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-xs font-black uppercase tracking-wider shadow-2xs">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
@@ -535,8 +575,8 @@ export default function PharmacyDeskPage() {
 
                 {/* 2. Body: Header Row with Demographics on Left, Actions on Right */}
                 <div className="pt-3 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="space-y-1.5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                    <div className="space-y-1.5 flex-1 min-w-0">
                       {/* Patient Identification Line */}
                       <div className="flex flex-wrap items-baseline gap-2">
                         <h3 className="text-base font-extrabold text-slate-900">{apt.ipName || apt.patientName}</h3>
@@ -546,118 +586,101 @@ export default function PharmacyDeskPage() {
                           </span>
                         )}
                         <span className="text-xs font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded font-semibold">
-                          IP: {apt.ipNumber || "N/A"}
+                          IP: {isStaff ? maskDispensaryIpNumber(apt.ipNumber) : (apt.ipNumber || "N/A")}
                         </span>
                         {(apt.phone || apt.patientPhone) && (
                           <span className="text-xs text-slate-600 flex items-center gap-1 font-medium">
                             <Phone className="w-3 h-3 text-slate-400" />
-                            <span>{apt.phone || apt.patientPhone}</span>
+                            <span>{isStaff ? maskDispensaryMobile(apt.phone || apt.patientPhone) : (apt.phone || apt.patientPhone)}</span>
                           </span>
                         )}
                       </div>
 
-                      {/* Clinical Context: Chief Complaint & Prescribing Doctor */}
+                      {/* Clinical Context: Chief Complaint */}
                       <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700 font-medium">
                         <span className="flex items-center gap-1">
                           <Activity className="w-3.5 h-3.5 text-blue-500" />
                           <span>Chief Complaint: <strong className="text-slate-900 font-bold">{apt.chiefComplaint || apt.purpose || "General Health Check"}</strong></span>
                         </span>
-                        {apt.doctorName && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-blue-50 text-blue-800 text-[11px] font-semibold border border-blue-200">
-                            <Stethoscope className="w-3 h-3 text-blue-600" />
-                            <span>Prescribed by {apt.doctorName.startsWith("Dr.") ? apt.doctorName : `Dr. ${apt.doctorName}`}</span>
-                          </span>
+                      </div>
+
+                      {/* Audit Lines: Clean Plain Text (No Boxes) */}
+                      <div className="text-xs text-slate-700 space-y-1 pt-0.5">
+                        {/* Receptionist Audit Line */}
+                        {(apt.receptionCheckedInBy || apt.visitedBy) && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <UserCheck className="w-3.5 h-3.5 text-blue-600 inline shrink-0" />
+                            <span className="font-semibold text-slate-800">
+                              Reception by {getStaffName(apt.receptionCheckedInBy || apt.visitedBy)}
+                            </span>
+                            {formatStaffTimestamp(apt.receptionCheckedInAt || apt.visitedAt || (apt.status !== "scheduled" ? (apt.updatedAt || (apt as any).createdAt) : null)) && (
+                              <span className="font-normal text-slate-500">
+                                , {formatStaffTimestamp(apt.receptionCheckedInAt || apt.visitedAt || (apt.status !== "scheduled" ? (apt.updatedAt || (apt as any).createdAt) : null))}
+                              </span>
+                            )}
+                            {(apt.visitedNotes || (apt as any).receptionNotes) && (apt.visitedNotes || (apt as any).receptionNotes).trim() && (
+                              <span className="text-slate-500 font-normal pl-1">
+                                • Note: {(apt.visitedNotes || (apt as any).receptionNotes).trim()}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Doctor Audit Line */}
+                        {(apt.doctorName || apt.doctorNotes) && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Stethoscope className="w-3.5 h-3.5 text-indigo-600 inline shrink-0" />
+                            <span className="font-semibold text-slate-800">
+                              Prescribed by {getDoctorName(apt.doctorName)}
+                            </span>
+                            {formatStaffTimestamp(apt.doctorConsultedAt || (apt.status === "pharmacy_queue" || apt.status === "completed" ? apt.updatedAt : null)) && (
+                              <span className="font-normal text-slate-500">
+                                , {formatStaffTimestamp(apt.doctorConsultedAt || (apt.status === "pharmacy_queue" || apt.status === "completed" ? apt.updatedAt : null))}
+                              </span>
+                            )}
+                            {apt.doctorNotes && apt.doctorNotes.trim() && (
+                              <span className="text-slate-500 font-normal pl-1">
+                                • Note: {apt.doctorNotes}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Pharmacist Audit Line */}
+                        {apt.dispensedBy && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <PackageCheck className="w-3.5 h-3.5 text-teal-600 inline shrink-0" />
+                            <span className="font-semibold text-slate-800">
+                              Dispensed by {getStaffName(apt.dispensedBy)}
+                            </span>
+                            {formatStaffTimestamp(apt.dispensedAt || (apt.status === "completed" ? apt.updatedAt : null)) && (
+                              <span className="font-normal text-slate-500">
+                                , {formatStaffTimestamp(apt.dispensedAt || (apt.status === "completed" ? apt.updatedAt : null))}
+                              </span>
+                            )}
+                            {apt.dispensationNotes && apt.dispensationNotes.trim() && (
+                              <span className="text-slate-500 font-normal pl-1">
+                                • Note: {apt.dispensationNotes}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
 
-                    {/* Action Buttons on Right (Clinical summary + Verify & Dispense) */}
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedSummaryApp(apt);
-                          setSummaryModalOpen(true);
-                        }}
-                        className="px-3 py-1.5 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                        title="View Clinical Summary"
-                      >
-                        <FileText className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Clinical summary</span>
-                      </button>
-
+                    {/* Action Button on Right (Below top status row) */}
+                    <div className="shrink-0 self-start sm:self-center pt-1 sm:pt-0">
                       {!isCompleted && isInPharmacy && (
                         <button
                           onClick={() => openDispenseModal(apt)}
                           className="flex items-center gap-1.5 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer active:scale-95"
                         >
                           <PackageCheck className="w-4 h-4" />
-                          <span>Verify & Dispense</span>
+                          <span>Mark as Dispensed</span>
                         </button>
                       )}
                     </div>
                   </div>
-
-                  {/* 3. Full-Width Doctor Diagnosis & Prescriptions Block */}
-                  {(apt.diagnosis || (apt.prescriptions && apt.prescriptions.length > 0)) && (
-                    <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2.5 text-xs w-full">
-                      {apt.diagnosis && (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold text-slate-700 flex items-center gap-1">
-                            <Stethoscope className="w-3.5 h-3.5 text-blue-600" />
-                            <span>Clinical Diagnosis:</span>
-                          </span>
-                          <span className="px-2.5 py-0.5 rounded-md bg-blue-100 text-blue-900 font-extrabold border border-blue-200">
-                            {apt.diagnosis}
-                          </span>
-                        </div>
-                      )}
-
-                      {apt.doctorNotes && (
-                        <div className="text-[11px] text-slate-600 italic">
-                          <span className="font-semibold text-slate-700 not-italic">Doctor Advice: </span>
-                          {apt.doctorNotes}
-                        </div>
-                      )}
-
-                      {apt.prescriptions && apt.prescriptions.length > 0 && (
-                        <div className="pt-1.5 border-t border-slate-200/60">
-                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                            <Pill className="w-3 h-3 text-purple-600" />
-                            <span>Prescription Items ({apt.prescriptions.length})</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {apt.prescriptions.map((p, idx) => (
-                              <span
-                                key={idx}
-                                className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-lg border shadow-2xs ${
-                                  p.dispensed || isCompleted
-                                    ? "bg-emerald-50 text-emerald-900 border-emerald-200"
-                                    : "bg-white text-slate-800 border-slate-200"
-                                }`}
-                              >
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
-                                    p.dispensed || isCompleted ? "bg-emerald-500" : "bg-purple-500"
-                                  }`}
-                                />
-                                <strong>{p.medicineName}</strong>
-                                <span className="text-slate-500">· {p.frequency}</span>
-                                {p.duration && <span className="text-slate-400 font-mono">({p.duration})</span>}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {apt.dispensationNotes && (
-                        <div className="text-[11px] text-slate-600 italic pt-1 border-t border-slate-200/50">
-                          <span className="font-semibold text-slate-700 not-italic">Pharmacy Remarks: </span>
-                          {apt.dispensationNotes}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
               </div>
             );
@@ -687,10 +710,10 @@ export default function PharmacyDeskPage() {
                     setSummaryModalOpen(true);
                   }}
                   className="inline-flex items-center gap-1 px-2.5 py-1 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/50 rounded-lg text-xs font-bold transition shadow-2xs cursor-pointer active:scale-95"
-                  title="View Triage Clinical Summary"
+                  title={isNonClinicalAppointment(activePatient) ? "View Triage Non-Clinical Summary" : "View Triage Clinical Summary"}
                 >
                   <FileText className="w-3.5 h-3.5 text-blue-600" />
-                  <span>Clinical summary</span>
+                  <span>{isNonClinicalAppointment(activePatient) ? "Non-Clinical summary" : "Clinical summary"}</span>
                 </button>
                 <button
                   onClick={() => setDispenseModalOpen(false)}
@@ -711,72 +734,19 @@ export default function PharmacyDeskPage() {
                     Doctor Consultation Summary
                   </span>
                   {activePatient.doctorName && (
-                    <span className="text-[11px] text-slate-500">Dr. {activePatient.doctorName}</span>
+                    <span className="text-[11px] text-slate-500">
+                      {getDoctorName(activePatient.doctorName)}
+                      {formatStaffTimestamp(activePatient.doctorConsultedAt) ? ` ${formatStaffTimestamp(activePatient.doctorConsultedAt)}` : ""}
+                    </span>
                   )}
                 </div>
                 <div className="text-xs text-slate-800">
-                  <span className="text-slate-500">Diagnosis:</span>{" "}
-                  <span className="font-medium">{activePatient.diagnosis || "No diagnosis"}</span>
+                  <span className="text-slate-500">Chief Complaint:</span>{" "}
+                  <span className="font-medium">{activePatient.chiefComplaint || activePatient.purpose || "General Health Check"}</span>
                 </div>
                 {activePatient.doctorNotes && (
                   <div className="text-xs text-slate-600">
                     <span className="text-slate-500">Doctor Advice:</span> {activePatient.doctorNotes}
-                  </div>
-                )}
-              </div>
-
-              {/* Prescriptions Checklist */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-bold text-slate-700">
-                    Prescribed Medicines to Hand Over
-                  </label>
-                  <span className="text-[11px] text-slate-400">Check off items as handed to patient</span>
-                </div>
-
-                {!activePatient.prescriptions || activePatient.prescriptions.length === 0 ? (
-                  <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
-                    No specific medicines recorded by the doctor. You can proceed with standard health advice or OTC dispensation.
-                  </div>
-                ) : (
-                  <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
-                    {activePatient.prescriptions.map((rx, idx) => {
-                      const isChecked = Boolean(dispensedItems[idx]);
-                      return (
-                        <div
-                          key={idx}
-                          onClick={() => toggleItemChecked(idx)}
-                          className={`p-3 flex items-start gap-3 cursor-pointer select-none transition-colors ${
-                            isChecked ? "bg-teal-50/40" : "bg-white hover:bg-slate-50"
-                          }`}
-                        >
-                          <div className="pt-0.5">
-                            {isChecked ? (
-                              <CheckSquare className="w-4 h-4 text-teal-600" />
-                            ) : (
-                              <Square className="w-4 h-4 text-slate-400" />
-                            )}
-                          </div>
-                          <div className="flex-1 text-xs">
-                            <div className="font-semibold text-slate-800">{rx.medicineName}</div>
-                            <div className="text-slate-500 text-[11px] mt-0.5 flex flex-wrap gap-2">
-                              <span>Dosage: <strong className="text-slate-700">{rx.dosage}</strong></span>
-                              <span>Freq: <strong className="text-slate-700">{rx.frequency}</strong></span>
-                              <span>Duration: <strong className="text-slate-700">{rx.duration}</strong></span>
-                            </div>
-                          </div>
-                          <span
-                            className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                              isChecked
-                                ? "bg-teal-100 text-teal-800"
-                                : "bg-slate-100 text-slate-600"
-                            }`}
-                          >
-                            {isChecked ? "Dispensed" : "Pending"}
-                          </span>
-                        </div>
-                      );
-                    })}
                   </div>
                 )}
               </div>
@@ -810,7 +780,7 @@ export default function PharmacyDeskPage() {
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-teal-600 hover:bg-teal-700 text-white shadow-xs transition-colors disabled:opacity-50"
                 >
                   <PackageCheck className="w-4 h-4" />
-                  {submitting ? "Completing..." : "Dispense Medicines & Complete Visit"}
+                  <span>{submitting ? "Completing..." : "Mark as Dispensed"}</span>
                 </button>
               </div>
             </form>

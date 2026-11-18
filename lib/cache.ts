@@ -17,6 +17,9 @@ let cachedMetadata: SystemMetadata | null = null;
 let lastMetadataFetch = 0;
 const METADATA_TTL = 5 * 60 * 1000; // 5 minutes in-memory TTL
 
+// High-speed in-memory collection cache layer to eliminate JSON.parse and duplicate reads within the session
+const inMemoryCollectionCache = new Map<string, { data: any[]; version: number; timestamp: number }>();
+
 /**
  * Fetch or get cached system metadata (1 single document read)
  */
@@ -66,6 +69,10 @@ export async function touchMetadata(collectionKey: string): Promise<void> {
       cachedMetadata[fieldKey] = now;
     }
 
+    // Invalidate in-memory collection cache
+    inMemoryCollectionCache.delete(`ekms_cache_${collectionKey}`);
+    inMemoryCollectionCache.delete(collectionKey);
+
     // Also invalidate local cache on current machine
     if (typeof window !== "undefined") {
       localStorage.removeItem(`ekms_cache_${collectionKey}`);
@@ -96,8 +103,17 @@ export async function getOrFetchCollection<T = any>(
   const metaKey = options?.metaKey || collectionName;
   const storageKey = `ekms_cache_${collectionName}`;
   const metaStorageKey = `ekms_meta_${metaKey}`;
+  const now = Date.now();
 
-  // 1. Try reading from browser storage
+  // 1. Try fast in-memory cache
+  if (!options?.forceRefresh) {
+    const memEntry = inMemoryCollectionCache.get(storageKey);
+    if (memEntry && now - memEntry.timestamp < METADATA_TTL) {
+      return memEntry.data as T[];
+    }
+  }
+
+  // 2. Try reading from browser localStorage
   if (typeof window !== "undefined" && !options?.forceRefresh) {
     try {
       const cachedRaw = localStorage.getItem(storageKey);
@@ -111,6 +127,7 @@ export async function getOrFetchCollection<T = any>(
         if (localVersion >= serverVersion) {
           const parsed = JSON.parse(cachedRaw) as T[];
           if (Array.isArray(parsed) && parsed.length > 0) {
+            inMemoryCollectionCache.set(storageKey, { data: parsed, version: localVersion, timestamp: now });
             return parsed;
           }
         }
@@ -133,11 +150,14 @@ export async function getOrFetchCollection<T = any>(
       }
     });
 
-    // 3. Save to browser storage for next visits
+    // 3. Save to in-memory & browser storage for next visits
+    inMemoryCollectionCache.set(storageKey, { data: items, version: Date.now(), timestamp: now });
+
     if (typeof window !== "undefined") {
       try {
         const serverMeta = await getSystemMetadata();
         const serverVersion = serverMeta[`${metaKey}UpdatedAt`] || Date.now();
+        inMemoryCollectionCache.set(storageKey, { data: items, version: serverVersion, timestamp: now });
         try {
           localStorage.setItem(storageKey, JSON.stringify(items));
           localStorage.setItem(metaStorageKey, String(serverVersion));
@@ -192,6 +212,8 @@ export async function getOrFetchCollection<T = any>(
  * Manually invalidate local cache for a collection
  */
 export function invalidateLocalCache(collectionName: string) {
+  inMemoryCollectionCache.delete(`ekms_cache_${collectionName}`);
+  inMemoryCollectionCache.delete(collectionName);
   if (typeof window !== "undefined") {
     localStorage.removeItem(`ekms_cache_${collectionName}`);
     localStorage.removeItem(`ekms_meta_${collectionName}`);

@@ -5,11 +5,11 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { collection, query, where, getDocs, doc, onSnapshot } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, onSnapshot, orderBy, limit } from "firebase/firestore";
 import { db, bookingDb } from "@/lib/firebase";
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { getOrFetchCollection } from "@/lib/cache";
-import { isDispensaryMatch } from "@/lib/appointmentTypes";
+import { isDispensaryMatch, isNonClinicalAppointment } from "@/lib/appointmentTypes";
 import {
   Home,
   Folder,
@@ -41,6 +41,8 @@ import {
   HeartPulse,
 } from "lucide-react";
 import { isPageRestricted } from "@/lib/pageAccess";
+import { isDoctorUser } from "@/lib/doctorAvailability";
+import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";
 
 interface EkmsSidebarProps {
   isOpen: boolean;
@@ -78,6 +80,13 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const [doctorQueueCount, setDoctorQueueCount] = useState(0);
   const [pharmacyQueueCount, setPharmacyQueueCount] = useState(0);
   const [activeAppointmentsQueueCount, setActiveAppointmentsQueueCount] = useState(0);
+  const [doctorAvailabilityOpen, setDoctorAvailabilityOpen] = useState(false);
+
+  useEffect(() => {
+    const handleOpenAvail = () => setDoctorAvailabilityOpen(true);
+    window.addEventListener("open-doctor-availability-modal", handleOpenAvail);
+    return () => window.removeEventListener("open-doctor-availability-modal", handleOpenAvail);
+  }, []);
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -90,57 +99,89 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     }
 
     let isMounted = true;
+    const BADGE_TTL = 3 * 60 * 1000; // 3 minutes cache for secondary badges
 
     const loadBadges = async (force = false) => {
-      // 1. Doubts badge
+      // 1. Doubts badge (cached 3 mins unless forced)
       try {
-        const qDoubts = query(collection(db, "doubts"), where("status", "in", ["pending", "waiting"]));
-        const snap = await getDocs(qDoubts);
-        if (isMounted) setUnresolvedDoubtsCount(snap.size);
+        const cachedDoubts = !force ? getCachedData<number>("sidebar_doubts_count", BADGE_TTL) : null;
+        if (cachedDoubts !== null) {
+          if (isMounted) setUnresolvedDoubtsCount(cachedDoubts);
+        } else {
+          const qDoubts = query(collection(db, "doubts"), where("status", "in", ["pending", "waiting"]));
+          const snap = await getDocs(qDoubts);
+          if (isMounted) {
+            setUnresolvedDoubtsCount(snap.size);
+            setCachedData("sidebar_doubts_count", snap.size);
+          }
+        }
       } catch (e) {}
 
-      // 2. Active Courses for pending count
+      // 2. Active Courses for pending count (utilizes localStorage & system metadata)
       try {
         const courseList = await getOrFetchCollection<any>("onboardings", { forceRefresh: force });
         if (isMounted) setCourses(courseList);
       } catch (e) {}
 
-      // 3. Active Quizzes for pending count
+      // 3. Active Quizzes for pending count (utilizes localStorage & system metadata)
       try {
         const quizList = await getOrFetchCollection<any>("quizzes", { forceRefresh: force });
         if (isMounted) setQuizzes(quizList);
       } catch (e) {}
 
-      // 4. Admin Reports & Missing badges
+      // 4. Admin Reports & Missing badges (cached 3 mins unless forced)
       if (isAdmin) {
         try {
-          const qReports = query(collection(db, "reports"), where("status", "==", "pending"));
-          const rSnap = await getDocs(qReports);
-          if (isMounted) setPendingReportsCount(rSnap.size);
+          const cachedReports = !force ? getCachedData<number>("sidebar_reports_count", BADGE_TTL) : null;
+          if (cachedReports !== null) {
+            if (isMounted) setPendingReportsCount(cachedReports);
+          } else {
+            const qReports = query(collection(db, "reports"), where("status", "==", "pending"));
+            const rSnap = await getDocs(qReports);
+            if (isMounted) {
+              setPendingReportsCount(rSnap.size);
+              setCachedData("sidebar_reports_count", rSnap.size);
+            }
+          }
 
-          const mSnap = await getDocs(collection(db, "missing_searches"));
-          if (isMounted) setMissingContentCount(mSnap.size);
+          const cachedMissing = !force ? getCachedData<number>("sidebar_missing_count", BADGE_TTL) : null;
+          if (cachedMissing !== null) {
+            if (isMounted) setMissingContentCount(cachedMissing);
+          } else {
+            const mSnap = await getDocs(collection(db, "missing_searches"));
+            if (isMounted) {
+              setMissingContentCount(mSnap.size);
+              setCachedData("sidebar_missing_count", mSnap.size);
+            }
+          }
         } catch (e) {}
       }
     };
 
     loadBadges(false);
 
-    // Instantly sync when metadata bumps (e.g. quiz or course added/deleted)
+    // Instantly sync when metadata bumps (e.g. quiz or course added/deleted by admin)
     const unsubMeta = onSnapshot(
       doc(db, "system", "metadata"),
       () => {
         if (isMounted) {
           clearCachedData("sidebar_quizzes");
           clearCachedData("sidebar_courses");
+          clearCachedData("sidebar_doubts_count");
+          clearCachedData("sidebar_reports_count");
+          clearCachedData("sidebar_missing_count");
           loadBadges(true);
         }
       },
       (err) => console.warn("Sidebar metadata sync error:", err)
     );
 
+    let lastFocusCheck = Date.now();
     const handleFocus = () => {
-      if (isMounted) {
+      const now = Date.now();
+      // Throttle window focus re-check to at most once every 5 minutes
+      if (isMounted && now - lastFocusCheck > 5 * 60 * 1000) {
+        lastFocusCheck = now;
         loadBadges(false);
       }
     };
@@ -151,7 +192,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       unsubMeta();
       window.removeEventListener("focus", handleFocus);
     };
-  }, [isLoggedIn, isAdmin, pathname]);
+  }, [isLoggedIn, isAdmin]);
 
   const isDispensaryUser =
     (userProfile?.role || "").toLowerCase().trim() === "dispensary staff" ||
@@ -159,7 +200,29 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     Boolean(userProfile?.dispensaryRole) ||
     Boolean(userProfile?.dispensaryName);
 
-  // Live Queue Count Badges for Dispensary Desks
+  // Helper for strict local date YYYY-MM-DD (avoids UTC day-shift bugs in IST)
+  const getLocalTodayDateString = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const [activeDateFilter, setActiveDateFilter] = useState<string>(() => getLocalTodayDateString());
+
+  // Listen for date filter change from appointment & dispensary desk screens
+  useEffect(() => {
+    const handleDateChange = (e: any) => {
+      if (typeof e.detail === "string") {
+        setActiveDateFilter(e.detail);
+      }
+    };
+    window.addEventListener("ekms-date-filter-change", handleDateChange);
+    return () => window.removeEventListener("ekms-date-filter-change", handleDateChange);
+  }, []);
+
+  // Live Queue Count Badges for Dispensary Desks & Appointments
   useEffect(() => {
     if (!isLoggedIn || (!isDispensaryUser && !isAdmin)) {
       setReceptionQueueCount(0);
@@ -169,12 +232,22 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       return;
     }
 
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const localToday = getLocalTodayDateString();
+    // For desk queues (Receptionist, Doctor, Pharmacist):
+    // Use active/selected date if explicitly chosen; otherwise default to present date (localToday).
+    const deskDate =
+      activeDateFilter && activeDateFilter !== "all"
+        ? activeDateFilter === "today"
+          ? localToday
+          : activeDateFilter
+        : localToday;
+
     const staffDispensary = (userProfile as any)?.dispensaryName || "";
 
     const q = query(
       collection(bookingDb, "dispensary_appointments"),
-      where("date", "==", todayStr)
+      orderBy("createdAt", "desc"),
+      limit(250)
     );
 
     const unsub = onSnapshot(
@@ -183,39 +256,51 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
         let recCount = 0;
         let docCount = 0;
         let pharmCount = 0;
-        let totalActive = 0;
+        let totalPendingAllDates = 0;
 
         snap.forEach((docSnap) => {
           const data = docSnap.data();
+
           if (isDispensaryUser && staffDispensary) {
             if (!isDispensaryMatch(data.dispensaryName, staffDispensary, data.dispensaryId, userProfile?.dispensaryId)) {
               return;
             }
           }
 
-          if (data.status !== "completed" && data.status !== "cancelled") {
-            totalActive++;
+          const status = (data.status || "").toLowerCase().trim();
+          const isPending = status !== "completed" && status !== "cancelled";
+
+          // 1. Total pending appointments: ALWAYS counts all pending appointments across ALL dates.
+          // Never filtered by date and never affected by date filters from other desk pages.
+          if (isPending) {
+            totalPendingAllDates++;
           }
 
-          if (data.status === "scheduled") {
-            recCount++;
-          } else if (data.status === "with_doctor" || data.status === "visited") {
-            docCount++;
-          } else if (data.status === "pharmacy_queue") {
-            pharmCount++;
+          // 2. Desk queue counts (Receptionist, Doctor, Pharmacist):
+          // Reflects the pending appointments of the present / selected date.
+          const appDate = (data.date || "").trim();
+          if (appDate === deskDate) {
+            const nonClinical = isNonClinicalAppointment(data as any);
+            if (status === "scheduled") {
+              recCount++;
+            } else if (!nonClinical && (status === "with_doctor" || status === "visited")) {
+              docCount++;
+            } else if (!nonClinical && status === "pharmacy_queue") {
+              pharmCount++;
+            }
           }
         });
 
         setReceptionQueueCount(recCount);
         setDoctorQueueCount(docCount);
         setPharmacyQueueCount(pharmCount);
-        setActiveAppointmentsQueueCount(totalActive);
+        setActiveAppointmentsQueueCount(totalPendingAllDates);
       },
       (err) => console.warn("Dispensary queue sync error:", err)
     );
 
     return () => unsub();
-  }, [isLoggedIn, isDispensaryUser, isAdmin, userProfile?.dispensaryName, userProfile?.dispensaryId]);
+  }, [isLoggedIn, isDispensaryUser, isAdmin, userProfile?.dispensaryName, userProfile?.dispensaryId, activeDateFilter]);
 
   // Compute agent-specific pending courses
   const pendingCoursesCount = React.useMemo(() => {
@@ -361,6 +446,14 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       imageSrc: "/data-logo.png",
       color: "text-teal-600",
     },
+    {
+      href: "https://dpd.ekms.in/",
+      label: "EKMS DPD",
+      domain: "dpd.ekms.in",
+      icon: Building2,
+      imageSrc: "/dpd-logo.png",
+      color: "text-amber-600",
+    },
   ];
 
   // Mini sidebar items
@@ -390,6 +483,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const visibleDispensaryLinks = isLoggedIn
     ? dispensaryLinks.filter((item) => {
         if ((item as any).adminOnly && !isAdmin) return false;
+        if ((item as any).doctorOnly && !isDoctorUser(userProfile)) return false;
         return !isPageRestricted(item.href, userProfile);
       })
     : [];
@@ -402,25 +496,49 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     ? exploreLinks.filter((item) => !isPageRestricted(item.href, userProfile))
     : [];
 
-  const visibleMiniLinks = miniLinks.filter((item) => {
-    if (!isLoggedIn) return item.href === "/";
-    if (isDispensaryUser) {
-      // 1. Remove EKMS Map completely from all dispensary staff mini menu
-      if (item.label === "EKMS Map" || item.isExternal || item.href.includes("map.ekms.in")) {
-        return false;
+  const visibleMiniLinks = miniLinks
+    .map((item) => {
+      // In admin accounts, show Appointment icon (linking to /admin/appointment) with active queue number
+      if (isAdmin || isMasterAdmin) {
+        if (item.href === "/appointment" || item.href === "/admin/appointment") {
+          return {
+            ...item,
+            href: "/admin/appointment",
+            label: "Appt",
+            badge: activeAppointmentsQueueCount,
+          };
+        }
       }
-      // 2. Remove Home from dispensary staff mini menu (Appointment is their default dashboard)
-      if (item.href === "/") {
-        return false;
+      return item;
+    })
+    .filter((item) => {
+      if (!isLoggedIn) return item.href === "/";
+      if ((item as any).doctorOnly && !isDoctorUser(userProfile)) return false;
+
+      // In admin accounts, remove doctor, reception, and pharmacy icons from the mini side menu
+      if (isAdmin || isMasterAdmin) {
+        if (item.href.startsWith("/dispensary/")) {
+          return false;
+        }
       }
-      // 3. For dispensary staff, only allow Appointment and their role-specific desk
-      if (item.href !== "/appointment" && !item.href.startsWith("/dispensary/")) {
-        return false;
+
+      if (isDispensaryUser) {
+        // 1. Remove EKMS Map completely from all dispensary staff mini menu
+        if (item.label === "EKMS Map" || item.isExternal || item.href.includes("map.ekms.in")) {
+          return false;
+        }
+        // 2. Remove Home from dispensary staff mini menu (Appointment is their default dashboard)
+        if (item.href === "/") {
+          return false;
+        }
+        // 3. For dispensary staff, only allow Appointment and their role-specific desk
+        if (item.href !== "/appointment" && !item.href.startsWith("/dispensary/")) {
+          return false;
+        }
       }
-    }
-    if ((item as any).dispensaryStaffOnly && !isDispensaryUser) return false;
-    return !isPageRestricted(item.href, userProfile);
-  });
+      if ((item as any).dispensaryStaffOnly && !isDispensaryUser) return false;
+      return !isPageRestricted(item.href, userProfile);
+    });
 
   return (
     <>
@@ -491,7 +609,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
                   />
                   {item.badge !== undefined && item.badge > 0 ? (
-                    <span className="absolute -top-1 -right-2 bg-rose-600 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full ring-2 ring-white">
+                    <span className="absolute -top-1.5 -right-2.5 bg-rose-600 text-white text-[9px] font-black min-w-[17px] h-[17px] px-1 rounded-full ring-2 ring-white shadow-xs flex items-center justify-center leading-none pointer-events-none">
                       {item.badge > 99 ? "99+" : item.badge}
                     </span>
                   ) : null}
@@ -705,7 +823,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
           {visibleExploreLinks.length > 0 && (
             <div className="pt-3 px-2 space-y-1">
               <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                Explore & Feedback
+                Account & Feedback
               </div>
               {visibleExploreLinks.map((item) => {
                 const isActive = pathname === item.href;
@@ -740,8 +858,8 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
             </div>
           )}
 
-          {/* Connected Sites Section */}
-          {!isDispensaryUser && (
+          {/* Connected Sites (EKMS Ecosystem) - Visible only for Agent, Admin & Master Admin */}
+          {isLoggedIn && !isDispensaryUser && (
             <div className="pt-3 px-2 space-y-1">
               <div className="px-3 pb-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                 <span>Connected Sites</span>
@@ -793,10 +911,17 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
           )}
         </div>
 
-        {/* Footer */}
+        {/* Clean Sidebar Footer (Same like Triage) */}
         <div className="p-4 border-t border-slate-100 bg-slate-50/50 text-[11px] text-slate-500 leading-relaxed">
-          <div>© 2026 EKMS</div>
-          <div className="text-[10px] text-slate-400 mt-0.5">
+          <div className="font-semibold text-slate-700">© 2026 EKMS</div>
+          <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10.5px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-200/60">
+            <Link href="/contact" className="hover:text-blue-600 hover:underline transition">Contact Us</Link>
+            <span>•</span>
+            <Link href="/privacy" className="hover:text-blue-600 hover:underline transition">Privacy</Link>
+            <span>•</span>
+            <Link href="/terms" className="hover:text-blue-600 hover:underline transition">Terms</Link>
+          </div>
+          <div className="text-[10px] text-slate-400 mt-1">
             Designed & Developed by{" "}
             <a
               href="https://jyotirmoychoudhury.com"
@@ -809,6 +934,12 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
           </div>
         </div>
       </aside>
+
+      {/* Doctor Availability Management Modal */}
+      <DoctorAvailabilityModal
+        isOpen={doctorAvailabilityOpen}
+        onClose={() => setDoctorAvailabilityOpen(false)}
+      />
     </>
   );
 }

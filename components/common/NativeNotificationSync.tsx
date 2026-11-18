@@ -138,8 +138,9 @@ export default function NativeNotificationSync() {
               // Check if already notified
               if (notifiedMap[item.id]) continue;
 
-              // Filter out booking notifications completely for all users
+              // Filter out action notifications completely for all users
               if (
+                item.type === "dispensary_opd" ||
                 item.type === "booking" ||
                 (item.title && /booking|appointment/i.test(item.title)) ||
                 (item.link && item.link.includes("/booking"))
@@ -234,6 +235,57 @@ export default function NativeNotificationSync() {
       unsubscribe();
     };
   }, [userEmail, userProfile, isAdmin, user, router]);
+
+  // Real-Time Cross-App Sync with EKMS Triage (BroadcastChannel & localStorage)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let ch: BroadcastChannel | null = null;
+    try {
+      if (typeof window.BroadcastChannel !== "undefined") {
+        ch = new BroadcastChannel("ekms_triage_sync_v1");
+        ch.onmessage = (event) => {
+          if (event && event.data) {
+            const payload = event.data.payload || event.data;
+            const ip =
+              payload?.ip_number ||
+              payload?.ipNumber ||
+              payload?.ipNo ||
+              payload?.intake?.ip_number;
+            if (ip && ip !== "N/A" && ip !== ".") {
+              // Dispatch to window so any active page can react instantly
+              window.dispatchEvent(
+                new CustomEvent("ekms_triage_ip_received", { detail: { ...payload, ip } })
+              );
+            }
+          }
+        };
+      }
+    } catch (e) {
+      console.warn("Triage BroadcastChannel sync warning:", e);
+    }
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "ekms_triage_active_ip" && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          window.dispatchEvent(
+            new CustomEvent("ekms_triage_ip_received", { detail: parsed })
+          );
+        } catch (_) {}
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      if (ch) {
+        try {
+          ch.close();
+        } catch (_) {}
+      }
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
 
   return null;
 }

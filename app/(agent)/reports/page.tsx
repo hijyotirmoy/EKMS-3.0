@@ -33,6 +33,7 @@ import {
   Building2,
   Megaphone,
   CalendarCheck,
+  CalendarClock,
   MessageSquare,
   Clock,
   Check,
@@ -358,9 +359,11 @@ export default function ReportsPage() {
     }
   };
 
-  // Type badge helper (Updated with Booking and Feedback, removed Updates/News)
+  // Type badge helper (Updated with Appointment, Booking and Feedback, removed Updates/News)
   const getTypeBadge = (type?: string) => {
     const t = (type || "others").toLowerCase();
+    if (t.includes("appointment") || t.includes("dispensary"))
+      return { bg: "bg-teal-50 text-teal-800 border-teal-200", icon: CalendarClock, label: "Appointment" };
     if (t.includes("booking"))
       return { bg: "bg-orange-50 text-orange-700 border-orange-200", icon: CalendarCheck, label: "Booking" };
     if (t.includes("feedback"))
@@ -954,6 +957,7 @@ export default function ReportsPage() {
                   <option value="Quiz / Assessment">Quiz / Assessment</option>
                   <option value="Course / Onboarding">Course / Onboarding</option>
                   <option value="Facility Locator">Facility Locator</option>
+                  <option value="Appointment">Appointment</option>
                   <option value="Booking">Booking</option>
                   <option value="Feedback">Feedback</option>
                   <option value="Others">Others</option>

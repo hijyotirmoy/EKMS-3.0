@@ -26,7 +26,8 @@ const config: Config = {
         },
       },
       fontFamily: {
-        sans: ["var(--font-roboto)", "Roboto", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Arial", "sans-serif"],
+        sans: ["'Roboto'", "var(--font-roboto)", "Roboto", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Arial", "sans-serif"],
+        display: ["'Roboto'", "var(--font-roboto)", "Roboto", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Arial", "sans-serif"],
       },
     },
   },

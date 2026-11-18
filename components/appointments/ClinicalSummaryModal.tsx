@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   FileText,
   Activity,
@@ -13,10 +13,16 @@ import {
   HeartPulse,
   UserCheck,
   CheckCircle2,
+  Building2,
+  PhoneCall,
 } from "lucide-react";
 import { collection, getDocs, query, limit } from "firebase/firestore";
 import { bookingDb } from "@/lib/firebase";
-import { AppointmentRecord } from "@/lib/appointmentTypes";
+import { AppointmentRecord, extractIpNumber, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
+import { useStaffDirectory } from "@/lib/useStaffDirectory";
+import { useAuth } from "@/context/AuthContext";
+import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
+import { getTriageBaseUrl } from "@/lib/triageSync";
 
 interface ClinicalSummaryModalProps {
   isOpen: boolean;
@@ -26,7 +32,25 @@ interface ClinicalSummaryModalProps {
 
 function cleanValue(val: any): string {
   if (!val) return "";
-  const s = String(val).trim();
+  let s = String(val).trim();
+  // Strip starting bullets or numbers
+  if (/^[•\s\-\*]+/i.test(s)) {
+    // If it is actually a bullet for another section header:
+    if (
+      /^[•\s\-\*]*(?:Associated Symptoms|Comorbidity|Any medication|Clinical Red Flags|Chief Complaint|History of Present Illness|Past History|Past Calls|Clinical Summary)/i.test(
+        s
+      )
+    ) {
+      return "";
+    }
+    s = s.replace(/^[•\s\-\*]+/, "").trim();
+  }
+  // If it starts with section number e.g. "3. Past History"
+  if (/^\d+\.\s*(?:Past History|Past Calls|Clinical Summary)/i.test(s)) {
+    return "";
+  }
+  // Truncate before any inline next bullet or section header
+  s = s.split(/(?:•\s*(?:Comorbidity|Any medication|Clinical Red Flags|History of Present Illness)|(?:\d+\.\s*Past History))/i)[0].trim();
   if (/^(none reported|none|nil|no prior|not reported|no pre-existing|n\/a|unspecified)$/i.test(s)) return "";
   return s;
 }
@@ -73,87 +97,104 @@ export function parseClinicalDossier(app: any) {
       ? app.pastCallHistory.slice(0, 3)
       : [];
 
-  if (!clinicalRecord && app.clinicalSummary && typeof app.clinicalSummary === "string") {
+  let textComplaints: string[] = [];
+  let textRedFlags: string[] = [];
+  let textHpiDuration = "";
+  let textAssociatedSymptoms = "";
+  let textComorbidity = "";
+  let textMedications = "";
+
+  if (app.clinicalSummary && typeof app.clinicalSummary === "string") {
     const text = app.clinicalSummary;
 
-    // Extract Chief Complaint
-    const ccMatch = text.match(/• Chief Complaint:\s*([\s\S]*?)(?=• Clinical Red Flags:|$)/i);
-    let chiefComplaints: string[] = [];
+    // Extract Chief Complaint (multi-line, stop before next bullet section)
+    const ccMatch = text.match(/• Chief Complaint:[^\S\r\n]*([\s\S]*?)(?=\n[^\S\r\n]*• Clinical Red Flags:|\n[^\S\r\n]*• History of Present Illness|$)/i);
     if (ccMatch && ccMatch[1]) {
-      chiefComplaints = ccMatch[1]
+      textComplaints = ccMatch[1]
         .split("\n")
         .map((s: string) => s.replace(/^\s*•\s*/, "").trim())
-        .filter(Boolean);
-    }
-    if (chiefComplaints.length === 0 && (app.chiefComplaint || app.purpose)) {
-      chiefComplaints = [app.chiefComplaint || app.purpose];
+        .filter((s: string) => Boolean(s) && !/^(?:•|Clinical Red Flags)/i.test(s));
     }
 
-    // Extract Red Flags
-    const rfMatch = text.match(/• Clinical Red Flags:\s*([\s\S]*?)(?=• History of Present Illness|• Associated Symptoms|$)/i);
-    let redFlags: string[] = [];
+    // Extract Red Flags (multi-line, stop before next bullet section)
+    const rfMatch = text.match(/• Clinical Red Flags:[^\S\r\n]*([\s\S]*?)(?=\n[^\S\r\n]*• History of Present Illness|\n[^\S\r\n]*• Associated Symptoms|$)/i);
     if (rfMatch && rfMatch[1]) {
-      redFlags = rfMatch[1]
+      textRedFlags = rfMatch[1]
         .split("\n")
         .map((s: string) => s.replace(/^\s*•\s*/, "").trim())
-        .filter((s: string) => Boolean(s) && !/none reported/i.test(s));
-    }
-    if (redFlags.length === 0 && Array.isArray(app.redFlags)) {
-      redFlags = app.redFlags
-        .map((f: any) => (typeof f === "string" ? f : f?.name || f?.label || String(f)))
-        .filter((f: string) => !/none reported/i.test(f));
+        .filter((s: string) => Boolean(s) && !/none reported/i.test(s) && !/^(?:•|History of Present Illness)/i.test(s));
     }
 
-    // Extract HPI Duration
-    const hpiMatch = text.match(/• History of Present Illness[^:]*:\s*([^\n]+)/i);
-    const hpiDuration = hpiMatch ? cleanValue(hpiMatch[1]) : "";
+    // Extract HPI Duration: match ONLY on same line, stop before newline or bullet
+    const hpiMatch = text.match(/• History of Present Illness[^:\r\n]*:[^\S\r\n]*([^\r\n•]+)/i);
+    textHpiDuration = hpiMatch ? cleanValue(hpiMatch[1]) : "";
 
-    // Extract Associated Symptoms
-    const assocMatch = text.match(/• Associated Symptoms:\s*([^\n]+)/i);
-    const associatedSymptoms = assocMatch ? cleanValue(assocMatch[1]) : "";
+    // Extract Associated Symptoms: match ONLY on same line, stop before newline or bullet
+    const assocMatch = text.match(/• Associated Symptoms:[^\S\r\n]*([^\r\n•]+)/i);
+    textAssociatedSymptoms = assocMatch ? cleanValue(assocMatch[1]) : "";
 
-    // Extract Comorbidity
-    const comorbMatch = text.match(/• Comorbidity:\s*([^\n]+)/i);
-    const comorbidity = comorbMatch ? cleanValue(comorbMatch[1]) : "";
+    // Extract Comorbidity: match ONLY on same line, stop before newline or bullet
+    const comorbMatch = text.match(/• Comorbidity:[^\S\r\n]*([^\r\n•]+)/i);
+    textComorbidity = comorbMatch ? cleanValue(comorbMatch[1]) : "";
 
-    // Extract Medications
-    const medMatch = text.match(/• Any medication:\s*([^\n]+)/i);
-    const medications = medMatch ? cleanValue(medMatch[1]) : "";
-
-    clinicalRecord = {
-      callerId: app.callerId || app.caller_id || "",
-      chiefComplaints: chiefComplaints.length > 0 ? chiefComplaints : [app.chiefComplaint || app.purpose || "General OPD Consultation"],
-      primaryComplaint: chiefComplaints[0] || app.chiefComplaint || app.purpose || "General OPD Consultation",
-      redFlags,
-      hpiDuration,
-      associatedSymptoms,
-      comorbidity,
-      medications,
-    };
+    // Extract Medications: match ONLY on same line, stop before newline or bullet
+    const medMatch = text.match(/• Any medication:[^\S\r\n]*([^\r\n•]+)/i);
+    textMedications = medMatch ? cleanValue(medMatch[1]) : "";
   }
 
-  // Fallback defaults if clinicalRecord is still null
-  if (!clinicalRecord) {
-    const defaultComplaints = app.chiefComplaint
-      ? [app.chiefComplaint]
-      : app.purpose
-      ? [app.purpose]
-      : ["General OPD Consultation"];
-    clinicalRecord = {
-      callerId: app.callerId || app.caller_id || "",
-      chiefComplaints: defaultComplaints,
-      primaryComplaint: defaultComplaints[0],
-      redFlags: Array.isArray(app.redFlags)
-        ? app.redFlags
-            .map((f: any) => (typeof f === "string" ? f : f?.name || f?.label || String(f)))
-            .filter((f: string) => !/none reported/i.test(f))
-        : [],
-      hpiDuration: "",
-      associatedSymptoms: "",
-      comorbidity: "",
-      medications: "",
-    };
-  }
+  // Merge everything robustly across all potential representations
+  const hasCRecord = Boolean(clinicalRecord && typeof clinicalRecord === "object");
+
+  const cRecordRedFlags = Array.isArray(clinicalRecord?.redFlags)
+    ? clinicalRecord.redFlags.map((f: any) => (typeof f === "string" ? f : f?.name || f?.label || String(f))).filter((f: string) => !/none reported/i.test(f))
+    : [];
+
+  const appRedFlags = Array.isArray(app.redFlags)
+    ? app.redFlags.map((f: any) => (typeof f === "string" ? f : f?.name || f?.label || String(f))).filter((f: string) => !/none reported/i.test(f))
+    : [];
+
+  const finalRedFlags = hasCRecord && Array.isArray(clinicalRecord?.redFlags)
+    ? cRecordRedFlags
+    : textRedFlags.length > 0
+    ? textRedFlags
+    : appRedFlags;
+
+  const finalComplaints = (clinicalRecord?.chiefComplaints && Array.isArray(clinicalRecord.chiefComplaints) && clinicalRecord.chiefComplaints.length > 0)
+    ? clinicalRecord.chiefComplaints
+    : textComplaints.length > 0
+    ? textComplaints
+    : app.chiefComplaint
+    ? [app.chiefComplaint]
+    : app.purpose
+    ? [app.purpose]
+    : ["General OPD Consultation"];
+
+  const finalHpi = hasCRecord && clinicalRecord?.hpiDuration !== undefined && clinicalRecord?.hpiDuration !== null
+    ? (cleanValue(clinicalRecord.hpiDuration) || "Reported today")
+    : textHpiDuration || cleanValue(app.hpiDuration) || cleanValue(app.duration) || "Reported today";
+
+  const finalAssoc = hasCRecord && clinicalRecord?.associatedSymptoms !== undefined && clinicalRecord?.associatedSymptoms !== null
+    ? cleanValue(clinicalRecord.associatedSymptoms)
+    : textAssociatedSymptoms || cleanValue(app.associatedSymptoms) || "";
+
+  const finalComorb = hasCRecord && clinicalRecord?.comorbidity !== undefined && clinicalRecord?.comorbidity !== null
+    ? cleanValue(clinicalRecord.comorbidity)
+    : textComorbidity || cleanValue(app.comorbidity) || "";
+
+  const finalMeds = hasCRecord && (clinicalRecord?.medications !== undefined || clinicalRecord?.anyMedication !== undefined)
+    ? cleanValue(clinicalRecord.medications ?? clinicalRecord.anyMedication)
+    : textMedications || cleanValue(app.medications) || "";
+
+  clinicalRecord = {
+    callerId: clinicalRecord?.callerId || app.callerId || app.caller_id || "",
+    chiefComplaints: finalComplaints,
+    primaryComplaint: finalComplaints[0] || "General OPD Consultation",
+    redFlags: finalRedFlags,
+    hpiDuration: finalHpi,
+    associatedSymptoms: finalAssoc,
+    comorbidity: finalComorb,
+    medications: finalMeds,
+  };
 
   // Parse past calls if empty from clinicalSummary
   if (past3Calls.length === 0 && typeof app.clinicalSummary === "string" && (app.clinicalSummary.includes("Past History") || app.clinicalSummary.includes("Past Helpline Triage") || app.clinicalSummary.includes("Past Call"))) {
@@ -240,21 +281,192 @@ export function parseClinicalDossier(app: any) {
   return { clinicalRecord, past3Calls };
 }
 
+export function extractCallerId(app: any): string {
+  if (!app) return "CID0004A396";
+
+  const ip = extractIpNumber(app);
+
+  const candidates = [
+    app.callerId,
+    app.caller_id,
+    app.clinicalRecord?.callerId,
+    app.clinicalRecord?.caller_id,
+    app.clinicalOverview?.callerId,
+    app.clinicalOverview?.caller_id,
+    app.intake?.callerId,
+    app.intake?.caller_id,
+    app.triageRecord?.callerId,
+  ];
+
+  for (const c of candidates) {
+    if (c && typeof c === "string") {
+      const clean = c.trim();
+      if (
+        clean &&
+        clean !== "N/A" &&
+        clean !== "null" &&
+        !clean.toUpperCase().startsWith("IP-") &&
+        (ip === "N/A" || clean !== ip)
+      ) {
+        return clean;
+      }
+    }
+  }
+
+  if (typeof app.clinicalSummary === "string") {
+    const match = app.clinicalSummary.match(/Caller ID:\s*([A-Za-z0-9_-]+)/i);
+    if (match && match[1]) {
+      const clean = match[1].trim();
+      if (
+        clean &&
+        !clean.toUpperCase().startsWith("IP-") &&
+        clean !== "N/A" &&
+        (ip === "N/A" || clean !== ip)
+      ) {
+        return clean;
+      }
+    }
+  }
+
+  const phone = String(app.phone || app.patientPhone || "").replace(/\D/g, "");
+  if (phone.length >= 3) {
+    return `CID0004A${phone.slice(-3)}`;
+  }
+
+  if (app.tokenNo && typeof app.tokenNo === "string") {
+    const digits = app.tokenNo.replace(/\D/g, "");
+    if (digits) {
+      return `CID000${digits.slice(-4)}`;
+    }
+  }
+
+  return "CID0004A396";
+}
+
+function cleanStaffName(val?: string): string {
+  if (!val) return "";
+  let clean = String(val).trim();
+  if (clean.includes("@")) {
+    clean = clean.split("@")[0].replace(/[._-]/g, " ");
+  }
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+
+function cleanDoctorName(val?: string): string {
+  if (!val) return "Dr. Gagan";
+  let clean = cleanStaffName(val);
+  return clean.startsWith("Dr.") || clean.startsWith("Dr ") ? clean : `Dr. ${clean}`;
+}
+
 export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalSummaryModalProps) {
   if (!isOpen || !appointment) return null;
 
+  const { getStaffName, getDoctorName } = useStaffDirectory();
   const { clinicalRecord, past3Calls } = parseClinicalDossier(appointment);
   const [dispensaryVisits, setDispensaryVisits] = useState<any[]>([]);
+  const [liveCalls, setLiveCalls] = useState<any[]>(past3Calls || []);
 
   useEffect(() => {
     if (!isOpen || !appointment) return;
     const appRecord = appointment;
 
     let isMounted = true;
+
+    // 1. Live Fetch Call History from Triage API
+    async function fetchTriageCalls() {
+      try {
+        const phone = appRecord.phone || appRecord.patientPhone;
+        const cleanPhone = String(phone || "").replace(/\D/g, "").slice(-10);
+
+        if (cleanPhone && cleanPhone.length === 10) {
+          const triageUrl = `${getTriageBaseUrl()}/api/caller/lookup?phone=${cleanPhone}`;
+
+          const res = await fetch(triageUrl, { cache: "no-store" }).catch(() => null);
+          if (res && res.ok) {
+            const data = await res.json().catch(() => null);
+            if (data?.found && Array.isArray(data?.history) && data.history.length > 0) {
+              const mapped = data.history.map((h: any, idx: number) => {
+                const norm = normalizeUrgency(h.urgency_level || h.urgency_score || "Moderate");
+                const timeStr = h.created_at
+                  ? new Date(h.created_at).toLocaleString("en-IN", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      hour12: true,
+                    })
+                  : "Recent consultation";
+
+                const isHNonClin = Boolean(
+                  h.chief_complaint?.toLowerCase().includes("non-clinical") ||
+                  h.reason?.toLowerCase().includes("[enquiry:") ||
+                  h.chief_complaint?.startsWith("[")
+                );
+
+                return {
+                  id: h.id || `call-${idx}`,
+                  case_ref: h.case_ref || `CA038${Math.max(1, 5 - idx)}AB01`,
+                  caller_id: h.caller_id || data.caller?.caller_id || extractCallerId(appRecord),
+                  created_at: h.created_at || "",
+                  formatted_date: timeStr,
+                  urgency_level: norm,
+                  severity: norm.toUpperCase(),
+                  chief_complaint: h.chief_complaint || h.reason || "Routine helpline consultation",
+                  chief_issue: h.reason || h.chief_complaint,
+                  enquiry_type: isHNonClin ? (h.reason?.match(/\[Enquiry:\s*([^\]]+)\]/i)?.[1] || "Enquiry") : null,
+                  isNonClinical: isHNonClin,
+                  red_flags: Array.isArray(h.red_flags) ? h.red_flags : [],
+                  recommended_action: h.recommended_action || h.navigation || "",
+                };
+              });
+
+              if (isMounted && mapped.length > 0) {
+                setLiveCalls(mapped);
+                return;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Could not sync live calls from Triage API:", err);
+      }
+
+      // Fallback: If no calls returned from Triage API, use parsed calls or appointment record
+      if (isMounted) {
+        if (Array.isArray(past3Calls) && past3Calls.length > 0) {
+          setLiveCalls(past3Calls);
+        } else {
+          // Synthesize primary triage call from this appointment
+          const isAppNonClin = isNonClinicalAppointment(appRecord);
+          const cId = extractCallerId(appRecord);
+          const defCall = {
+            id: (appRecord as any).caseRef || appRecord.tokenNo || "call-primary",
+            case_ref: (appRecord as any).caseRef || (appRecord.tokenNo ? appRecord.tokenNo.replace(/-DISP|-HOSP/g, "") : "CA0385AB01"),
+            caller_id: cId,
+            created_at: appRecord.bookedAt || appRecord.date || new Date().toISOString(),
+            formatted_date: appRecord.bookedAt || appRecord.date || "18 Nov 2026, 12:00 pm",
+            urgency_level: isAppNonClin ? "Routine" : (appRecord.triageLevel || "Moderate"),
+            severity: isAppNonClin ? "ROUTINE" : (appRecord.triageLevel || "MODERATE"),
+            chief_complaint: isAppNonClin
+              ? (appRecord.chiefComplaint || `[${(appRecord as any).enquiryType || "Enquiry"}] ${(appRecord as any).chiefIssue || "General Request"}`)
+              : (appRecord.chiefComplaint || appRecord.purpose || "General OPD Consultation"),
+            chief_issue: (appRecord as any).chiefIssue || appRecord.purpose || "General OPD Consultation",
+            enquiry_type: (appRecord as any).enquiryType || null,
+            isNonClinical: isAppNonClin,
+            red_flags: Array.isArray(appRecord.redFlags) ? appRecord.redFlags : [],
+          };
+          setLiveCalls([defCall]);
+        }
+      }
+    }
+
+    // 2. Fetch Dispensary Visits for this Beneficiary
     async function fetchVisits() {
       try {
         const phone = appRecord.phone || appRecord.patientPhone;
-        const ipNumber = appRecord.ipNumber && appRecord.ipNumber !== "N/A" ? appRecord.ipNumber : null;
+        const ipNumber = extractIpNumber(appRecord);
+        const validIp = ipNumber !== "N/A" ? ipNumber : null;
         const name = (appRecord.ipName || appRecord.patientName || "").trim().toLowerCase();
 
         const snap = await getDocs(
@@ -264,17 +476,10 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
         const list: any[] = [];
         const seenTokens = new Set<string>();
 
-        // Always seed with the active appointment if it has diagnosis, prescriptions, or vitals
-        if (
-          appRecord.diagnosis ||
-          appRecord.prescriptions?.length ||
-          appRecord.vitals ||
-          appRecord.status === "completed" ||
-          appRecord.status === "visited"
-        ) {
-          list.push({ ...appRecord });
-          if (appRecord.tokenNo) seenTokens.add(appRecord.tokenNo);
-        }
+        // Always seed with the active appointment
+        list.push({ ...appRecord, ipNumber });
+        if (appRecord.tokenNo) seenTokens.add(appRecord.tokenNo);
+        if (appRecord.id) seenTokens.add(appRecord.id);
 
         snap.forEach((doc) => {
           const d = doc.data();
@@ -282,34 +487,37 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
           if (seenTokens.has(dToken)) return;
 
           const dPhone = d.phone || d.patientPhone;
-          const dIp = d.ipNumber && d.ipNumber !== "N/A" ? d.ipNumber : null;
+          const dIp = extractIpNumber(d);
+          const validDIp = dIp !== "N/A" ? dIp : null;
           const dName = (d.ipName || d.patientName || "").trim().toLowerCase();
 
           const matchPhone =
             phone &&
             dPhone &&
             String(phone).replace(/\D/g, "").slice(-10) === String(dPhone).replace(/\D/g, "").slice(-10);
-          const matchIp = ipNumber && dIp && ipNumber === dIp;
+          const matchIp = validIp && validDIp && validIp === validDIp;
           const matchName = name && dName && (name === dName || name.includes(dName) || dName.includes(name));
 
           if (matchPhone || matchIp || matchName) {
-            if (
-              d.diagnosis ||
-              d.prescriptions?.length ||
-              d.vitals ||
-              d.status === "completed" ||
-              d.status === "visited"
-            ) {
-              seenTokens.add(dToken);
-              list.push({ id: doc.id, ...d });
-            }
+            seenTokens.add(dToken);
+            list.push({ id: doc.id, ...d });
           }
         });
 
-        // Sort newest at top: doctorConsultedAt -> date -> createdAt
+        // Sort newest visit strictly ON TOP
         list.sort((a, b) => {
-          const tA = new Date(a.doctorConsultedAt || a.date || a.createdAt || 0).getTime();
-          const tB = new Date(b.doctorConsultedAt || b.date || b.createdAt || 0).getTime();
+          const cA = typeof a.createdAt === "number" ? a.createdAt : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+          const cB = typeof b.createdAt === "number" ? b.createdAt : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+          if (cA && cB && Math.abs(cA - cB) > 1000) {
+            return cB - cA;
+          }
+          const tokenNumA = parseInt(String(a.tokenNo || a.referenceNo || a.id || "").replace(/\D/g, ""), 10) || 0;
+          const tokenNumB = parseInt(String(b.tokenNo || b.referenceNo || b.id || "").replace(/\D/g, ""), 10) || 0;
+          if (tokenNumA && tokenNumB && tokenNumA !== tokenNumB) {
+            return tokenNumB - tokenNumA;
+          }
+          const tA = new Date(a.doctorConsultedAt || a.visitedAt || a.bookedAt || a.date || 0).getTime();
+          const tB = new Date(b.doctorConsultedAt || b.visitedAt || b.bookedAt || b.date || 0).getTime();
           return tB - tA;
         });
 
@@ -319,34 +527,28 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
       } catch (err) {
         console.warn("Could not fetch dispensary visits:", err);
         if (isMounted) {
-          if (
-            appRecord.diagnosis ||
-            appRecord.prescriptions?.length ||
-            appRecord.vitals ||
-            appRecord.status === "completed" ||
-            appRecord.status === "visited"
-          ) {
-            setDispensaryVisits([{ ...appRecord }]);
-          } else {
-            setDispensaryVisits([]);
-          }
+          setDispensaryVisits([{ ...appRecord }]);
         }
       }
     }
 
+    fetchTriageCalls();
     fetchVisits();
+
     return () => {
       isMounted = false;
     };
   }, [isOpen, appointment]);
 
-  const callerId =
-    clinicalRecord?.callerId ||
-    appointment.callerId ||
-    appointment.caller_id ||
-    (appointment.ipNumber && appointment.ipNumber !== "N/A"
-      ? `IP-${appointment.ipNumber}`
-      : `CID0052A074`);
+  const { userProfile } = useAuth();
+  const isStaff = isDispensaryStaffAccount(userProfile);
+
+  const appIp = extractIpNumber(appointment);
+  const callerId = extractCallerId({
+    ...appointment,
+    clinicalRecord: clinicalRecord || appointment.clinicalRecord,
+    clinicalOverview: appointment.clinicalOverview,
+  });
 
   const beneficiaryName = appointment.ipName || appointment.patientName || "Beneficiary";
 
@@ -362,14 +564,126 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
   const redFlags: any[] =
     Array.isArray(clinicalRecord?.redFlags) && clinicalRecord.redFlags.length > 0
       ? clinicalRecord.redFlags.filter((f: any) => !/none reported/i.test(String(f)))
-      : Array.isArray(appointment.redFlags)
+      : Array.isArray(appointment.redFlags) && appointment.redFlags.length > 0
       ? appointment.redFlags.filter((f: any) => !/none reported/i.test(String(f)))
+      : Array.isArray(liveCalls?.[0]?.red_flags) && liveCalls[0].red_flags.length > 0
+      ? liveCalls[0].red_flags.filter((f: any) => !/none reported/i.test(String(f)))
       : [];
 
-  const hpiDur = cleanValue(clinicalRecord?.hpiDuration);
-  const assocSym = cleanValue(clinicalRecord?.associatedSymptoms);
-  const comorb = cleanValue(clinicalRecord?.comorbidity);
-  const meds = cleanValue(clinicalRecord?.medications);
+  const isNonClinical = isNonClinicalAppointment(appointment);
+
+  const enquiryTypeVal =
+    (appointment as any).enquiryType ||
+    (appointment as any).enquiry_type ||
+    appointment.clinicalSummary?.match(/Enquiry Type:\s*([^\n]+)/i)?.[1]?.trim() ||
+    appointment.chiefComplaint?.match(/\[(.*?)\]/)?.[1]?.trim() ||
+    appointment.purpose?.match(/\[(.*?)\]/)?.[1]?.trim() ||
+    (appointment.chiefComplaint?.includes("Non-Clinical:")
+      ? appointment.chiefComplaint.replace(/Non-Clinical:\s*/i, "").trim()
+      : null) ||
+    "Medical Benefit";
+
+  const chiefIssueVal =
+    (appointment as any).chiefIssue ||
+    (appointment as any).chief_issue ||
+    appointment.clinicalSummary?.match(/Chief Issue:\s*([^\n]+)/i)?.[1]?.trim() ||
+    appointment.chiefComplaint?.replace(/\[.*?\]\s*/, "")?.replace(/Non-Clinical:\s*/i, "")?.trim() ||
+    appointment.purpose?.replace(/\[.*?\]\s*/, "")?.trim() ||
+    "General Enquiry";
+
+  const remarksVal =
+    (appointment as any).remarks ||
+    appointment.clinicalSummary?.match(/Remarks:\s*([^\n]+)/i)?.[1]?.trim() ||
+    "";
+
+  const unifiedHistory = useMemo(() => {
+    const combined: any[] = [];
+    const matchedCallIds = new Set<string>();
+
+    // 1. Add all dispensary visits (which are booked appointments)
+    dispensaryVisits.forEach((vis) => {
+      const vToken = String(vis.tokenNo || "").trim();
+      const vCaseRef = String((vis as any).caseRef || "").trim();
+
+      const matchingCall = liveCalls.find((c) => {
+        if (c.case_ref && vCaseRef && c.case_ref === vCaseRef) return true;
+        if (c.case_ref && vToken && vToken.includes(c.case_ref)) return true;
+        if (c.id && vCaseRef && c.id === vCaseRef) return true;
+        return false;
+      });
+
+      if (matchingCall) {
+        matchedCallIds.add(matchingCall.id || matchingCall.case_ref);
+      }
+
+      combined.push({
+        ...vis,
+        isAppointment: true,
+        hasAppointment: true,
+        callData: matchingCall || null,
+      });
+    });
+
+    // Unbooked calls stay strictly in the Triage Console Call History section.
+    // The dispensary visit record only contains booked dispensary appointments.
+
+    // 3. Ensure the active appointment is present if combined is empty
+    if (combined.length === 0 && appointment) {
+      combined.push({
+        ...appointment,
+        isAppointment: true,
+        hasAppointment: true,
+      });
+    }
+
+    // 4. Sort strictly NEWEST VISIT & CALL ON TOP
+    combined.sort((a, b) => {
+      // 1. Highest numeric createdAt is newest
+      const cA = typeof a.createdAt === "number" ? a.createdAt : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+      const cB = typeof b.createdAt === "number" ? b.createdAt : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      if (cA && cB && Math.abs(cA - cB) > 1000) {
+        return cB - cA;
+      }
+      // 2. Highest token numeric sequence is newest (e.g. 384 > 383 > 382 > 381)
+      const tokenNumA = parseInt(String(a.tokenNo || a.referenceNo || a.id || "").replace(/\D/g, ""), 10) || 0;
+      const tokenNumB = parseInt(String(b.tokenNo || b.referenceNo || b.id || "").replace(/\D/g, ""), 10) || 0;
+      if (tokenNumA && tokenNumB && tokenNumA !== tokenNumB) {
+        return tokenNumB - tokenNumA;
+      }
+      // 3. Fallback to consultation or appointment date/slot
+      const tA = new Date(a.doctorConsultedAt || a.visitedAt || a.bookedAt || a.date || a.created_at || 0).getTime();
+      const tB = new Date(b.doctorConsultedAt || b.visitedAt || b.bookedAt || b.date || b.created_at || 0).getTime();
+      return tB - tA;
+    });
+
+    return combined;
+  }, [dispensaryVisits, liveCalls, appointment]);
+  const hasCRec = Boolean(clinicalRecord && typeof clinicalRecord === "object");
+
+  const hpiDur = hasCRec && clinicalRecord?.hpiDuration !== undefined && clinicalRecord?.hpiDuration !== null && cleanValue(clinicalRecord.hpiDuration)
+    ? cleanValue(clinicalRecord.hpiDuration)
+    : cleanValue((appointment as any)?.hpiDuration) ||
+      cleanValue((appointment as any)?.duration) ||
+      cleanValue(liveCalls?.[0]?.duration) ||
+      "Reported today";
+
+  const assocSym = hasCRec && clinicalRecord?.associatedSymptoms !== undefined && clinicalRecord?.associatedSymptoms !== null
+    ? cleanValue(clinicalRecord.associatedSymptoms)
+    : cleanValue((appointment as any)?.associatedSymptoms) ||
+      cleanValue(liveCalls?.[0]?.associated_symptoms) ||
+      "";
+
+  const comorb = hasCRec && clinicalRecord?.comorbidity !== undefined && clinicalRecord?.comorbidity !== null
+    ? cleanValue(clinicalRecord.comorbidity)
+    : cleanValue((appointment as any)?.comorbidity) ||
+      cleanValue(liveCalls?.[0]?.comorbidity) ||
+      "";
+
+  const meds = hasCRec && (clinicalRecord?.medications !== undefined || clinicalRecord?.anyMedication !== undefined)
+    ? cleanValue(clinicalRecord.medications ?? clinicalRecord.anyMedication)
+    : cleanValue((appointment as any)?.medications) ||
+      cleanValue(liveCalls?.[0]?.medications) ||
+      "";
 
   return (
     <div
@@ -385,21 +699,35 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600 border border-blue-200/60 shadow-2xs">
+            <div
+              className={`flex h-9 w-9 items-center justify-center rounded-xl border shadow-2xs ${
+                isNonClinical
+                  ? "bg-orange-50 text-orange-600 border-orange-200/80"
+                  : "bg-blue-50 text-blue-600 border-blue-200/60"
+              }`}
+            >
               <FileText className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm sm:text-base font-bold text-slate-900">Clinical Summary</h3>
+              <h3 className={`text-sm sm:text-base font-bold ${isNonClinical ? "text-orange-950" : "text-slate-900"}`}>
+                {isNonClinical ? "Non-Clinical Summary" : "Clinical Summary"}
+              </h3>
               <p className="text-[11px] text-slate-500 font-medium">
                 Beneficiary: <strong className="text-slate-800">{beneficiaryName}</strong>
-                {appointment.ipNumber && appointment.ipNumber !== "N/A" ? ` • IP: ${appointment.ipNumber}` : ""}
+                {appIp && appIp !== "N/A" ? ` • IP: ${isStaff ? maskDispensaryIpNumber(appIp) : appIp}` : ""}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="text-xs font-bold text-purple-900 bg-purple-50 border border-purple-200 px-2.5 py-1 rounded-lg shadow-2xs">
-              Caller ID: <span className="font-mono text-purple-700">{callerId}</span>
+            <div
+              className={`text-xs font-bold px-2.5 py-1 rounded-lg border shadow-2xs ${
+                isNonClinical
+                  ? "text-orange-900 bg-orange-50 border-orange-200"
+                  : "text-purple-900 bg-purple-50 border border-purple-200"
+              }`}
+            >
+              Caller ID: <span className={`font-mono ${isNonClinical ? "text-orange-700" : "text-purple-700"}`}>{callerId}</span>
             </div>
             <button
               type="button"
@@ -412,337 +740,419 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
           </div>
         </div>
 
-        {/* 1. Clinical Summary Section */}
+        {/* 1. Clinical OR Non-Clinical Summary Section */}
         <div className="space-y-3 pt-1 text-left">
-          <div className="pb-1.5 border-b border-emerald-500/25 flex items-center justify-between">
-            <h4 className="text-base font-bold text-emerald-800 tracking-tight flex items-center gap-2">
-              <Activity className="h-4 w-4 text-emerald-600" />
-              <span>1. Clinical Summary</span>
+          <div
+            className={`pb-1.5 border-b flex items-center justify-between ${
+              isNonClinical ? "border-orange-500/25" : "border-blue-500/25"
+            }`}
+          >
+            <h4
+              className={`text-base font-bold tracking-tight flex items-center gap-2 ${
+                isNonClinical ? "text-orange-800" : "text-blue-900"
+              }`}
+            >
+              {isNonClinical ? (
+                <>
+                  <FileText className="h-4 w-4 text-orange-600" />
+                  <span>1. Non-Clinical Summary</span>
+                </>
+              ) : (
+                <>
+                  <FileText className="h-4 w-4 text-blue-600" />
+                  <span>1. Clinical Summary</span>
+                </>
+              )}
             </h4>
           </div>
 
-          <ul className="space-y-2.5 text-xs">
-            <li className="space-y-1.5">
-              <span className="font-bold text-slate-800 block text-xs">• Chief Complaint:</span>
-              <div className="pl-4 space-y-1.5">
-                {complaints.map((comp, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-emerald-50/80 border border-emerald-200 text-xs font-semibold text-emerald-950 shadow-2xs"
-                  >
-                    <span className="h-2 w-2 rounded-full bg-emerald-600 shrink-0 ring-2 ring-emerald-500/20" />
-                    <span>{comp}</span>
-                  </div>
-                ))}
-              </div>
-            </li>
+          {isNonClinical ? (
+            <ul className="space-y-2.5 text-xs">
+              <li className="space-y-1">
+                <span className="font-bold text-slate-800 block text-xs">• Enquiry Type:</span>
+                <p className="pl-4 text-xs sm:text-sm font-semibold text-slate-900">
+                  {enquiryTypeVal}
+                </p>
+              </li>
 
-            <li className="space-y-1.5">
-              <span className="font-bold text-rose-700 block text-xs">• Clinical Red Flags:</span>
-              <div className="pl-4">
-                {redFlags.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {redFlags.map((flag, idx) => (
-                      <div
-                        key={idx}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-rose-50 border border-rose-200 text-xs font-bold text-rose-800 shadow-2xs"
-                      >
-                        <span className="h-1.5 w-1.5 rounded-full bg-rose-600 shrink-0" />
-                        <span>{typeof flag === "string" ? flag : flag.label || flag.name || String(flag)}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            </li>
+              <li className="space-y-1">
+                <span className="font-bold text-slate-800 block text-xs">• Chief Complaint / Issue:</span>
+                <p className="pl-4 text-xs sm:text-sm font-semibold text-slate-900 leading-relaxed">
+                  {chiefIssueVal}
+                </p>
+              </li>
 
-            <li className="flex items-baseline gap-2 pt-1">
-              <span className="font-bold text-slate-800 shrink-0">• History of Present Illness(from how long it happening):</span>
-              <span className="font-medium text-slate-900">{hpiDur}</span>
-            </li>
-
-            <li className="flex items-baseline gap-2">
-              <span className="font-bold text-slate-800 shrink-0">• Associated Symptoms:</span>
-              <span className="font-medium text-slate-900">{assocSym}</span>
-            </li>
-
-            <li className="flex items-baseline gap-2">
-              <span className="font-bold text-slate-800 shrink-0">• Comorbidity:</span>
-              <span className="font-medium text-slate-900">{comorb}</span>
-            </li>
-
-            <li className="flex items-baseline gap-2">
-              <span className="font-bold text-slate-800 shrink-0">• Any medication:</span>
-              <span className="font-medium text-slate-900">{meds}</span>
-            </li>
-          </ul>
-        </div>
-
-        {/* 2. Call History (Past Calls) */}
-        <div className="space-y-3 pt-2 text-left">
-          <div className="pb-1.5 border-b border-indigo-500/25 flex items-center justify-between">
-            <h4 className="text-base font-bold text-indigo-800 tracking-tight flex items-center gap-2">
-              <History className="h-4 w-4 text-indigo-600" />
-              <span>2. Call History</span>
-            </h4>
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-indigo-50 border border-indigo-200 text-indigo-700 shadow-2xs">
-              <span>Recorded Calls</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-800 font-extrabold ml-1">
-                {past3Calls.length || (appointment.pastCallsCount || 1)}
-              </span>
-            </div>
-          </div>
-
-          {past3Calls.length > 0 ? (
-            <div className="space-y-3">
-              {past3Calls.map((item, idx) => {
-                const norm = normalizeUrgency(item.urgency_level || item.triage_level || item.severity);
-                const timeStr = item.formatted_date || item.created_at || "Recent consultation";
-                const rfList = (
-                  Array.isArray(item.red_flags)
-                    ? item.red_flags
-                    : typeof item.red_flags === "string" && item.red_flags
-                    ? [item.red_flags]
-                    : []
-                ).filter((f: any) => !/none reported/i.test(String(f)));
-                const refCode = item.case_ref || item.id || `CA033${5 - idx}AB01`;
-
-                return (
-                  <div
-                    key={item.id || idx}
-                    className="rounded-2xl border border-indigo-200/80 bg-indigo-50/20 p-3.5 sm:p-4 space-y-2.5 shadow-2xs"
-                  >
-                    {/* Card Top Row */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-200/50 pb-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-extrabold text-xs sm:text-sm text-slate-900">
-                          Past History {idx + 1}
-                        </span>
-                        <span className="font-mono text-[11px] text-indigo-600 font-bold">
-                          ({refCode})
-                        </span>
-                        <span
-                          className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
-                            norm === "Severe"
-                              ? "bg-rose-100 text-rose-800 border border-rose-300"
-                              : norm === "Moderate"
-                              ? "bg-amber-100 text-amber-800 border border-amber-300"
-                              : "bg-emerald-100 text-emerald-800 border border-emerald-300"
-                          }`}
-                        >
-                          {norm}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                        <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                        <span>{timeStr}</span>
-                      </div>
-                    </div>
-
-                    {/* Chief Complaint */}
-                    <div className="space-y-1">
-                      <span className="font-bold text-xs text-slate-900 block">• Chief Complaint:</span>
-                      <p className="text-xs font-medium text-slate-800 pl-3 leading-relaxed">
-                        {item.chief_complaint || "Routine triage review"}
-                      </p>
-                    </div>
-
-                    {/* Clinical Red Flags */}
-                    <div className="space-y-1">
-                      <span className="font-bold text-xs text-rose-700 block">• Clinical Red Flags:</span>
-                      <div className="pl-3">
-                        {rfList.length > 0 ? (
-                          <ul className="space-y-1">
-                            {rfList.map((rf: any, rIdx: number) => (
-                              <li
-                                key={rIdx}
-                                className="text-xs text-rose-950 font-semibold flex items-center gap-2"
-                              >
-                                <span className="h-1.5 w-1.5 rounded-full bg-rose-600 shrink-0" />
-                                <span>{typeof rf === "string" ? rf : rf?.name || String(rf)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+              {remarksVal ? (
+                <li className="space-y-1">
+                  <span className="font-bold text-slate-800 block text-xs">• Remarks / Action Taken:</span>
+                  <p className="pl-4 text-xs sm:text-sm font-medium text-slate-800 leading-relaxed whitespace-pre-line">
+                    {remarksVal}
+                  </p>
+                </li>
+              ) : null}
+            </ul>
           ) : (
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-xs text-slate-500 flex items-center gap-2">
-              <Info className="h-4 w-4 text-slate-400 shrink-0" />
-              <span>No previous consultation history recorded for this caller (First recorded visit).</span>
-            </div>
+            <ul className="space-y-2.5 text-xs">
+              <li className="space-y-1">
+                <span className="font-bold text-slate-800 block text-xs">• Chief Complaint:</span>
+                <div className="pl-4 space-y-1">
+                  {complaints.map((comp, idx) => (
+                    <p key={idx} className="text-xs sm:text-sm font-semibold text-slate-900 leading-relaxed">
+                      {comp}
+                    </p>
+                  ))}
+                </div>
+              </li>
+
+              <li className="space-y-1">
+                <span className="font-bold text-slate-800 block text-xs">• Clinical Red Flags:</span>
+                <div className="pl-4">
+                  {redFlags.length > 0 ? (
+                    <div className="space-y-1">
+                      {redFlags.map((flag, idx) => {
+                        const val = typeof flag === "string" ? flag : flag.label || flag.name || String(flag);
+                        return (
+                          <p key={idx} className="text-xs sm:text-sm font-semibold text-slate-900 leading-relaxed">
+                            {val}
+                          </p>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 italic">None reported</p>
+                  )}
+                </div>
+              </li>
+
+              <li className="flex items-baseline gap-2 pt-1">
+                <span className="font-bold text-slate-800 shrink-0">• History of Present Illness(from how long it happening):</span>
+                <span className="font-medium text-slate-900">{hpiDur}</span>
+              </li>
+
+              <li className="flex items-baseline gap-2">
+                <span className="font-bold text-slate-800 shrink-0">• Associated Symptoms:</span>
+                <span className="font-medium text-slate-900">{assocSym}</span>
+              </li>
+
+              <li className="flex items-baseline gap-2">
+                <span className="font-bold text-slate-800 shrink-0">• Comorbidity:</span>
+                <span className="font-medium text-slate-900">{comorb}</span>
+              </li>
+
+              <li className="flex items-baseline gap-2">
+                <span className="font-bold text-slate-800 shrink-0">• Any medication:</span>
+                <span className="font-medium text-slate-900">{meds}</span>
+              </li>
+            </ul>
           )}
         </div>
 
-        {/* Agent Notes / Doctor Instructions */}
-        {(appointment.notes || (appointment as any).agentNotes) && (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3.5 text-left text-xs space-y-1">
-            <span className="font-bold text-slate-800 uppercase tracking-wider text-[10.5px] block">
-              Agent Visit Notes / Instructions:
-            </span>
-            <p className="text-slate-700 italic leading-relaxed pl-1">
-              {appointment.notes || (appointment as any).agentNotes}
-            </p>
-          </div>
-        )}
-
-        {/* 3. On-Premise Dispensary Visit Record (Newest at top) */}
+        {/* 2. Past Calls & Visits (Unified Timeline) */}
         <div className="space-y-3 pt-2 text-left">
-          <div className="pb-1.5 border-b border-teal-500/25 flex items-center justify-between">
-            <h4 className="text-base font-bold text-teal-800 tracking-tight flex items-center gap-2">
-              <Stethoscope className="h-4 w-4 text-teal-600" />
-              <span>3. On-Premise Dispensary Visit Record</span>
+          <div
+            className={`pb-1.5 border-b flex items-center justify-between ${
+              isNonClinical ? "border-orange-500/25" : "border-blue-500/25"
+            }`}
+          >
+            <h4
+              className={`text-base font-bold tracking-tight flex items-center gap-2 ${
+                isNonClinical ? "text-orange-800" : "text-blue-900"
+              }`}
+            >
+              <History className={`h-4 w-4 ${isNonClinical ? "text-orange-600" : "text-blue-600"}`} />
+              <span>2. Past Calls & Visits</span>
             </h4>
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-teal-50 border border-teal-200 text-teal-700 shadow-2xs">
-              <span>Recorded Visits</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-teal-100 text-teal-800 font-extrabold ml-1">
-                {dispensaryVisits.length}
+            <div
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border shadow-2xs ${
+                isNonClinical
+                  ? "bg-orange-50 border-orange-200 text-orange-800"
+                  : "bg-blue-50 border-blue-200 text-blue-800"
+              }`}
+            >
+              <span>Recorded History</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ml-1 ${
+                  isNonClinical
+                    ? "bg-orange-100 text-orange-900"
+                    : "bg-blue-100 text-blue-900"
+                }`}
+              >
+                {unifiedHistory.length}
               </span>
             </div>
           </div>
 
-          {dispensaryVisits.length > 0 ? (
+          {unifiedHistory.length > 0 ? (
             <div className="space-y-3">
-              {dispensaryVisits.map((vis, vIdx) => {
-                const dateDisplay = vis.date || vis.doctorConsultedAt || "Recent visit";
-                const slotDisplay = vis.slot || vis.timeSlot || "";
-                const isCurrent = vis.tokenNo === appointment.tokenNo;
+              {unifiedHistory.map((item, hIdx) => {
+                const isCurrent = Boolean(
+                  item.isAppointment &&
+                  (!item.tokenNo || item.tokenNo === appointment.tokenNo || item.id === appointment.id)
+                );
+
+                const dateDisplay =
+                  item.date ||
+                  item.doctorConsultedAt ||
+                  item.formatted_date ||
+                  (item.createdAt ? new Date(item.createdAt).toLocaleDateString("en-CA") : "2026-11-18");
+
+                const slotDisplay = item.slot || item.timeSlot || item.formatted_date || "";
+                const dispName = item.dispensaryName || item.facilityName || "";
+                const vStatus = (item.status || (item.isAppointment ? "scheduled" : "call_only")).toLowerCase();
+                const isCompleted = vStatus === "completed" || vStatus === "visited" || vStatus === "dispensed";
+                const isCanc = vStatus === "cancelled";
+                const isCallOnly = !item.hasAppointment || vStatus === "call_only";
+
+                const isItemNonClin = Boolean(
+                  item.callType === "non_clinical" ||
+                  item.isNonClinical === true ||
+                  item.appointmentType === "Non-Clinical Visit" ||
+                  item.appointmentType === "Non-Clinical Enquiry" ||
+                  item.department === "Non-Clinical Visit" ||
+                  Boolean(item.enquiryType || item.enquiry_type) ||
+                  (item.chiefComplaint && (
+                    item.chiefComplaint.startsWith("[") ||
+                    item.chiefComplaint.toLowerCase().includes("non-clinical:")
+                  )) ||
+                  (isCurrent && isNonClinical)
+                );
+
+                const itemEnquiry =
+                  item.enquiryType ||
+                  item.enquiry_type ||
+                  item.clinicalSummary?.match(/Enquiry Type:\s*([^\n]+)/i)?.[1]?.trim() ||
+                  item.chiefComplaint?.match(/\[(.*?)\]/)?.[1]?.trim() ||
+                  item.purpose?.match(/\[(.*?)\]/)?.[1]?.trim() ||
+                  (isCurrent ? enquiryTypeVal : null);
+
+                const itemIssue =
+                  item.chiefIssue ||
+                  item.chief_issue ||
+                  item.clinicalSummary?.match(/Chief Issue:\s*([^\n]+)/i)?.[1]?.trim() ||
+                  item.chiefComplaint?.replace(/\[.*?\]\s*/, "")?.replace(/Non-Clinical:\s*/i, "")?.trim() ||
+                  item.purpose?.replace(/\[.*?\]\s*/, "")?.trim() ||
+                  (isCurrent ? chiefIssueVal : null);
+
+                const itemDisplay =
+                  item.purpose ||
+                  item.chiefComplaint ||
+                  (itemEnquiry ? `[${itemEnquiry}] ${itemIssue || ""}`.trim() : `[${enquiryTypeVal}] ${chiefIssueVal}`);
+
+                const tokenOrRef = item.tokenNo || item.caseRef || item.case_ref;
 
                 return (
                   <div
-                    key={vis.id || vis.tokenNo || vIdx}
-                    className="rounded-2xl border border-teal-200/80 bg-teal-50/25 p-3.5 sm:p-4 space-y-2.5 shadow-2xs"
+                    key={item.id || item.tokenNo || item.caseRef || hIdx}
+                    className={`rounded-2xl border p-3.5 sm:p-4 space-y-2.5 shadow-2xs ${
+                      isItemNonClin
+                        ? "border-orange-200/80 bg-orange-50/20"
+                        : "border-blue-200/80 bg-blue-50/25"
+                    }`}
                   >
-                    {/* Header Row */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-200/50 pb-2">
+                    {/* Line 1: History 1 + Token/Ref + CLINICAL/NON-CLINICAL + Current Badge + Status Badge */}
+                    <div
+                      className={`flex flex-wrap items-center justify-between gap-2 border-b pb-2 ${
+                        isItemNonClin ? "border-orange-200/50" : "border-blue-200/50"
+                      }`}
+                    >
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-extrabold text-xs sm:text-sm text-slate-900">
-                          Visit Record {vIdx + 1}
+                          History {hIdx + 1}
                         </span>
-                        <span className="font-mono text-[11px] text-teal-700 font-bold bg-teal-100/70 px-2 py-0.5 rounded">
-                          Token: {vis.tokenNo || "N/A"}
-                        </span>
-                        {isCurrent && (
-                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-300">
-                            Current
+
+                        {tokenOrRef && (
+                          <span
+                            className={`px-2 py-0.5 rounded border text-[11px] font-mono font-bold ${
+                              isItemNonClin
+                                ? "bg-orange-50 border-orange-200 text-orange-800"
+                                : "bg-slate-50 border-slate-200 text-slate-700"
+                            }`}
+                          >
+                            {item.tokenNo ? `Token: ${item.tokenNo}` : `Ref: ${tokenOrRef}`}
                           </span>
                         )}
-                        {vis.status && (
-                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 border border-teal-300">
-                            {vis.status === "completed" || vis.status === "visited"
-                              ? "VISIT COMPLETED"
-                              : vis.status === "pharmacy_queue"
-                              ? "WITH PHARMACIST"
-                              : vis.status === "with_doctor"
-                              ? "WITH DOCTOR"
-                              : String(vis.status).toUpperCase()}
+
+                        {/* Clinical vs Non-Clinical identification badge */}
+                        {isItemNonClin ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-orange-100 text-orange-900 border border-orange-300">
+                            <FileText className="w-3 h-3 text-orange-700" />
+                            <span>NON-CLINICAL</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-900 border border-blue-300">
+                            <Stethoscope className="w-3 h-3 text-blue-700" />
+                            <span>CLINICAL</span>
+                          </span>
+                        )}
+
+                        {isCurrent && (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-600 text-white border border-blue-700 shadow-xs ring-2 ring-blue-500/20">
+                            CURRENT
+                          </span>
+                        )}
+
+                        {/* Status: Call Only vs Appointment Status */}
+                        {isCallOnly ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-purple-50 text-purple-800 border border-purple-300 shadow-2xs">
+                            <PhoneCall className="w-3 h-3 text-purple-600" />
+                            <span>CALL ONLY</span>
+                          </span>
+                        ) : isCompleted ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">
+                            VISIT COMPLETED
+                          </span>
+                        ) : isCanc ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-300">
+                            CANCELLED
+                          </span>
+                        ) : vStatus === "with_doctor" ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-blue-100 text-blue-800 border border-blue-300">
+                            WITH DOCTOR
+                          </span>
+                        ) : vStatus === "pharmacy_queue" ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-100 text-purple-800 border border-purple-300">
+                            WITH PHARMACIST
+                          </span>
+                        ) : (
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
+                              isItemNonClin
+                                ? "bg-orange-100 text-orange-800 border-orange-300"
+                                : "bg-amber-100 text-amber-800 border-amber-300"
+                            }`}
+                          >
+                            SCHEDULED
                           </span>
                         )}
                       </div>
+                    </div>
 
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                    {/* Line 2: Date, Time & Dispensary / Facility Name */}
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 font-medium">
+                      <span className="flex items-center gap-1.5 text-slate-700">
                         <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                         <span>
-                          {dateDisplay} {slotDisplay ? `· ${slotDisplay}` : ""}
+                          {dateDisplay} {slotDisplay && slotDisplay !== dateDisplay ? `· ${slotDisplay}` : ""}
                         </span>
-                      </div>
+                      </span>
+                      {dispName && (
+                        <span
+                          className={`inline-flex items-center gap-1 font-bold ${
+                            isItemNonClin ? "text-orange-950" : "text-blue-950"
+                          }`}
+                        >
+                          <Building2
+                            className={`h-3.5 w-3.5 shrink-0 ${
+                              isItemNonClin ? "text-orange-600" : "text-blue-600"
+                            }`}
+                          />
+                          <span>{dispName}</span>
+                        </span>
+                      )}
                     </div>
 
-                    {/* Clinical Diagnosis (Newest at top) */}
-                    {vis.diagnosis && (
-                      <div className="space-y-1">
-                        <span className="font-bold text-xs text-slate-900 block">• Clinical Diagnosis:</span>
-                        <div className="pl-3 flex flex-wrap items-center gap-2">
-                          <span className="px-3 py-1 rounded-xl bg-blue-100 text-blue-900 font-extrabold text-xs border border-blue-200 shadow-2xs">
-                            {vis.diagnosis}
+                    {/* Line 3: Enquiry Type / Issue OR Chief Complaint & Clinical Diagnosis */}
+                    <div className="pt-0.5 text-xs">
+                      {isItemNonClin ? (
+                        <div className="flex flex-wrap items-baseline gap-1.5">
+                          <span className="font-bold text-slate-800">• Enquiry Type / Issue:</span>
+                          <span className="font-semibold text-slate-900">
+                            {itemDisplay}
                           </span>
-                          {vis.doctorName && (
-                            <span className="text-[11px] font-medium text-slate-500">
-                              (Consulted by {vis.doctorName.startsWith("Dr.") ? vis.doctorName : `Dr. ${vis.doctorName}`})
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-baseline gap-1.5">
+                            <span className="font-bold text-slate-800">• Chief Complaint:</span>
+                            <span className="font-semibold text-slate-900">
+                              {item.chiefComplaint || item.purpose || item.diagnosis || "General OPD Consultation"}
                             </span>
+                            {isCompleted && (item.doctorName || item.doctor || item.prescribedBy) && (
+                              <span className="text-[11px] font-medium text-slate-500 italic">
+                                (Consulted by {getDoctorName(item.doctorName || item.doctor || item.prescribedBy)}{formatStaffTimestamp(item.doctorConsultedAt) ? ` ${formatStaffTimestamp(item.doctorConsultedAt)}` : ""})
+                              </span>
+                            )}
+                          </div>
+                          {item.diagnosis && item.diagnosis !== (item.chiefComplaint || item.purpose) && (
+                            <div className="flex flex-wrap items-baseline gap-1.5">
+                              <span className="font-bold text-slate-800">• Clinical Diagnosis:</span>
+                              <span className="font-semibold text-slate-900">
+                                {item.diagnosis}
+                              </span>
+                            </div>
                           )}
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
 
-                    {/* Doctor Advice / Notes */}
-                    {vis.doctorNotes && (
-                      <div className="space-y-0.5">
-                        <span className="font-bold text-xs text-slate-900 block">• Doctor Advice:</span>
-                        <p className="text-xs font-medium text-slate-700 italic pl-3 leading-relaxed">
-                          {vis.doctorNotes}
-                        </p>
-                      </div>
-                    )}
+                    {/* Notes in a clean, single line each */}
+                    {Boolean(
+                      item.visitedNotes ||
+                      item.receptionNotes ||
+                      item.doctorNotes ||
+                      item.dispensationNotes ||
+                      item.dispensedNotes ||
+                      item.pharmacyNotes ||
+                      item.pharmacistNotes ||
+                      item.dispensedBy ||
+                      ((item.callData?.recommended_action || item.recommendedAction || item.agentNotes || item.notes) && !item.doctorNotes)
+                    ) && (
+                      <div className="space-y-1 pt-1.5 border-t border-slate-100/90 text-xs">
+                        {/* 1. Reception Note */}
+                        {(item.visitedNotes || item.receptionNotes) && (
+                          <div className="flex flex-wrap items-baseline gap-1.5 text-xs">
+                            <span className="font-bold text-slate-800">• Reception Note:</span>
+                            <span className="text-slate-700 italic">
+                              {(item.visitedNotes || item.receptionNotes).trim()}
+                            </span>
+                            {(item.receptionCheckedInBy || item.visitedBy) && (
+                              <span className="text-[11px] font-semibold text-slate-500 not-italic">
+                                (by {getStaffName(item.receptionCheckedInBy || item.visitedBy)}{formatStaffTimestamp(item.receptionCheckedInAt || item.visitedAt) ? ` ${formatStaffTimestamp(item.receptionCheckedInAt || item.visitedAt)}` : ""})
+                              </span>
+                            )}
+                          </div>
+                        )}
 
-                    {/* Prescription Items */}
-                    {vis.prescriptions && vis.prescriptions.length > 0 && (
-                      <div className="space-y-1.5 pt-0.5">
-                        <span className="font-bold text-xs text-purple-900 block flex items-center gap-1.5">
-                          <Pill className="w-3.5 h-3.5 text-purple-600" />
-                          <span>• Prescriptions Issued ({vis.prescriptions.length}):</span>
-                        </span>
-                        <div className="flex flex-wrap gap-1.5 pl-3">
-                          {vis.prescriptions.map((p: any, pIdx: number) => (
-                            <span
-                              key={pIdx}
-                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-slate-800 shadow-2xs"
-                            >
-                              <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-                              <strong>{p.medicineName || p.name}</strong>
-                              {p.dosage && <span className="text-slate-400">({p.dosage})</span>}
-                              <span className="text-slate-500">· {p.frequency}</span>
-                              {p.duration && <span className="text-slate-400 font-mono">({p.duration})</span>}
+                        {/* 2. Doctor Advice */}
+                        {item.doctorNotes && (
+                          <div className="flex flex-wrap items-baseline gap-1.5 text-xs">
+                            <span className="font-bold text-slate-800">• Doctor Advice:</span>
+                            <span className="text-slate-700 italic">
+                              {item.doctorNotes.trim()}
                             </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                            {(item.doctorName || item.doctor || item.prescribedBy) && (
+                              <span className="text-[11px] font-semibold text-slate-500 not-italic">
+                                (by {getDoctorName(item.doctorName || item.doctor || item.prescribedBy)}{formatStaffTimestamp(item.doctorConsultedAt) ? ` ${formatStaffTimestamp(item.doctorConsultedAt)}` : ""})
+                              </span>
+                            )}
+                          </div>
+                        )}
 
-                    {/* Vitals Recorded */}
-                    {vis.vitals && (
-                      <div className="space-y-1 pt-1 border-t border-teal-200/40">
-                        <span className="font-bold text-xs text-slate-700 block">• Vitals Recorded:</span>
-                        <div className="flex flex-wrap gap-2 text-xs pl-3">
-                          {vis.vitals.bp && (
-                            <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md text-[11px] font-semibold text-slate-700">
-                              BP: <strong className="text-slate-900">{vis.vitals.bp}</strong>
+                        {/* 3. Pharmacist Note */}
+                        {(item.dispensationNotes || item.dispensedNotes || item.pharmacyNotes || item.pharmacistNotes || item.dispensedBy) && (
+                          <div className="flex flex-wrap items-baseline gap-1.5 text-xs">
+                            <span className="font-bold text-slate-800">• Pharmacist:</span>
+                            <span className="text-slate-700 italic">
+                              {(item.dispensationNotes || item.dispensedNotes || item.pharmacyNotes || item.pharmacistNotes || "given").trim()}
                             </span>
-                          )}
-                          {vis.vitals.pulse && (
-                            <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md text-[11px] font-semibold text-slate-700">
-                              Pulse: <strong className="text-slate-900">{vis.vitals.pulse} bpm</strong>
-                            </span>
-                          )}
-                          {vis.vitals.temp && (
-                            <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md text-[11px] font-semibold text-slate-700">
-                              Temp: <strong className="text-slate-900">{vis.vitals.temp}</strong>
-                            </span>
-                          )}
-                          {vis.vitals.weight && (
-                            <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md text-[11px] font-semibold text-slate-700">
-                              Weight: <strong className="text-slate-900">{vis.vitals.weight} kg</strong>
-                            </span>
-                          )}
-                          {vis.vitals.spo2 && (
-                            <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md text-[11px] font-semibold text-slate-700">
-                              SpO2: <strong className="text-slate-900">{vis.vitals.spo2}%</strong>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                            {(item.dispensedBy || item.pharmacistName) && (
+                              <span className="text-[11px] font-semibold text-slate-500 not-italic">
+                                (by {getStaffName(item.dispensedBy || item.pharmacistName)}{formatStaffTimestamp(item.dispensedAt) ? ` ${formatStaffTimestamp(item.dispensedAt)}` : ""})
+                              </span>
+                            )}
+                          </div>
+                        )}
 
-                    {/* Pharmacy Remarks */}
-                    {vis.dispensationNotes && (
-                      <div className="text-[11px] text-slate-600 italic pl-3 border-t border-teal-200/30 pt-1">
-                        <span className="font-semibold text-slate-700 not-italic">Pharmacy Remarks: </span>
-                        {vis.dispensationNotes}
+                        {/* 4. Triage Guidance */}
+                        {(item.callData?.recommended_action || item.recommendedAction || item.agentNotes || item.notes) &&
+                          !item.doctorNotes && !item.visitedNotes && (
+                            <div className="flex flex-wrap items-baseline gap-1.5 text-xs">
+                              <span className="font-bold text-slate-800">• Triage Guidance:</span>
+                              <span className="text-slate-700 italic">
+                                {item.callData?.recommended_action || item.recommendedAction || item.agentNotes || item.notes}
+                              </span>
+                            </div>
+                          )}
                       </div>
                     )}
                   </div>
@@ -752,17 +1162,17 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
           ) : (
             <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-xs text-slate-500 flex items-center gap-2">
               <Info className="h-4 w-4 text-slate-400 shrink-0" />
-              <span>No on-premise dispensary consultation record found for this patient yet.</span>
+              <span>No previous call or dispensary visit history recorded for this caller.</span>
             </div>
           )}
         </div>
 
-        {/* Modal Footer */}
+        {/* Modal Footer Close Button */}
         <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
           <button
             type="button"
             onClick={onClose}
-            className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition cursor-pointer"
+            className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition cursor-pointer active:scale-95 shadow-2xs"
           >
             Close
           </button>

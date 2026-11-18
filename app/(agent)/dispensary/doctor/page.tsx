@@ -13,7 +13,7 @@ import {
 import { bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { AppointmentRecord, isDispensaryMatch, PrescriptionItem } from "@/lib/appointmentTypes";
+import { AppointmentRecord, isDispensaryMatch, PrescriptionItem, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createDispensaryNotification } from "@/lib/notificationService";
 import {
@@ -32,6 +32,8 @@ import {
   Trash2,
   Calendar,
   Building2,
+  CalendarCheck,
+  Lock,
   Send,
   Copy,
   Check,
@@ -39,9 +41,14 @@ import {
   Edit3,
   FileText,
   UserCheck,
+  PackageCheck,
 } from "lucide-react";
 import Link from "next/link";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
+import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";
+import { useStaffDirectory } from "@/lib/useStaffDirectory";
+import { extractIpNumber } from "@/lib/appointmentTypes";
+import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
 
 const COMMON_MEDICINES = [
   { name: "Tab Paracetamol 650mg", defaultDosage: "1 Tab", defaultFreq: "1-0-1 (After food)", defaultDur: "3 Days" },
@@ -55,8 +62,10 @@ const COMMON_MEDICINES = [
 ];
 
 export default function DoctorDeskPage() {
-  const { user, userProfile } = useAuth();
+  const { user, userProfile, isAdmin } = useAuth();
   const { toast } = usePopup();
+  const { getStaffName, getDoctorName } = useStaffDirectory();
+  const isStaff = isDispensaryStaffAccount(userProfile) || (userProfile?.role !== "Admin" && userProfile?.role !== "Master Admin");
 
   const todayStr = useMemo(() => {
     const d = new Date();
@@ -85,8 +94,16 @@ export default function DoctorDeskPage() {
     const day = String(d.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   });
+
+  // Sync date filter with mini-bar icons
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("ekms-date-filter-change", { detail: selectedDate }));
+    }
+  }, [selectedDate]);
   const [activeTab, setActiveTab] = useState<"pending_consultation" | "consulted">("pending_consultation");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [doctorAvailabilityOpen, setDoctorAvailabilityOpen] = useState(false);
 
   const handleCopy = (text: string, id: string) => {
     if (!text) return;
@@ -124,7 +141,13 @@ export default function DoctorDeskPage() {
       (snap) => {
         const list: AppointmentRecord[] = [];
         snap.forEach((d) => {
-          list.push({ id: d.id, ...d.data() } as AppointmentRecord);
+          const data = d.data();
+          list.push({
+            id: d.id,
+            ...data,
+            ipNumber: extractIpNumber(data),
+            ipName: data.ipName || data.patientName || "Beneficiary",
+          } as AppointmentRecord);
         });
         setAppointments(list);
         setLoading(false);
@@ -141,6 +164,9 @@ export default function DoctorDeskPage() {
   // Filter by dispensary and date
   const scopedList = useMemo(() => {
     return appointments.filter((app) => {
+      // Non-clinical bookings are handled solely at Reception and never routed to Doctor
+      if (isNonClinicalAppointment(app)) return false;
+
       if (isDispensaryStaff && staffDispensary) {
         if (!isDispensaryMatch(app.dispensaryName, staffDispensary, app.dispensaryId, userProfile?.dispensaryId)) {
           return false;
@@ -175,10 +201,41 @@ export default function DoctorDeskPage() {
     );
   }, [currentList, searchTerm]);
 
+  const currentStaffEmail = (user?.email || "").toLowerCase().trim();
+  const currentStaffName = (
+    userProfile?.displayName ||
+    userProfile?.name ||
+    (userProfile as any)?.fullName ||
+    user?.displayName ||
+    ""
+  ).toLowerCase().trim();
+
+  // Helper: Check if this consultation was conducted by another doctor (blocks other doctors from editing)
+  const isOtherDoctorConsultation = (patient: AppointmentRecord): boolean => {
+    if (isAdmin) return false;
+    const docEmail = (patient.doctorEmail || (patient as any).prescribedByEmail || "").toLowerCase().trim();
+    const docName = (patient.doctorName || (patient as any).prescribedBy || "").toLowerCase().trim();
+    if (!docEmail && !docName) return false;
+
+    if (docEmail && currentStaffEmail) {
+      return docEmail !== currentStaffEmail;
+    }
+    if (docName && currentStaffName) {
+      return !docName.includes(currentStaffName) && !currentStaffName.includes(docName);
+    }
+    return false;
+  };
+
   // Open consultation modal
   const handleOpenConsultation = (patient: AppointmentRecord) => {
     if (patient.status === "completed") {
       toast.info("This visit has already been completed and finalized. Records are permanently locked.");
+      return;
+    }
+    if (isOtherDoctorConsultation(patient)) {
+      toast.warning(
+        `Locked: This consultation was conducted by Dr. ${patient.doctorName || "another doctor"}. Only the consulting doctor can edit this record.`
+      );
       return;
     }
     setActivePatient(patient);
@@ -239,8 +296,11 @@ export default function DoctorDeskPage() {
       setConsultModalOpen(false);
       return;
     }
-    if (!diagnosis.trim()) {
-      toast.error("Please enter a clinical diagnosis or assessment.");
+    if (isOtherDoctorConsultation(activePatient)) {
+      toast.error(
+        `Permission denied: Consultation was conducted by Dr. ${activePatient.doctorName || "another doctor"}. Only that doctor can edit this record.`
+      );
+      setConsultModalOpen(false);
       return;
     }
 
@@ -252,9 +312,14 @@ export default function DoctorDeskPage() {
       await updateDoc(docRef, {
         status: "pharmacy_queue",
         doctorConsultedAt: Date.now(),
-        doctorName: userProfile?.displayName || userProfile?.name || user?.email?.split("@")[0] || "Medical Officer",
+        doctorName:
+          userProfile?.displayName?.trim() ||
+          userProfile?.name?.trim() ||
+          (userProfile as any)?.fullName?.trim() ||
+          user?.displayName?.trim() ||
+          "Medical Officer",
         doctorEmail: user?.email || "doctor@esic.gov.in",
-        diagnosis: diagnosis.trim(),
+        diagnosis: "",
         prescriptions: cleanPrescriptions,
         doctorNotes: doctorNotes.trim(),
         updatedAt: Date.now(),
@@ -276,7 +341,7 @@ export default function DoctorDeskPage() {
         type: "edit",
       });
 
-      toast.success(`Consultation recorded! Prescriptions forwarded to Pharmacy.`);
+      toast.success(`Consultation recorded and forwarded to Pharmacy.`);
       setConsultModalOpen(false);
       setActivePatient(null);
     } catch (err: any) {
@@ -294,12 +359,23 @@ export default function DoctorDeskPage() {
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Dispensary Doctor Desk</h1>
         </div>
 
-        {staffDispensary && (
-          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-50 border border-teal-200/90 text-teal-900 text-xs font-semibold shadow-2xs self-start sm:self-auto">
-            <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-            <span>Dispensary: <strong className="text-slate-800 font-bold">{staffDispensary}</strong></span>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {staffDispensary && (
+            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-50 border border-teal-200/90 text-teal-900 text-xs font-semibold shadow-2xs self-start sm:self-auto">
+              <Building2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+              <span>Dispensary: <strong className="text-slate-800 font-bold">{staffDispensary}</strong></span>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setDoctorAvailabilityOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-teal-50 border border-teal-200 text-teal-700 text-xs font-bold shadow-2xs transition active:scale-95 cursor-pointer"
+            title="Set My Availability & Leaves"
+          >
+            <CalendarCheck className="w-3.5 h-3.5 text-teal-600" />
+            <span>Set My Availability</span>
+          </button>
+        </div>
       </div>
 
       {/* 2. Top Metrics */}
@@ -511,8 +587,21 @@ export default function DoctorDeskPage() {
                     </span>
                   </div>
 
-                  {/* Beautiful Status Badge (Top-Right) */}
-                  <div className="shrink-0">
+                  {/* Beautiful Clinical summary & Status Badge (Top-Right) */}
+                  <div className="shrink-0 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSummaryApp(app);
+                        setSummaryModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                      title={isNonClinicalAppointment(app) ? "View Non-Clinical Summary" : "View Clinical Summary"}
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-600" />
+                      <span>{isNonClinicalAppointment(app) ? "Non-Clinical summary" : "Clinical summary"}</span>
+                    </button>
+
                     {isCompleted ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-xs font-black uppercase tracking-wider shadow-2xs">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
@@ -544,8 +633,8 @@ export default function DoctorDeskPage() {
 
                 {/* 2. Body: Header Row with Demographics on Left, Actions on Right */}
                 <div className="pt-3 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="space-y-1.5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                    <div className="space-y-1.5 flex-1 min-w-0">
                       {/* Patient Identification Line */}
                       <div className="flex flex-wrap items-baseline gap-2">
                         <h3 className="text-base font-extrabold text-slate-900">{app.ipName}</h3>
@@ -555,51 +644,98 @@ export default function DoctorDeskPage() {
                           </span>
                         )}
                         <span className="text-xs font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded font-semibold">
-                          IP: {app.ipNumber || "N/A"}
+                          IP: {isStaff ? maskDispensaryIpNumber(app.ipNumber) : (app.ipNumber || "N/A")}
                         </span>
                         {app.phone && (
                           <span className="text-xs text-slate-600 flex items-center gap-1 font-medium">
                             <Phone className="w-3 h-3 text-slate-400" />
-                            <span>{app.phone}</span>
+                            <span>{isStaff ? maskDispensaryMobile(app.phone) : app.phone}</span>
                           </span>
                         )}
                       </div>
 
-                      {/* Clinical Context: Chief Complaint (No Dispensary Name) */}
+                      {/* Clinical Context: Chief Complaint */}
                       <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700 font-medium">
-                        <span className="flex items-center gap-1">
-                          <Activity className="w-3.5 h-3.5 shrink-0 text-blue-500" />
-                          <span>Chief Complaint: <strong className="text-slate-900 font-bold">{app.chiefComplaint || app.purpose}</strong></span>
-                        </span>
-                        {(app.receptionCheckedInBy || app.visitedBy || app.visitedNotes) && (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-blue-50/70 text-blue-800 text-[11px] font-semibold border border-blue-200/80 ml-1">
-                            <UserCheck className="w-3 h-3 text-blue-600" />
-                            <span>
-                              Reception by {app.receptionCheckedInBy || app.visitedBy || "Receptionist"}
-                              {app.visitedNotes && app.visitedNotes.toLowerCase().trim() !== "done" ? `: ${app.visitedNotes}` : ""}
+                        <Activity className="w-3.5 h-3.5 shrink-0 text-blue-500" />
+                        <span>Chief Complaint: <strong className="text-slate-900 font-bold">{app.chiefComplaint || app.purpose}</strong></span>
+                      </div>
+
+                      {/* Audit Lines: Clean Plain Text (No Boxes) */}
+                      <div className="text-xs text-slate-700 space-y-1 pt-0.5">
+                        {/* Receptionist Audit Line */}
+                        {(app.receptionCheckedInBy || app.visitedBy) && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <UserCheck className="w-3.5 h-3.5 text-blue-600 inline shrink-0" />
+                            <span className="font-semibold text-slate-800">
+                              Reception by {getStaffName(app.receptionCheckedInBy || app.visitedBy)}
                             </span>
-                          </span>
+                            {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null)) && (
+                              <span className="font-normal text-slate-500">
+                                , {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null))}
+                              </span>
+                            )}
+                            {(app.visitedNotes || (app as any).receptionNotes) && (app.visitedNotes || (app as any).receptionNotes).trim() && (
+                              <span className="text-slate-500 font-normal pl-1">
+                                • Note: {(app.visitedNotes || (app as any).receptionNotes).trim()}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Doctor Audit Line */}
+                        {(app.doctorName || app.doctorNotes) && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Stethoscope className="w-3.5 h-3.5 text-indigo-600 inline shrink-0" />
+                            <span className="font-semibold text-slate-800">
+                              Prescribed by {getDoctorName(app.doctorName)}
+                            </span>
+                            {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null)) && (
+                              <span className="font-normal text-slate-500">
+                                , {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null))}
+                              </span>
+                            )}
+                            {app.doctorNotes && app.doctorNotes.trim() && (
+                              <span className="text-slate-500 font-normal pl-1">
+                                • Note: {app.doctorNotes}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Pharmacist Audit Line */}
+                        {app.dispensedBy && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <PackageCheck className="w-3.5 h-3.5 text-teal-600 inline shrink-0" />
+                            <span className="font-semibold text-slate-800">
+                              Dispensed by {getStaffName(app.dispensedBy)}
+                            </span>
+                            {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null)) && (
+                              <span className="font-normal text-slate-500">
+                                , {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null))}
+                              </span>
+                            )}
+                            {app.dispensationNotes && app.dispensationNotes.trim() && (
+                              <span className="text-slate-500 font-normal pl-1">
+                                • Note: {app.dispensationNotes}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
 
-                    {/* Action Buttons on Right (Clinical summary + Consult / Edit) */}
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedSummaryApp(app);
-                          setSummaryModalOpen(true);
-                        }}
-                        className="px-3 py-1.5 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                        title="View Clinical Summary"
-                      >
-                        <FileText className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Clinical summary</span>
-                      </button>
-
+                    {/* Action Button on Right (Directly below top status row) */}
+                    <div className="shrink-0 self-start sm:self-center pt-1 sm:pt-0">
                       {!isCompleted && (
-                        isWithDoctor ? (
+                        isOtherDoctorConsultation(app) ? (
+                          <div
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl border border-slate-200 select-none shadow-2xs"
+                            title={`Consultation conducted by Dr. ${app.doctorName || "another doctor"}. Only that doctor can edit.`}
+                          >
+                            <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <span>Consulted by {app.doctorName || "Doctor"}</span>
+                          </div>
+                        ) : isWithDoctor ? (
                           <button
                             onClick={() => handleOpenConsultation(app)}
                             className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer active:scale-95"
@@ -611,7 +747,7 @@ export default function DoctorDeskPage() {
                           <button
                             onClick={() => handleOpenConsultation(app)}
                             className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-100 hover:bg-blue-50/70 text-slate-700 hover:text-blue-700 font-bold text-xs rounded-xl border border-slate-200 transition-colors cursor-pointer shadow-2xs"
-                            title="Edit diagnosis & prescriptions"
+                            title="Edit diagnosis & clinical advice"
                           >
                             <Edit3 className="w-3.5 h-3.5 text-blue-600" />
                             <span>Edit Consultation</span>
@@ -655,67 +791,6 @@ export default function DoctorDeskPage() {
                       )}
                     </div>
                   )}
-
-                  {/* 3. Full-Width Doctor Diagnosis & Prescriptions Block (Identical to Pharmacy) */}
-                  {(app.diagnosis || (app.prescriptions && app.prescriptions.length > 0)) && (
-                    <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2.5 text-xs w-full">
-                      {app.diagnosis && (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold text-slate-700 flex items-center gap-1">
-                            <Stethoscope className="w-3.5 h-3.5 text-blue-600" />
-                            <span>Clinical Diagnosis:</span>
-                          </span>
-                          <span className="px-2.5 py-0.5 rounded-md bg-blue-100 text-blue-900 font-extrabold border border-blue-200">
-                            {app.diagnosis}
-                          </span>
-                        </div>
-                      )}
-
-                      {app.doctorNotes && (
-                        <div className="text-[11px] text-slate-600 italic">
-                          <span className="font-semibold text-slate-700 not-italic">Doctor Advice: </span>
-                          {app.doctorNotes}
-                        </div>
-                      )}
-
-                      {app.prescriptions && app.prescriptions.length > 0 && (
-                        <div className="pt-1.5 border-t border-slate-200/60">
-                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                            <Pill className="w-3 h-3 text-purple-600" />
-                            <span>Prescriptions Issued ({app.prescriptions.length})</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {app.prescriptions.map((p, idx) => (
-                              <span
-                                key={idx}
-                                className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-lg border shadow-2xs ${
-                                  p.dispensed || isCompleted
-                                    ? "bg-emerald-50 text-emerald-900 border-emerald-200"
-                                    : "bg-white text-slate-800 border-slate-200"
-                                }`}
-                              >
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
-                                    p.dispensed || isCompleted ? "bg-emerald-500" : "bg-purple-500"
-                                  }`}
-                                />
-                                <strong>{p.medicineName}</strong>
-                                <span className="text-slate-500">· {p.frequency}</span>
-                                {p.duration && <span className="text-slate-400 font-mono">({p.duration})</span>}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {app.dispensationNotes && (
-                        <div className="text-[11px] text-slate-600 italic pt-1 border-t border-slate-200/50">
-                          <span className="font-semibold text-slate-700 not-italic">Pharmacy Remarks: </span>
-                          {app.dispensationNotes}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
               </div>
             );
@@ -733,8 +808,8 @@ export default function DoctorDeskPage() {
                   <Stethoscope className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-slate-900">Clinical Consultation & Prescription</h4>
-                  <p className="text-[11px] text-slate-500">Record diagnosis and issue pharmacy prescription.</p>
+                  <h4 className="text-sm font-bold text-slate-900">Clinical Consultation</h4>
+                  <p className="text-[11px] text-slate-500">Record clinical diagnosis and patient advice.</p>
                 </div>
               </div>
               <button
@@ -751,7 +826,7 @@ export default function DoctorDeskPage() {
                 <div>
                   <span className="font-bold text-slate-900 text-sm">{activePatient.ipName}</span>
                   <span className="ml-2 text-slate-500 font-mono text-[11px]">
-                    Token: {activePatient.tokenNo} • IP: {activePatient.ipNumber || "N/A"}
+                    Token: {activePatient.tokenNo} • IP: {isStaff ? maskDispensaryIpNumber(activePatient.ipNumber) : (activePatient.ipNumber || "N/A")}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -762,10 +837,10 @@ export default function DoctorDeskPage() {
                       setSummaryModalOpen(true);
                     }}
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-blue-700 hover:bg-blue-50 border border-blue-200 bg-blue-50/50 rounded-lg text-xs font-bold transition shadow-2xs cursor-pointer active:scale-95"
-                    title="Review Triage Clinical Summary"
+                    title={isNonClinicalAppointment(activePatient) ? "Review Triage Non-Clinical Summary" : "Review Triage Clinical Summary"}
                   >
                     <FileText className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Clinical summary</span>
+                    <span>{isNonClinicalAppointment(activePatient) ? "Non-Clinical summary" : "Clinical summary"}</span>
                   </button>
                   <span className="text-slate-500 font-medium">
                     {activePatient.age ? `${activePatient.age} yrs` : ""} {activePatient.gender}
@@ -773,9 +848,56 @@ export default function DoctorDeskPage() {
                 </div>
               </div>
 
-              <div className="text-slate-600">
-                <span className="font-semibold text-slate-700">Chief Complaint: </span>
-                {activePatient.chiefComplaint || activePatient.purpose}
+              {/* Triage Clinical Findings for Doctor */}
+              <div className="bg-white p-3 rounded-xl border border-slate-200 text-xs space-y-1.5">
+                <div className="font-bold text-slate-800 flex items-center justify-between pb-1 border-b border-slate-100">
+                  <span className="flex items-center gap-1.5 text-blue-900 font-bold">
+                    <HeartPulse className="w-3.5 h-3.5 text-blue-600" />
+                    Triage Clinical Findings
+                  </span>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    Duration: {activePatient.clinicalRecord?.hpiDuration || (activePatient as any).hpiDuration || "Reported today"}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-baseline gap-1.5">
+                  <span className="font-bold text-slate-700">• Chief Complaint:</span>
+                  <span className="font-semibold text-slate-900">
+                    {activePatient.chiefComplaint || activePatient.purpose}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-baseline gap-1.5">
+                  <span className="font-bold text-slate-700">• Clinical Red Flags:</span>
+                  {Array.isArray(activePatient.redFlags) && activePatient.redFlags.length > 0 && !/none reported/i.test(String(activePatient.redFlags[0])) ? (
+                    <span className="font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                      {activePatient.redFlags.map((f: any) => typeof f === 'string' ? f : f?.name || f?.label).join(', ')}
+                    </span>
+                  ) : (
+                    <span className="text-slate-500 italic">None reported</span>
+                  )}
+                </div>
+
+                {(activePatient.clinicalRecord?.associatedSymptoms || (activePatient as any).associatedSymptoms) && (
+                  <div className="flex flex-wrap items-baseline gap-1.5">
+                    <span className="font-bold text-slate-700">• Associated Symptoms:</span>
+                    <span className="text-slate-800">{activePatient.clinicalRecord?.associatedSymptoms || (activePatient as any).associatedSymptoms}</span>
+                  </div>
+                )}
+
+                {(activePatient.clinicalRecord?.comorbidity || (activePatient as any).comorbidity) && (
+                  <div className="flex flex-wrap items-baseline gap-1.5">
+                    <span className="font-bold text-slate-700">• Comorbidity:</span>
+                    <span className="text-slate-800">{activePatient.clinicalRecord?.comorbidity || (activePatient as any).comorbidity}</span>
+                  </div>
+                )}
+
+                {(activePatient.clinicalRecord?.medications || (activePatient as any).medications) && (
+                  <div className="flex flex-wrap items-baseline gap-1.5">
+                    <span className="font-bold text-slate-700">• Any Medication:</span>
+                    <span className="text-slate-800">{activePatient.clinicalRecord?.medications || (activePatient as any).medications}</span>
+                  </div>
+                )}
               </div>
 
               {(activePatient.receptionCheckedInBy || activePatient.visitedBy || activePatient.visitedNotes) && (
@@ -783,10 +905,15 @@ export default function DoctorDeskPage() {
                   <UserCheck className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                   <div>
                     <span className="font-bold text-slate-800">
-                      Reception by {activePatient.receptionCheckedInBy || activePatient.visitedBy || "Receptionist"}
+                      Reception by {getStaffName(activePatient.receptionCheckedInBy || activePatient.visitedBy || "Receptionist")}
                     </span>
-                    {activePatient.visitedNotes && activePatient.visitedNotes.toLowerCase().trim() !== "done" && (
-                      <span className="text-slate-500 font-medium"> • {activePatient.visitedNotes}</span>
+                    {formatStaffTimestamp(activePatient.receptionCheckedInAt || activePatient.visitedAt) && (
+                      <span className="font-normal text-slate-500">
+                        , {formatStaffTimestamp(activePatient.receptionCheckedInAt || activePatient.visitedAt)}
+                      </span>
+                    )}
+                    {(activePatient.visitedNotes || (activePatient as any).receptionNotes) && (activePatient.visitedNotes || (activePatient as any).receptionNotes).trim() && (
+                      <span className="text-slate-500 font-normal"> • {(activePatient.visitedNotes || (activePatient as any).receptionNotes).trim()}</span>
                     )}
                   </div>
                 </div>
@@ -805,146 +932,17 @@ export default function DoctorDeskPage() {
             </div>
 
             <form onSubmit={handleConfirmConsultation} className="space-y-4">
-              {/* Diagnosis */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Clinical Diagnosis / Assessment *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Acute Upper Respiratory Infection, Type 2 Diabetes"
-                  value={diagnosis}
-                  onChange={(e) => setDiagnosis(e.target.value)}
-                  className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-semibold"
-                />
-              </div>
-
-              {/* Prescriptions */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                    <Pill className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Prescribed Medicines (Rx)</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={handleAddMedicine}
-                    className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add Medicine</span>
-                  </button>
-                </div>
-
-                {prescriptions.length === 0 ? (
-                  <div className="py-2.5 px-3.5 bg-slate-50/80 border border-slate-200/90 rounded-2xl flex flex-wrap items-center justify-between gap-2.5 text-xs">
-                    <span className="text-slate-500 font-medium">No medicines prescribed</span>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10.5px] font-bold text-slate-400 uppercase tracking-wider">Quick Add:</span>
-                      {COMMON_MEDICINES.slice(0, 4).map((cm) => (
-                        <button
-                          key={cm.name}
-                          type="button"
-                          onClick={() => {
-                            setPrescriptions((prev) => [
-                              ...prev,
-                              {
-                                medicineName: cm.name,
-                                dosage: cm.defaultDosage,
-                                frequency: cm.defaultFreq,
-                                duration: cm.defaultDur,
-                              },
-                            ]);
-                          }}
-                          className="px-2.5 py-1 bg-white hover:bg-blue-50 text-slate-700 hover:text-blue-700 text-[11px] font-semibold border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
-                        >
-                          + {cm.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {prescriptions.map((rx, idx) => (
-                      <div key={idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            placeholder="Medicine name (e.g. Tab Paracetamol 650mg)"
-                            value={rx.medicineName}
-                            onChange={(e) => handleUpdateMedicine(idx, "medicineName", e.target.value)}
-                            className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg outline-none font-medium"
-                          />
-                          <select
-                            onChange={(e) => handleSelectCommonMedicine(idx, e.target.value)}
-                            className="px-2 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-600 outline-none max-w-[140px]"
-                            defaultValue=""
-                          >
-                            <option value="" disabled>Common Rx...</option>
-                            {COMMON_MEDICINES.map((cm) => (
-                              <option key={cm.name} value={cm.name}>{cm.name}</option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveMedicine(idx)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 cursor-pointer"
-                            title="Remove medicine"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2">
-                          <div>
-                            <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Dosage</label>
-                            <input
-                              type="text"
-                              placeholder="1 Tab / 5ml"
-                              value={rx.dosage}
-                              onChange={(e) => handleUpdateMedicine(idx, "dosage", e.target.value)}
-                              className="w-full px-2.5 py-1 text-xs bg-white border border-slate-200 rounded-lg outline-none"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Frequency</label>
-                            <input
-                              type="text"
-                              placeholder="1-0-1 (After food)"
-                              value={rx.frequency}
-                              onChange={(e) => handleUpdateMedicine(idx, "frequency", e.target.value)}
-                              className="w-full px-2.5 py-1 text-xs bg-white border border-slate-200 rounded-lg outline-none"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Duration</label>
-                            <input
-                              type="text"
-                              placeholder="5 Days"
-                              value={rx.duration}
-                              onChange={(e) => handleUpdateMedicine(idx, "duration", e.target.value)}
-                              className="w-full px-2.5 py-1 text-xs bg-white border border-slate-200 rounded-lg outline-none"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
               {/* Doctor Clinical Advice / Notes */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                   Doctor Clinical Advice & Dietary Instructions
                 </label>
                 <textarea
-                  rows={2}
+                  rows={3}
                   placeholder="e.g. Adequate rest, drink warm water, review after 3 days if fever persists."
                   value={doctorNotes}
                   onChange={(e) => setDoctorNotes(e.target.value)}
-                  className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-medium resize-none"
+                  className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-medium resize-none"
                 />
               </div>
 
@@ -978,6 +976,12 @@ export default function DoctorDeskPage() {
           setSelectedSummaryApp(null);
         }}
         appointment={selectedSummaryApp}
+      />
+
+      {/* Doctor Availability Management Modal */}
+      <DoctorAvailabilityModal
+        isOpen={doctorAvailabilityOpen}
+        onClose={() => setDoctorAvailabilityOpen(false)}
       />
     </div>
   );
