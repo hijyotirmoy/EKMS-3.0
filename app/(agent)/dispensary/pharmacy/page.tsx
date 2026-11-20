@@ -632,6 +632,9 @@ export default function PharmacyDeskPage() {
                             <Stethoscope className="w-3.5 h-3.5 text-indigo-600 inline shrink-0" />
                             <span className="font-semibold text-slate-800">
                               Prescribed by {getDoctorName(apt.doctorName)}
+                              {apt.consultationType && (
+                                <span className="text-blue-700 font-bold"> ({apt.consultationType})</span>
+                              )}
                             </span>
                             {formatStaffTimestamp(apt.doctorConsultedAt || (apt.status === "pharmacy_queue" || apt.status === "completed" ? apt.updatedAt : null)) && (
                               <span className="font-normal text-slate-500">
@@ -735,8 +738,11 @@ export default function PharmacyDeskPage() {
                   </span>
                   {activePatient.doctorName && (
                     <span className="text-[11px] text-slate-500">
-                      {getDoctorName(activePatient.doctorName)}
-                      {formatStaffTimestamp(activePatient.doctorConsultedAt) ? ` ${formatStaffTimestamp(activePatient.doctorConsultedAt)}` : ""}
+                      Prescribed by {getDoctorName(activePatient.doctorName)}
+                      {activePatient.consultationType && (
+                        <span className="text-blue-700 font-bold"> ({activePatient.consultationType})</span>
+                      )}
+                      {formatStaffTimestamp(activePatient.doctorConsultedAt) ? ` , ${formatStaffTimestamp(activePatient.doctorConsultedAt)}` : ""}
                     </span>
                   )}
                 </div>

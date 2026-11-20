@@ -183,6 +183,7 @@ export default function AdminManageAppointmentPage() {
             doctorConsultedAt: data.doctorConsultedAt,
             doctorName: data.doctorName,
             doctorEmail: data.doctorEmail,
+            consultationType: data.consultationType,
             diagnosis: data.diagnosis,
             doctorNotes: data.doctorNotes,
             prescriptions: data.prescriptions || [],
@@ -941,6 +942,9 @@ export default function AdminManageAppointmentPage() {
                             <div className="flex flex-wrap items-center gap-1">
                               <span className="font-semibold text-slate-800">
                                 Prescribed by {getDoctorName(app.doctorName)}
+                                {app.consultationType && (
+                                  <span className="text-blue-700 font-bold"> ({app.consultationType})</span>
+                                )}
                               </span>
                               {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null)) && (
                                 <span className="font-normal text-slate-500">

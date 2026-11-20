@@ -156,6 +156,7 @@ export async function PATCH(
     if (body.doctorConsultedAt !== undefined) updatePayload.doctorConsultedAt = body.doctorConsultedAt;
     if (body.doctorName !== undefined) updatePayload.doctorName = body.doctorName;
     if (body.doctorEmail !== undefined) updatePayload.doctorEmail = body.doctorEmail;
+    if (body.consultationType !== undefined) updatePayload.consultationType = body.consultationType;
     if (body.diagnosis !== undefined) updatePayload.diagnosis = body.diagnosis;
     if (body.prescriptions !== undefined) updatePayload.prescriptions = body.prescriptions;
     if (body.doctorNotes !== undefined) updatePayload.doctorNotes = body.doctorNotes;

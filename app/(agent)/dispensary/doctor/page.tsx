@@ -9,11 +9,21 @@ import {
   query,
   orderBy,
   limit,
+  where,
+  getDocs,
 } from "firebase/firestore";
 import { bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { AppointmentRecord, isDispensaryMatch, PrescriptionItem, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
+import {
+  AppointmentRecord,
+  isDispensaryMatch,
+  PrescriptionItem,
+  isNonClinicalAppointment,
+  formatStaffTimestamp,
+  CONSULTATION_TYPES,
+} from "@/lib/appointmentTypes";
+import { syncConsultationToTriageApi } from "@/lib/triageSync";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createDispensaryNotification } from "@/lib/notificationService";
 import {
@@ -117,6 +127,7 @@ export default function DoctorDeskPage() {
   const [consultModalOpen, setConsultModalOpen] = useState(false);
   const [activePatient, setActivePatient] = useState<AppointmentRecord | null>(null);
   const [diagnosis, setDiagnosis] = useState("");
+  const [consultationType, setConsultationType] = useState<string>("");
   const [doctorNotes, setDoctorNotes] = useState("");
   const [prescriptions, setPrescriptions] = useState<PrescriptionItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -234,12 +245,13 @@ export default function DoctorDeskPage() {
     }
     if (isOtherDoctorConsultation(patient)) {
       toast.warning(
-        `Locked: This consultation was conducted by Dr. ${patient.doctorName || "another doctor"}. Only the consulting doctor can edit this record.`
+        `Locked: This consultation was conducted by ${patient.doctorName || "another doctor"}. Only the consulting doctor can edit this record.`
       );
       return;
     }
     setActivePatient(patient);
     setDiagnosis(patient.diagnosis || patient.chiefComplaint || patient.purpose || "");
+    setConsultationType(patient.consultationType || "");
     setDoctorNotes(patient.doctorNotes || "");
     if (patient.prescriptions && patient.prescriptions.length > 0) {
       setPrescriptions(patient.prescriptions);
@@ -298,9 +310,14 @@ export default function DoctorDeskPage() {
     }
     if (isOtherDoctorConsultation(activePatient)) {
       toast.error(
-        `Permission denied: Consultation was conducted by Dr. ${activePatient.doctorName || "another doctor"}. Only that doctor can edit this record.`
+        `Permission denied: Consultation was conducted by ${activePatient.doctorName || "another doctor"}. Only that doctor can edit this record.`
       );
       setConsultModalOpen(false);
+      return;
+    }
+
+    if (!consultationType || !consultationType.trim()) {
+      toast.error("Please select a Consultation Type before sending to Pharmacy.");
       return;
     }
 
@@ -308,42 +325,76 @@ export default function DoctorDeskPage() {
 
     setSubmitting(true);
     try {
-      const docRef = doc(bookingDb, "dispensary_appointments", activePatient.id);
-      await updateDoc(docRef, {
+      const now = Date.now();
+      const docDoctorName =
+        userProfile?.displayName?.trim() ||
+        userProfile?.name?.trim() ||
+        (userProfile as any)?.fullName?.trim() ||
+        user?.displayName?.trim() ||
+        "Medical Officer";
+
+      const updatePayload = {
         status: "pharmacy_queue",
-        doctorConsultedAt: Date.now(),
-        doctorName:
-          userProfile?.displayName?.trim() ||
-          userProfile?.name?.trim() ||
-          (userProfile as any)?.fullName?.trim() ||
-          user?.displayName?.trim() ||
-          "Medical Officer",
+        doctorConsultedAt: now,
+        doctorName: docDoctorName,
         doctorEmail: user?.email || "doctor@esic.gov.in",
+        consultationType: consultationType.trim(),
         diagnosis: "",
         prescriptions: cleanPrescriptions,
         doctorNotes: doctorNotes.trim(),
-        updatedAt: Date.now(),
-      });
+        updatedAt: now,
+      };
+
+      const docRef = doc(bookingDb, "dispensary_appointments", activePatient.id);
+      await updateDoc(docRef, updatePayload);
+
+      // Synchronize across matching tokens in bookingDb
+      const tIdentifier = activePatient.tokenNo || activePatient.referenceNo;
+      if (tIdentifier) {
+        try {
+          const qB = query(collection(bookingDb, "dispensary_appointments"), where("tokenNo", "==", tIdentifier));
+          const snapB = await getDocs(qB);
+          snapB.forEach(async (d) => {
+            if (d.id !== activePatient.id) {
+              await updateDoc(d.ref, updatePayload).catch(() => {});
+            }
+          });
+        } catch (e) {}
+      }
+
+      // Replicate to Triage API so Triage agents immediately receive consultation type & notes
+      syncConsultationToTriageApi({
+        id: activePatient.id,
+        tokenNo: activePatient.tokenNo,
+        referenceNo: activePatient.referenceNo,
+        phone: activePatient.phone || (activePatient as any).patientPhone,
+        doctorName: docDoctorName,
+        doctorEmail: user?.email || "doctor@esic.gov.in",
+        consultationType: consultationType.trim(),
+        doctorNotes: doctorNotes.trim(),
+        prescriptions: cleanPrescriptions,
+        doctorConsultedAt: now,
+      }).catch((e) => console.warn("Triage consultation sync notice:", e));
 
       // Real-time notification delivered to the Pharmacist of that dispensary
-      const docDoctorName = userProfile?.displayName || userProfile?.name || "Medical Officer";
       createDispensaryNotification({
         targetDispensary: activePatient.dispensaryName || staffDispensary,
         targetDispensaryRole: "Pharmacist",
         title: "Prescription Sent to Pharmacy",
-        message: `${docDoctorName} completed consultation for ${activePatient.ipName} (${activePatient.tokenNo}) with ${cleanPrescriptions.length} prescribed item(s). Ready for dispensation.`,
+        message: `${docDoctorName} (${consultationType}) completed consultation for ${activePatient.ipName} (${activePatient.tokenNo}) with ${cleanPrescriptions.length} prescribed item(s). Ready for dispensation.`,
         link: "/dispensary/pharmacy",
         tokenNo: activePatient.tokenNo,
       }).catch((e) => console.warn("Pharmacist notification dispatch warning:", e));
 
       logUserActivity(user?.email, {
-        desc: `Doctor Consultation Completed: ${activePatient.ipName} (Token ${activePatient.tokenNo}), sent to Pharmacy queue`,
+        desc: `Doctor Consultation Completed: ${activePatient.ipName} (Token ${activePatient.tokenNo}), Consultation Type: ${consultationType}, sent to Pharmacy queue`,
         type: "edit",
       });
 
       toast.success(`Consultation recorded and forwarded to Pharmacy.`);
       setConsultModalOpen(false);
       setActivePatient(null);
+      setConsultationType("");
     } catch (err: any) {
       toast.error("Failed to complete consultation: " + err.message);
     } finally {
@@ -688,6 +739,9 @@ export default function DoctorDeskPage() {
                             <Stethoscope className="w-3.5 h-3.5 text-indigo-600 inline shrink-0" />
                             <span className="font-semibold text-slate-800">
                               Prescribed by {getDoctorName(app.doctorName)}
+                              {app.consultationType && (
+                                <span className="text-blue-700 font-bold"> ({app.consultationType})</span>
+                              )}
                             </span>
                             {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null)) && (
                               <span className="font-normal text-slate-500">
@@ -730,7 +784,7 @@ export default function DoctorDeskPage() {
                         isOtherDoctorConsultation(app) ? (
                           <div
                             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl border border-slate-200 select-none shadow-2xs"
-                            title={`Consultation conducted by Dr. ${app.doctorName || "another doctor"}. Only that doctor can edit.`}
+                            title={`Consultation conducted by ${app.doctorName || "another doctor"}. Only that doctor can edit.`}
                           >
                             <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                             <span>Consulted by {app.doctorName || "Doctor"}</span>
@@ -932,6 +986,38 @@ export default function DoctorDeskPage() {
             </div>
 
             <form onSubmit={handleConfirmConsultation} className="space-y-4">
+              {/* Mandatory Consultation Type Filter */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                  <span>
+                    Consultation Type <span className="text-rose-500">*</span>
+                  </span>
+                  {!consultationType && (
+                    <span className="text-[11px] text-rose-500 font-semibold normal-case">Required selection</span>
+                  )}
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {CONSULTATION_TYPES.map((type) => {
+                    const isSelected = consultationType === type;
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => setConsultationType(type)}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                          isSelected
+                            ? "bg-blue-600 text-white border-blue-600 shadow-xs ring-2 ring-blue-500/20"
+                            : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300"
+                        }`}
+                      >
+                        {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                        <span>{type}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Doctor Clinical Advice / Notes */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">

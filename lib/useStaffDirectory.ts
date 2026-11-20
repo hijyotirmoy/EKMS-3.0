@@ -161,8 +161,7 @@ export function useStaffDirectory() {
 
   const getDoctorName = (identifier?: string): string => {
     if (!identifier) return "Doctor";
-    const name = getStaffName(identifier);
-    return name.startsWith("Dr.") ? name : `Dr. ${name}`;
+    return getStaffName(identifier);
   };
 
   return { staffMap, getStaffName, getDoctorName };

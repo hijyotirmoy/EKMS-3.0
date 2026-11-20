@@ -80,6 +80,7 @@ export interface AppointmentRecord {
   doctorConsultedAt?: number;
   doctorName?: string;
   doctorEmail?: string;
+  consultationType?: string;
   diagnosis?: string;
   doctorNotes?: string;
   prescriptions?: Array<{
@@ -260,6 +261,7 @@ export default function AppointmentPage() {
             doctorConsultedAt: data.doctorConsultedAt,
             doctorName: data.doctorName,
             doctorEmail: data.doctorEmail,
+            consultationType: data.consultationType,
             diagnosis: data.diagnosis,
             doctorNotes: data.doctorNotes,
             prescriptions: data.prescriptions || [],
@@ -960,6 +962,9 @@ export default function AppointmentPage() {
                         <Stethoscope className="w-3.5 h-3.5 text-indigo-600 inline shrink-0" />
                         <span className="font-semibold text-slate-800">
                           Prescribed by {getDoctorName(app.doctorName)}
+                          {app.consultationType && (
+                            <span className="text-blue-700 font-bold"> ({app.consultationType})</span>
+                          )}
                         </span>
                         {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null)) && (
                           <span className="font-normal text-slate-500">

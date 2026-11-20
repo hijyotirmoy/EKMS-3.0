@@ -23,6 +23,15 @@ export interface AppointmentVitals {
   spo2?: string;
 }
 
+export const CONSULTATION_TYPES = [
+  "Medical Certificate",
+  "Sickness Certificate",
+  "Referral",
+  "Medical Consultation",
+] as const;
+
+export type ConsultationType = (typeof CONSULTATION_TYPES)[number];
+
 export interface AppointmentRecord {
   id: string;
   tokenNo: string;
@@ -68,6 +77,7 @@ export interface AppointmentRecord {
   doctorConsultedAt?: number;
   doctorName?: string;
   doctorEmail?: string;
+  consultationType?: string;
   diagnosis?: string;
   prescriptions?: PrescriptionItem[];
   doctorNotes?: string;

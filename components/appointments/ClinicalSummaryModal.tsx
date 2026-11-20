@@ -353,9 +353,8 @@ function cleanStaffName(val?: string): string {
 }
 
 function cleanDoctorName(val?: string): string {
-  if (!val) return "Dr. Gagan";
-  let clean = cleanStaffName(val);
-  return clean.startsWith("Dr.") || clean.startsWith("Dr ") ? clean : `Dr. ${clean}`;
+  if (!val) return "Doctor";
+  return cleanStaffName(val);
 }
 
 export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalSummaryModalProps) {
@@ -1069,7 +1068,7 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
                             </span>
                             {isCompleted && (item.doctorName || item.doctor || item.prescribedBy) && (
                               <span className="text-[11px] font-medium text-slate-500 italic">
-                                (Consulted by {getDoctorName(item.doctorName || item.doctor || item.prescribedBy)}{formatStaffTimestamp(item.doctorConsultedAt) ? ` ${formatStaffTimestamp(item.doctorConsultedAt)}` : ""})
+                                (Consulted by {getDoctorName(item.doctorName || item.doctor || item.prescribedBy)}{item.consultationType ? ` (${item.consultationType})` : ""}{formatStaffTimestamp(item.doctorConsultedAt) ? ` , ${formatStaffTimestamp(item.doctorConsultedAt)}` : ""})
                               </span>
                             )}
                           </div>
@@ -1122,7 +1121,7 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
                             </span>
                             {(item.doctorName || item.doctor || item.prescribedBy) && (
                               <span className="text-[11px] font-semibold text-slate-500 not-italic">
-                                (by {getDoctorName(item.doctorName || item.doctor || item.prescribedBy)}{formatStaffTimestamp(item.doctorConsultedAt) ? ` ${formatStaffTimestamp(item.doctorConsultedAt)}` : ""})
+                                (by {getDoctorName(item.doctorName || item.doctor || item.prescribedBy)}{item.consultationType ? ` (${item.consultationType})` : ""}{formatStaffTimestamp(item.doctorConsultedAt) ? ` , ${formatStaffTimestamp(item.doctorConsultedAt)}` : ""})
                               </span>
                             )}
                           </div>
@@ -1131,14 +1130,32 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
                         {/* 3. Pharmacist Note */}
                         {(item.dispensationNotes || item.dispensedNotes || item.pharmacyNotes || item.pharmacistNotes || item.dispensedBy) && (
                           <div className="flex flex-wrap items-baseline gap-1.5 text-xs">
-                            <span className="font-bold text-slate-800">• Pharmacist:</span>
-                            <span className="text-slate-700 italic">
-                              {(item.dispensationNotes || item.dispensedNotes || item.pharmacyNotes || item.pharmacistNotes || "given").trim()}
-                            </span>
-                            {(item.dispensedBy || item.pharmacistName) && (
-                              <span className="text-[11px] font-semibold text-slate-500 not-italic">
-                                (by {getStaffName(item.dispensedBy || item.pharmacistName)}{formatStaffTimestamp(item.dispensedAt) ? ` ${formatStaffTimestamp(item.dispensedAt)}` : ""})
-                              </span>
+                            {Boolean((item.dispensationNotes || item.dispensedNotes || item.pharmacyNotes || item.pharmacistNotes)?.trim()) ? (
+                              <>
+                                <span className="font-bold text-slate-800">• Pharmacist Note:</span>
+                                <span className="text-slate-700 italic">
+                                  {(item.dispensationNotes || item.dispensedNotes || item.pharmacyNotes || item.pharmacistNotes).trim()}
+                                </span>
+                                {(item.dispensedBy || item.pharmacistName) && (
+                                  <span className="text-[11px] font-semibold text-slate-500 not-italic">
+                                    (by {getStaffName(item.dispensedBy || item.pharmacistName)}{formatStaffTimestamp(item.dispensedAt) ? ` , ${formatStaffTimestamp(item.dispensedAt)}` : ""})
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              (item.dispensedBy || item.pharmacistName) && (
+                                <>
+                                  <span className="font-bold text-slate-800">• Dispensed by</span>
+                                  <span className="font-semibold text-slate-800">
+                                    {getStaffName(item.dispensedBy || item.pharmacistName)}
+                                  </span>
+                                  {formatStaffTimestamp(item.dispensedAt) && (
+                                    <span className="font-normal text-slate-500">
+                                      , {formatStaffTimestamp(item.dispensedAt)}
+                                    </span>
+                                  )}
+                                </>
+                              )
                             )}
                           </div>
                         )}
