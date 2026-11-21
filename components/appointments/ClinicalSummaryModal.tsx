@@ -378,9 +378,14 @@ export function ClinicalSummaryModal({ isOpen, onClose, appointment }: ClinicalS
         const cleanPhone = String(phone || "").replace(/\D/g, "").slice(-10);
 
         if (cleanPhone && cleanPhone.length === 10) {
-          const triageUrl = `${getTriageBaseUrl()}/api/caller/lookup?phone=${cleanPhone}`;
+          // Use same-origin proxy route first to avoid browser CORS restrictions, fallback to direct Triage API
+          const proxyUrl = `/api/triage/caller-lookup?phone=${cleanPhone}`;
+          const directUrl = `${getTriageBaseUrl()}/api/caller/lookup?phone=${cleanPhone}`;
 
-          const res = await fetch(triageUrl, { cache: "no-store" }).catch(() => null);
+          let res = await fetch(proxyUrl, { cache: "no-store" }).catch(() => null);
+          if (!res || !res.ok) {
+            res = await fetch(directUrl, { cache: "no-store" }).catch(() => null);
+          }
           if (res && res.ok) {
             const data = await res.json().catch(() => null);
             if (data?.found && Array.isArray(data?.history) && data.history.length > 0) {
