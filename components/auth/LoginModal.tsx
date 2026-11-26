@@ -58,6 +58,9 @@ export default function LoginModal() {
       await loginWithRole(selectedRole, email.trim(), password.trim());
       closeLoginModal();
       handleBack();
+      if (selectedRole === "Dispensary Staff" || selectedRole === "Dispensary") {
+        router.push("/dispensary/appointment");
+      }
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.message?.replace("Firebase:", "").trim() || "Login failed. Please verify credentials.");

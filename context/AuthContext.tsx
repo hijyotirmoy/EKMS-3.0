@@ -118,19 +118,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           userDocRef,
           (snap) => {
             clearTimeout(snapTimeout);
+            let profileData: UserProfile;
             if (snap.exists()) {
-              setUserProfile(snap.data() as UserProfile);
+              profileData = snap.data() as UserProfile;
+              setUserProfile(profileData);
             } else {
-              const newProfile: UserProfile = {
+              profileData = {
                 email: email,
                 displayName: currentUser.displayName || email.split("@")[0],
                 name: currentUser.displayName || email.split("@")[0],
                 role: "Agent",
                 createdAt: Date.now(),
               };
-              setDoc(userDocRef, newProfile, { merge: true });
-              setUserProfile(newProfile);
+              setDoc(userDocRef, profileData, { merge: true });
+              setUserProfile(profileData);
             }
+
+            // Sync active user account to storage for consistent booking attribution across all modules
+            if (typeof window !== "undefined") {
+              const activeAgentData = {
+                displayName: profileData.displayName || profileData.name || currentUser.displayName || email.split("@")[0],
+                name: profileData.name || profileData.displayName || currentUser.displayName || email.split("@")[0],
+                email: email,
+                role: profileData.role || "Agent",
+                agentId: currentUser.uid || email.split("@")[0],
+              };
+              try {
+                localStorage.setItem("ekms_active_agent", JSON.stringify(activeAgentData));
+                sessionStorage.setItem("ekms_active_agent", JSON.stringify(activeAgentData));
+                localStorage.setItem("ekms_auth_agent", JSON.stringify(activeAgentData));
+                localStorage.setItem("crm_user_profile", JSON.stringify(profileData));
+              } catch (e) {}
+            }
+
             setLoading(false);
           },
           (err) => {
@@ -145,6 +165,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           unsubProfile = null;
         }
         setUserProfile(null);
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.removeItem("ekms_active_agent");
+            sessionStorage.removeItem("ekms_active_agent");
+            localStorage.removeItem("ekms_auth_agent");
+            localStorage.removeItem("crm_user_profile");
+          } catch (e) {}
+        }
         setLoading(false);
       }
     });
@@ -614,6 +642,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await fbSignOut(auth);
     setUser(null);
     setUserProfile(null);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem("ekms_active_agent");
+        sessionStorage.removeItem("ekms_active_agent");
+        localStorage.removeItem("ekms_auth_agent");
+        localStorage.removeItem("crm_user_profile");
+      } catch (e) {}
+    }
   };
 
   return (

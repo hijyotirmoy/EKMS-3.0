@@ -39,10 +39,13 @@ import {
   Stethoscope,
   Pill,
   HeartPulse,
+  History,
+  Link2,
 } from "lucide-react";
 import { isPageRestricted } from "@/lib/pageAccess";
 import { isDoctorUser } from "@/lib/doctorAvailability";
 import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";
+import { DhwaniCrmSyncBridge } from "@/components/triage/DhwaniCrmSyncBridge";
 
 interface EkmsSidebarProps {
   isOpen: boolean;
@@ -51,7 +54,7 @@ interface EkmsSidebarProps {
 
 export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const pathname = usePathname();
-  const { userProfile, isAdmin, isMasterAdmin, isLoggedIn, openLoginModal } = useAuth();
+  const { user, userProfile, isAdmin, isMasterAdmin, isLoggedIn, openLoginModal } = useAuth();
 
   const handleNavClick = (e: React.MouseEvent, href: string) => {
     if (!isLoggedIn && href !== "/") {
@@ -81,6 +84,13 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   const [pharmacyQueueCount, setPharmacyQueueCount] = useState(0);
   const [activeAppointmentsQueueCount, setActiveAppointmentsQueueCount] = useState(0);
   const [doctorAvailabilityOpen, setDoctorAvailabilityOpen] = useState(false);
+  const [showCrmBridgeModal, setShowCrmBridgeModal] = useState(false);
+
+  useEffect(() => {
+    const handleOpenBridge = () => setShowCrmBridgeModal(true);
+    window.addEventListener("open-crm-bridge", handleOpenBridge);
+    return () => window.removeEventListener("open-crm-bridge", handleOpenBridge);
+  }, []);
 
   useEffect(() => {
     const handleOpenAvail = () => setDoctorAvailabilityOpen(true);
@@ -246,8 +256,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
     const q = query(
       collection(bookingDb, "dispensary_appointments"),
-      orderBy("createdAt", "desc"),
-      limit(250)
+      orderBy("createdAt", "desc")
     );
 
     const unsub = onSnapshot(
@@ -364,11 +373,13 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     },
     { href: "/team", label: "Team", icon: Users, color: "text-blue-600" },
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500" },
+    { href: "/appointment", label: "Appointments", icon: CalendarClock, color: "text-teal-600" },
     { href: "/data", label: "Data", icon: Database, color: "text-teal-600" },
+    { href: "/triage", label: "Triage", icon: HeartPulse, color: "text-rose-600", imageSrc: "/triage-logo.png" },
   ];
 
   const dispensaryLinks = [
-    { href: "/appointment", label: "Appointments", icon: CalendarClock, color: "text-teal-600", badge: activeAppointmentsQueueCount },
+    { href: "/dispensary/appointment", label: "Disp Appointments", icon: CalendarCheck, color: "text-teal-600", badge: activeAppointmentsQueueCount },
     { href: "/admin/appointment", label: "Manage Appointments", icon: CalendarCheck, color: "text-emerald-600", adminOnly: true },
     { href: "/dispensary/reception", label: "Reception Desk", icon: UserCheck, color: "text-blue-600", badge: receptionQueueCount },
     { href: "/dispensary/doctor", label: "Doctor Desk", icon: Stethoscope, color: "text-teal-600", badge: doctorQueueCount },
@@ -386,6 +397,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     { href: "/admin/qa", label: "Manage Q&A", icon: Edit, color: "text-cyan-500" },
     { href: "/admin/files", label: "Manage Files", icon: Folder, color: "text-rose-600" },
     { href: "/admin/facilities", label: "Manage Facilities", icon: Building2, color: "text-emerald-600" },
+    { href: "/admin/cases", label: "Case History", icon: History, color: "text-indigo-600" },
     {
       href: "/admin/missing-content",
       label: "Missing Content",
@@ -415,9 +427,9 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
   const connectedSites = [
     {
-      href: "https://triage.ekms.in/",
+      href: "/triage",
       label: "EKMS Triage",
-      domain: "triage.ekms.in",
+      domain: "ekms.in/triage",
       icon: HeartPulse,
       imageSrc: "/triage-logo.png",
       color: "text-rose-600",
@@ -464,9 +476,8 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     { href: "/dispensary/reception", label: "Reception", icon: UserCheck, color: "text-blue-600", isExternal: false, dispensaryStaffOnly: true, badge: receptionQueueCount },
     { href: "/dispensary/doctor", label: "Doctor", icon: Stethoscope, color: "text-teal-600", isExternal: false, dispensaryStaffOnly: true, badge: doctorQueueCount },
     { href: "/dispensary/pharmacy", label: "Pharmacy", icon: Pill, color: "text-amber-500", isExternal: false, dispensaryStaffOnly: true, badge: pharmacyQueueCount },
-    { href: "/data", label: "Data", icon: Database, color: "text-teal-600", isExternal: false },
-    { href: "https://triage.ekms.in/", label: "Triage", icon: HeartPulse, color: "text-rose-600", isExternal: true, imageSrc: "/triage-logo.png" },
-    { href: "https://map.ekms.in/", label: "EKMS Map", icon: MapPin, color: "text-emerald-600", isExternal: true },
+    { href: "/triage", label: "Triage", icon: HeartPulse, color: "text-rose-600", isExternal: false, imageSrc: "/triage-logo.png" },
+    { id: "crm-sync", href: "#crm-sync", label: "CRM", icon: Link2, color: "text-emerald-600", imageSrc: "/piramal-crm-logo.png", isAction: true, onClick: () => setShowCrmBridgeModal(true), tooltip: "Dhwani CRM Live Sync" },
   ];
 
   // Filtered links: Only allowed pages are shown. Restricted pages are totally hidden.
@@ -477,7 +488,13 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
   });
 
   const visibleQuickLinks = isLoggedIn
-    ? quickLinks.filter((item) => !isPageRestricted(item.href, userProfile))
+    ? quickLinks.filter((item) => {
+        // Dispensary staff should never see normal agent appointment page
+        if (isDispensaryUser && (item.href === "/appointment" || item.href === "/booking")) {
+          return false;
+        }
+        return !isPageRestricted(item.href, userProfile);
+      })
     : [];
 
   const visibleDispensaryLinks = isLoggedIn
@@ -498,16 +515,24 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
   const visibleMiniLinks = miniLinks
     .map((item) => {
-      // In admin accounts, show Appointment icon (linking to /admin/appointment) with active queue number
-      if (isAdmin || isMasterAdmin) {
-        if (item.href === "/appointment" || item.href === "/admin/appointment") {
+      // In mini side menu:
+      // - Dispensary Staff gets Disp Appt linking directly to /dispensary/appointment
+      // - Admins, Master Admins, and Agents get Appt linking to /appointment
+      if (item.href === "/appointment" || item.href === "/dispensary/appointment" || item.href === "/admin/appointment") {
+        if (isDispensaryUser) {
           return {
             ...item,
-            href: "/admin/appointment",
-            label: "Appt",
+            href: "/dispensary/appointment",
+            label: "Disp Appt",
             badge: activeAppointmentsQueueCount,
           };
         }
+        return {
+          ...item,
+          href: "/appointment",
+          label: "Appt",
+          badge: activeAppointmentsQueueCount,
+        };
       }
       return item;
     })
@@ -527,12 +552,20 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
         if (item.label === "EKMS Map" || item.isExternal || item.href.includes("map.ekms.in")) {
           return false;
         }
-        // 2. Remove Home from dispensary staff mini menu (Appointment is their default dashboard)
+        // 2. Remove Home from dispensary staff mini menu
         if (item.href === "/") {
           return false;
         }
-        // 3. For dispensary staff, only allow Appointment and their role-specific desk
-        if (item.href !== "/appointment" && !item.href.startsWith("/dispensary/")) {
+        // 3. REMOVE CRM completely from all dispensary staff
+        if (item.id === "crm-sync" || item.href === "#crm-sync") {
+          return false;
+        }
+        // 4. REMOVE normal agent appointment page (/appointment) completely from dispensary staff
+        if (item.href === "/appointment") {
+          return false;
+        }
+        // 5. For dispensary staff, only allow Dispensary Appointment and their role-specific desk
+        if (item.href !== "/dispensary/appointment" && !item.href.startsWith("/dispensary/")) {
           return false;
         }
       }
@@ -559,6 +592,39 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
             const isActive = pathname === item.href;
             const Icon = item.icon;
 
+            if ((item as any).isAction || (item as any).onClick) {
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={(item as any).onClick}
+                  className="flex flex-col items-center justify-center w-16 py-3 px-1 rounded-xl text-center text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all group cursor-pointer"
+                  title={(item as any).tooltip || item.label}
+                >
+                  <div className="relative">
+                    {(item as any).imageSrc ? (
+                      <div className="w-6 h-6 mb-1 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                        <Image
+                          src={(item as any).imageSrc}
+                          alt={item.label}
+                          width={24}
+                          height={24}
+                          className="w-5 h-5 object-contain"
+                        />
+                      </div>
+                    ) : (
+                      <Icon
+                        className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
+                      />
+                    )}
+                  </div>
+                  <span className="text-[10px] font-semibold leading-tight truncate w-full">
+                    {item.label}
+                  </span>
+                </button>
+              );
+            }
+
             if (item.isExternal) {
               return (
                 <a
@@ -570,12 +636,12 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                   title={item.label}
                 >
                   {(item as any).imageSrc ? (
-                    <div className="w-5 h-5 mb-1.5 rounded-full overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                    <div className="w-6 h-6 mb-1 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
                       <Image
                         src={(item as any).imageSrc}
                         alt={item.label}
-                        width={20}
-                        height={20}
+                        width={24}
+                        height={24}
                         className="w-5 h-5 object-contain"
                       />
                     </div>
@@ -605,9 +671,25 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                 title={item.label}
               >
                 <div className="relative">
-                  <Icon
-                    className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
-                  />
+                  {(item as any).imageSrc ? (
+                    <div className="w-6 h-6 mb-1 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                      <Image
+                        src={(item as any).imageSrc}
+                        alt={item.label}
+                        width={24}
+                        height={24}
+                        className="w-5 h-5 object-contain"
+                      />
+                    </div>
+                  ) : (item as any).letter ? (
+                    <div className="w-5 h-5 mb-1.5 rounded-full bg-emerald-600 text-white font-bold text-[11px] flex items-center justify-center shrink-0 group-hover:scale-110 shadow-xs transition-transform leading-none">
+                      {(item as any).letter}
+                    </div>
+                  ) : (
+                    <Icon
+                      className={`w-5 h-5 mb-1.5 ${item.color} group-hover:scale-110 transition-transform`}
+                    />
+                  )}
                   {item.badge !== undefined && item.badge > 0 ? (
                     <span className="absolute -top-1.5 -right-2.5 bg-rose-600 text-white text-[9px] font-black min-w-[17px] h-[17px] px-1 rounded-full ring-2 ring-white shadow-xs flex items-center justify-center leading-none pointer-events-none">
                       {item.badge > 99 ? "99+" : item.badge}
@@ -652,9 +734,25 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     }`}
                   >
                     <div className="flex items-center gap-3.5">
-                      <Icon
-                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
-                      />
+                      {(item as any).imageSrc ? (
+                        <div className="w-5 h-5 rounded-full overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                          <Image
+                            src={(item as any).imageSrc}
+                            alt={item.label}
+                            width={20}
+                            height={20}
+                            className="w-5 h-5 object-contain"
+                          />
+                        </div>
+                      ) : (item as any).letter ? (
+                        <div className="w-5 h-5 rounded-full bg-emerald-600 text-white font-bold text-[11px] flex items-center justify-center shrink-0 group-hover:scale-110 shadow-xs transition-transform leading-none">
+                          {(item as any).letter}
+                        </div>
+                      ) : (
+                        <Icon
+                          className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                        />
+                      )}
                       <span>{item.label}</span>
                     </div>
                     {item.badge !== undefined && item.badge > 0 ? (
@@ -677,6 +775,43 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
               {visibleQuickLinks.map((item) => {
                 const isActive = pathname === item.href;
                 const Icon = item.icon;
+
+                if ((item as any).isAction || (item as any).onClick) {
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => {
+                        (item as any).onClick?.();
+                        onClose();
+                      }}
+                      className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all group text-left cursor-pointer"
+                      title={item.label}
+                    >
+                      <div className="flex items-center gap-3.5">
+                        {(item as any).imageSrc ? (
+                          <div className="w-5 h-5 rounded-full overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                            <Image
+                              src={(item as any).imageSrc}
+                              alt={item.label}
+                              width={20}
+                              height={20}
+                              className="w-5 h-5 object-contain"
+                            />
+                          </div>
+                        ) : (
+                          <Icon
+                            className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                          />
+                        )}
+                        <span>{item.label}</span>
+                      </div>
+                      <span className="bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        LIVE
+                      </span>
+                    </button>
+                  );
+                }
 
                 if ((item as any).isExternal) {
                   return (
@@ -717,9 +852,25 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     }`}
                   >
                     <div className="flex items-center gap-3.5">
-                      <Icon
-                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
-                      />
+                      {(item as any).imageSrc ? (
+                        <div className="w-5 h-5 rounded-full overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                          <Image
+                            src={(item as any).imageSrc}
+                            alt={item.label}
+                            width={20}
+                            height={20}
+                            className="w-5 h-5 object-contain"
+                          />
+                        </div>
+                      ) : (item as any).letter ? (
+                        <div className="w-5 h-5 rounded-full bg-emerald-600 text-white font-bold text-[11px] flex items-center justify-center shrink-0 group-hover:scale-110 shadow-xs transition-transform leading-none">
+                          {(item as any).letter}
+                        </div>
+                      ) : (
+                        <Icon
+                          className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                        />
+                      )}
                       <span>{item.label}</span>
                     </div>
                     {item.badge !== undefined && item.badge > 0 ? (
@@ -761,9 +912,25 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     }`}
                   >
                     <div className="flex items-center gap-3.5">
-                      <Icon
-                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
-                      />
+                      {(item as any).imageSrc ? (
+                        <div className="w-5 h-5 rounded-full overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                          <Image
+                            src={(item as any).imageSrc}
+                            alt={item.label}
+                            width={20}
+                            height={20}
+                            className="w-5 h-5 object-contain"
+                          />
+                        </div>
+                      ) : (item as any).letter ? (
+                        <div className="w-5 h-5 rounded-full bg-emerald-600 text-white font-bold text-[11px] flex items-center justify-center shrink-0 group-hover:scale-110 shadow-xs transition-transform leading-none">
+                          {(item as any).letter}
+                        </div>
+                      ) : (
+                        <Icon
+                          className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                        />
+                      )}
                       <span>{item.label}</span>
                     </div>
                     {item.badge !== undefined && item.badge > 0 ? (
@@ -842,9 +1009,25 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
                     }`}
                   >
                     <div className="flex items-center gap-3.5">
-                      <Icon
-                        className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
-                      />
+                      {(item as any).imageSrc ? (
+                        <div className="w-5 h-5 rounded-full overflow-hidden flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                          <Image
+                            src={(item as any).imageSrc}
+                            alt={item.label}
+                            width={20}
+                            height={20}
+                            className="w-5 h-5 object-contain"
+                          />
+                        </div>
+                      ) : (item as any).letter ? (
+                        <div className="w-5 h-5 rounded-full bg-emerald-600 text-white font-bold text-[11px] flex items-center justify-center shrink-0 group-hover:scale-110 shadow-xs transition-transform leading-none">
+                          {(item as any).letter}
+                        </div>
+                      ) : (
+                        <Icon
+                          className={`w-5 h-5 ${item.color} group-hover:scale-110 transition-transform`}
+                        />
+                      )}
                       <span>{item.label}</span>
                     </div>
                     {item.badge !== undefined && item.badge > 0 ? (
@@ -939,6 +1122,19 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       <DoctorAvailabilityModal
         isOpen={doctorAvailabilityOpen}
         onClose={() => setDoctorAvailabilityOpen(false)}
+      />
+
+      {/* Dhwani CRM Live Sync Bridge Modal */}
+      <DhwaniCrmSyncBridge
+        open={showCrmBridgeModal}
+        onClose={() => setShowCrmBridgeModal(false)}
+        onManualSync={() => {}}
+        currentAgent={{
+          agentId: user?.email ? user.email.split("@")[0] : "agent",
+          email: user?.email || userProfile?.email || "agent@ekms.in",
+          displayName: userProfile?.name || user?.displayName || "Agent",
+          name: userProfile?.name || user?.displayName || "Agent",
+        }}
       />
     </>
   );

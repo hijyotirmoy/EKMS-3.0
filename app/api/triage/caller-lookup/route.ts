@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const triageBase = getTriageBaseUrl();
+    const triageBase = request.nextUrl.origin || getTriageBaseUrl() || "http://localhost:3000";
     const targetUrl = `${triageBase}/api/caller/lookup?phone=${cleanPhone}`;
 
     const res = await fetch(targetUrl, {

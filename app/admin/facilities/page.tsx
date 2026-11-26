@@ -15,6 +15,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Facility } from "@/lib/types";
 import { logUserActivity } from "@/lib/activityLogger";
+import { getCachedFacilities } from "@/lib/clientCache";
 import * as XLSX from "xlsx";
 import {
   Building2,
@@ -36,8 +37,8 @@ import {
 export default function AdminFacilitiesPage() {
   const { user } = useAuth();
   const { toast, showConfirm } = usePopup();
-  const [facilities, setFacilities] = useState<Facility[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [facilities, setFacilities] = useState<Facility[]>(() => (getCachedFacilities() as Facility[]) || []);
+  const [loading, setLoading] = useState(false);
 
   // Filters
   const [typeFilter, setTypeFilter] = useState("all");
@@ -71,15 +72,34 @@ export default function AdminFacilitiesPage() {
 
   // 1. Live Facilities Listener
   useEffect(() => {
+    const initialList = (getCachedFacilities() as Facility[]) || [];
+    if (initialList.length > 0) {
+      setFacilities(initialList);
+      setLoading(false);
+    }
+
     const unsubscribe = onSnapshot(
       collection(db, "facilities"),
       (snapshot) => {
-        const list: Facility[] = [];
+        const snapList: Facility[] = [];
         snapshot.forEach((d) => {
-          list.push({ id: d.id, ...(d.data() as Omit<Facility, "id">) });
+          snapList.push({ id: d.id, ...(d.data() as Omit<Facility, "id">) });
         });
-        list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-        setFacilities(list);
+
+        const masterList = (getCachedFacilities() as Facility[]) || [];
+        const mergedMap = new Map<string, Facility>();
+        masterList.forEach((f) => {
+          const key = (f.id || f.name || "").toLowerCase().trim();
+          mergedMap.set(key, f);
+        });
+        snapList.forEach((f) => {
+          const key = (f.id || f.name || "").toLowerCase().trim();
+          mergedMap.set(key, { ...(mergedMap.get(key) || {}), ...f });
+        });
+
+        const combined = Array.from(mergedMap.values());
+        combined.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        setFacilities(combined);
         setLoading(false);
       },
       (err) => console.error("Facilities sync error:", err)

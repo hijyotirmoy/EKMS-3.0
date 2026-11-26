@@ -22,6 +22,8 @@ import {
   markAllNotificationsRead,
   closeNotification,
   checkAndCreateBirthdayNotifications,
+  isStaleBirthdayNotification,
+  NOTIFICATIONS_PAUSED,
   getLocalReadNotifications,
   getLocalClosedNotifications,
 } from "@/lib/notificationService";
@@ -183,7 +185,7 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
 
   // Birthday notifications check: runs at most once per session per day to conserve Firestore quota
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !NOTIFICATIONS_PAUSED) {
       const todayStr = new Date().toDateString();
       const lastCheck = typeof window !== "undefined" ? sessionStorage.getItem("ekms_last_bday_check") : null;
       if (lastCheck === todayStr) return;
@@ -218,6 +220,11 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
       Boolean(userProfile?.dispensaryRole);
 
     const directNotifs = notifications.filter((item) => {
+      // If notifications paused: stop all action notifications
+      if (NOTIFICATIONS_PAUSED && item.type !== "announcement") {
+        return false;
+      }
+
       // Stop all action notifications (dispensary OPD, bookings, etc.)
       if (
         item.type === "dispensary_opd" ||
@@ -225,6 +232,11 @@ export default function NotificationDrawer({ isOpen, onClose }: NotificationDraw
         (item.title && /booking|appointment/i.test(item.title)) ||
         (item.link && item.link.includes("/booking"))
       ) {
+        return false;
+      }
+
+      // Filter out stale birthday notifications (older than 3 days or past date)
+      if (item.type === "birthday" && isStaleBirthdayNotification(item)) {
         return false;
       }
 

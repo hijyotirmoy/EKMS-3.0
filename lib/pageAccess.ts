@@ -67,10 +67,17 @@ export const ALL_AGENT_PAGES: AppPageDef[] = [
   },
   {
     path: "/appointment",
-    label: "Appointments",
+    label: "Agent Appointments",
     category: "Agent",
-    description: "Insured person appointment scheduling and dispensary visit verification",
+    description: "Insured person appointment scheduling, verification, and agent tracking",
     iconName: "CalendarClock",
+  },
+  {
+    path: "/dispensary/appointment",
+    label: "Disp Appointments",
+    category: "Agent",
+    description: "Dispensary visit schedules, patient check-in queues, and dispensary staff tracking",
+    iconName: "CalendarCheck",
   },
   {
     path: "/dispensary/reception",
@@ -99,6 +106,13 @@ export const ALL_AGENT_PAGES: AppPageDef[] = [
     category: "Agent",
     description: "Searchable reference database and operational records",
     iconName: "Database",
+  },
+  {
+    path: "/triage",
+    label: "Triage & Clinical Probing",
+    category: "Agent",
+    description: "Clinical symptoms probing, AI consultation, and facility triage",
+    iconName: "HeartPulse",
   },
   {
     path: "/reports",
@@ -144,6 +158,13 @@ export const ALL_ADMIN_PAGES: AppPageDef[] = [
     category: "Admin",
     description: "Update empaneled hospital and dispensary network listings",
     iconName: "Building2",
+  },
+  {
+    path: "/admin/cases",
+    label: "Case History",
+    category: "Admin",
+    description: "Triage case logs, clinical history, and patient interactions",
+    iconName: "History",
   },
   {
     path: "/admin/appointment",
@@ -247,7 +268,7 @@ export const isPageRestricted = (
 
   // Check if target page is a dispensary-related function page
   const isDispensaryRelated =
-    normalizedCurrent === "/appointment" ||
+    normalizedCurrent === "/dispensary/appointment" ||
     normalizedCurrent === "/admin/appointment" ||
     normalizedCurrent.startsWith("/dispensary/");
 
@@ -266,20 +287,19 @@ export const isPageRestricted = (
     }
   }
 
-  // Strict page boundary for Dispensary Staff:
-  // ONLY Allowed: /appointment, /profile, /reports, and their specific role desk (/dispensary/reception, doctor, or pharmacy).
-  // ALL other EKMS pages are disabled/restricted by default.
-  if (isDispensaryStaff) {
-    const subRole = (userProfile.dispensaryRole || "").toLowerCase().trim();
-    let myDeskPath = "/dispensary/reception";
-    if (subRole === "doctor") {
-      myDeskPath = "/dispensary/doctor";
-    } else if (subRole === "pharmacist") {
-      myDeskPath = "/dispensary/pharmacy";
-    }
+  // If user is Dispensary Staff, restrict them from non-dispensary pages
+  if (isDispensaryStaff && !isAdminOrMaster) {
+    const dispRole = (userProfile.dispensaryRole || "").toLowerCase().trim();
+    let myDeskPath = "/dispensary/appointment";
+    if (dispRole.includes("doc")) myDeskPath = "/dispensary/doctor";
+    else if (dispRole.includes("pharm")) myDeskPath = "/dispensary/pharmacy";
+    else if (dispRole.includes("recept")) myDeskPath = "/dispensary/reception";
 
     const allowedDispensaryPages = new Set([
-      "/appointment",
+      "/dispensary/appointment",
+      "/dispensary/reception",
+      "/dispensary/doctor",
+      "/dispensary/pharmacy",
       "/profile",
       "/reports",
       myDeskPath,

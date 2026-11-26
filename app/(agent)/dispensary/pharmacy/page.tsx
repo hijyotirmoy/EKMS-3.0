@@ -17,6 +17,7 @@ import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { AppointmentRecord, isDispensaryMatch, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
 import { logUserActivity } from "@/lib/activityLogger";
+import { syncAppointmentUpdateToSheet } from "@/lib/googleSheetsSync";
 import {
   Pill,
   Search,
@@ -298,6 +299,18 @@ export default function PharmacyDeskPage() {
         } catch (e) {}
       }
 
+      // Automatically sync completed dispensation to Google Sheets
+      syncAppointmentUpdateToSheet(
+        activePatient,
+        {
+          status: "completed",
+          dispensedBy: pharmacistName,
+          dispensedAt: now,
+          dispensationNotes: dispensationNotes.trim(),
+        },
+        pharmacistName
+      ).catch((e) => console.warn("Google Sheet pharmacy sync notice:", e));
+
       const pName = activePatient.ipName || activePatient.patientName || "Patient";
       const tNo = activePatient.tokenNo || activePatient.token || "N/A";
 
@@ -535,7 +548,7 @@ export default function PharmacyDeskPage() {
 
                     <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
-                      <span>Booked: {apt.date || apt.appointmentDate} • {apt.timeSlot}</span>
+                      <span>Slot: {apt.date || apt.appointmentDate} • {apt.timeSlot}</span>
                     </span>
                   </div>
 

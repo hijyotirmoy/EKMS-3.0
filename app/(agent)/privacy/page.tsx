@@ -171,7 +171,7 @@ export default function PrivacyPage() {
             <span>6. Inter-System Sync &amp; Telephony Bridges</span>
           </h2>
           <p>
-            Real-time synchronization occurs between the Triage Helpline Application, the On-Premise Dispensary EKMS 3.0 Portal, and the C-Zentrix/Dhwani Telephony CTI Bridge.
+            Real-time synchronization occurs between the Triage Helpline Application, the On-Premise Dispensary EKMS Portal, and the C-Zentrix/Dhwani Telephony CTI Bridge.
           </p>
           <p>
             Status progression ranking ensures that once an appointment has progressed to <em>Visited</em>, <em>Consulted</em>, or <em>Dispensed</em> at an on-premise clinic, backward status downgrades are cryptographically rejected by synchronization engines.

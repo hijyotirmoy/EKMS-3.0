@@ -9,6 +9,7 @@ import { usePopup } from "@/context/PopupContext";
 import { Facility } from "@/lib/types";
 import { calculateDistance } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
+import { getCachedFacilities } from "@/lib/clientCache";
 import {
   Building2,
   Search,
@@ -27,8 +28,8 @@ import ReportIssueModal from "@/components/common/ReportIssueModal";
 export default function FacilityPage() {
   const { user } = useAuth();
   const { toast } = usePopup();
-  const [facilities, setFacilities] = useState<Facility[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [facilities, setFacilities] = useState<Facility[]>(() => (getCachedFacilities() as Facility[]) || []);
+  const [loading, setLoading] = useState(false);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState("");
@@ -49,13 +50,25 @@ export default function FacilityPage() {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportTarget, setReportTarget] = useState<{ id: string; name: string }>({ id: "", name: "" });
 
-  // 1. Fetch Facilities with session caching
+  // 1. Fetch Facilities with session caching & offline fallback
   useEffect(() => {
     let isMounted = true;
 
     const loadFacilities = async () => {
       try {
-        const list = await getOrFetchCollection<Facility>("facilities");
+        const cached = (getCachedFacilities() as Facility[]) || [];
+        const fetched = await getOrFetchCollection<Facility>("facilities");
+        const mergedMap = new Map<string, Facility>();
+        cached.forEach((f) => {
+          const key = (f.id || f.name || "").toLowerCase().trim();
+          mergedMap.set(key, f);
+        });
+        (fetched || []).forEach((f) => {
+          const key = (f.id || f.name || "").toLowerCase().trim();
+          mergedMap.set(key, { ...(mergedMap.get(key) || {}), ...f });
+        });
+        const list = Array.from(mergedMap.values());
+
         if (isMounted) {
           // Sort chronologically ascending to establish facility numbers, then newest first
           list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));

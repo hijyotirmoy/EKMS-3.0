@@ -8,6 +8,32 @@
 @layer base {
   :root {
     --font-roboto: 'Roboto', sans-serif;
+    --paper: 40 30% 98%;
+    --paper-2: 0 0% 100%;
+    --paper-3: 220 26% 95%;
+    --line: 218 20% 86%;
+
+    --background: var(--paper);
+    --foreground: 222 35% 12%;
+    --card: var(--paper-2);
+    --card-foreground: 222 35% 12%;
+    --popover: var(--paper-2);
+    --popover-foreground: 222 35% 12%;
+    --primary: 224 72% 46%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: var(--paper-3);
+    --secondary-foreground: 222 35% 12%;
+    --muted: var(--paper-3);
+    --muted-foreground: 218 24% 30%;
+    --accent: var(--paper-3);
+    --accent-foreground: 222 35% 12%;
+    --destructive: 0 72% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: var(--line);
+    --input: var(--line);
+    --ring: 224 72% 46%;
+    --radius: 0.5rem;
+
     --primary-blue: #065fd4;
     --bg-color: #ffffff;
     --card-bg: #ffffff;
@@ -35,6 +61,19 @@
   textarea,
   .font-sans {
     font-family: 'Roboto', var(--font-roboto), -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif !important;
+  }
+}
+
+/* Fluid Responsive Desktop Scaling for Compact Screens (1024px - 1440px) */
+@media screen and (min-width: 1024px) and (max-width: 1366px) {
+  :root {
+    font-size: 14.2px;
+  }
+}
+
+@media screen and (min-width: 1367px) and (max-width: 1536px) {
+  :root {
+    font-size: 15px;
   }
 }
 
@@ -150,4 +189,24 @@ mark.search-highlight {
 }
 .rich-text-content a {
   @apply text-blue-600 underline font-medium hover:text-blue-800;
+}
+
+
+/* Triage Component & Panel Utilities */
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-slate-200/80 bg-white shadow-sm;
+  }
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500;
+  }
+  .field-label {
+    @apply mb-1.5 block text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500;
+  }
+  .grid-lines {
+    background-image:
+      linear-gradient(#f1f5f9 1px, transparent 1px),
+      linear-gradient(90deg, #f1f5f9 1px, transparent 1px);
+    background-size: 36px 36px;
+  }
 }

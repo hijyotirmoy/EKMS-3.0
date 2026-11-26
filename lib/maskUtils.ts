@@ -178,3 +178,53 @@ export function maskNotificationMessage(
 ): string {
   return formatNotificationMessage(msg, true, metadataIpName, metadataPhone);
 }
+
+export function isMaskIpInfoEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw = localStorage.getItem("ekms_triage_settings_v1");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed?.maskIpInfo);
+  } catch (e) {
+    return false;
+  }
+}
+
+export function maskIpNumber(ipNumber?: string | null): string {
+  if (!ipNumber) return "";
+  const str = String(ipNumber).trim();
+  if (str === "N/A" || str.length <= 4) return str;
+  return "*".repeat(Math.max(4, str.length - 4)) + str.slice(-4);
+}
+
+export function maskName(name?: string | null): string {
+  if (!name) return "";
+  const str = String(name).trim();
+  if (str === "Beneficiary" || str === "N/A" || str.length <= 3) return str;
+  const parts = str.split(/\s+/);
+  if (parts.length > 1) {
+    return parts
+      .map((p) => {
+        if (p.length <= 2) return p;
+        return p[0] + "*".repeat(p.length - 2) + p.slice(-1);
+      })
+      .join(" ");
+  }
+  return str.slice(0, 3) + "***" + str.slice(-3);
+}
+
+export function formatBeneficiaryName(name?: string | null, forceMask?: boolean): string {
+  if (!forceMask && !isMaskIpInfoEnabled()) return name || "";
+  return maskName(name);
+}
+
+export function formatBeneficiaryPhone(phone?: string | null, forceMask?: boolean): string {
+  if (!forceMask && !isMaskIpInfoEnabled()) return phone || "";
+  return maskPhone(phone || "");
+}
+
+export function formatBeneficiaryIp(ipNumber?: string | null, forceMask?: boolean): string {
+  if (!forceMask && !isMaskIpInfoEnabled()) return ipNumber || "";
+  return maskIpNumber(ipNumber);
+}

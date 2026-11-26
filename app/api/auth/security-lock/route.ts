@@ -4,7 +4,7 @@ import { db } from "@/lib/firebase";
 
 async function verifyIdToken(idToken: string) {
   try {
-    const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyBv6Ph505FdF4rJytdkIG3KfNfs__ivuRI";
+    const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "";
     const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

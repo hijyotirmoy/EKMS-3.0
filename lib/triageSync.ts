@@ -3,21 +3,10 @@
  */
 
 export function getTriageBaseUrl(): string {
-  if (process.env.NEXT_PUBLIC_TRIAGE_API_URL) {
-    return process.env.NEXT_PUBLIC_TRIAGE_API_URL;
-  }
   if (typeof window !== "undefined") {
-    const host = window.location.hostname;
-    if (host !== "localhost" && host !== "127.0.0.1") {
-      return "https://triage.ekms.in";
-    }
-    // Running in local environment
-    return "http://localhost:3001";
+    return window.location.origin;
   }
-  if (process.env.NODE_ENV === "production") {
-    return "https://triage.ekms.in";
-  }
-  return "http://localhost:3001";
+  return process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_TRIAGE_API_URL || "http://localhost:3000";
 }
 
 export interface TriageDeleteParams {

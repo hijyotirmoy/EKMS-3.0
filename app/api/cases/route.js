@@ -1,0 +1,113 @@
+import { NextResponse } from "next/server";
+import { getCases, deleteCases, updateCase, saveCase } from "@/lib/db";
+import { logCaseToSheetServer } from "@/lib/serverSheetsSync";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+export async function GET(request) {
+  const { searchParams } = new URL(request.url);
+  const urgency = searchParams.get("urgency") || "all";
+  const q = searchParams.get("q") || "";
+  const since = searchParams.get("since") || null;
+
+  const cases = await getCases({ urgency, q, since });
+  return NextResponse.json(cases, {
+    headers: {
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+    },
+  });
+}
+
+export async function POST(request) {
+  try {
+    const caseData = await request.json();
+    if (!caseData || (!caseData.case_ref && !caseData.id)) {
+      return NextResponse.json(
+        { detail: "No case reference or data provided" },
+        { status: 400 }
+      );
+    }
+    const saved = await saveCase(caseData);
+    if (!caseData._skipSheetWebhook) {
+      try {
+        logCaseToSheetServer(saved);
+      } catch (_) {}
+    }
+    return NextResponse.json({
+      success: true,
+      case: saved,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { detail: `Failed to save case: ${err.message}` },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(request) {
+  try {
+    const body = await request.json();
+    const caseRef = body?.case_ref || body?.id;
+    if (!caseRef) {
+      return NextResponse.json(
+        { detail: "No case reference or ID provided for update" },
+        { status: 400 }
+      );
+    }
+    const updates = body?.updates || body;
+    const updated = await updateCase(caseRef, updates);
+    return NextResponse.json({
+      success: true,
+      case: updated,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { detail: `Failed to update case: ${err.message}` },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request) {
+  try {
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
+    const { searchParams } = new URL(request.url);
+    const queryRef = searchParams.get("case_ref") || searchParams.get("id");
+    const refs = Array.isArray(body?.case_refs)
+      ? body.case_refs
+      : body?.case_ref
+      ? [body.case_ref]
+      : queryRef
+      ? [queryRef]
+      : [];
+
+    if (!refs.length) {
+      return NextResponse.json(
+        { detail: "No case references provided for deletion" },
+        { status: 400 }
+      );
+    }
+
+    const count = await deleteCases(refs);
+    return NextResponse.json({
+      success: true,
+      deleted: count,
+      message: `Successfully deleted ${count} cases`,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { detail: `Failed to delete cases: ${err.message}` },
+      { status: 500 }
+    );
+  }
+}
+

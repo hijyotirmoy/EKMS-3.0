@@ -13,12 +13,21 @@ import {
   orderBy,
   limit,
 } from "firebase/firestore";
-import { db, bookingDb } from "@/lib/firebase";
+import {
+  db,
+  bookingDb,
+  casesSettingsDb,
+  getActiveBookingDb,
+  setBookingFailoverActive,
+  getIsBookingFailoverActive,
+} from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { Facility, UserProfile } from "@/lib/types";
 import { getOrFetchCollection } from "@/lib/cache";
 import { logUserActivity } from "@/lib/activityLogger";
+import { getCachedAppointments, setCachedAppointments } from "@/lib/clientCache";
+import { getCallerIdForPhone } from "@/lib/callerId";
 import {
   CalendarClock,
   CalendarCheck,
@@ -39,15 +48,21 @@ import {
   UserCheck,
   Pill,
   PackageCheck,
+  FileSpreadsheet,
+  ExternalLink,
+  Download,
 } from "lucide-react";
 import { AppointmentRecord } from "@/app/(agent)/appointment/page";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
 import { CancelAppointmentModal } from "@/components/appointments/CancelAppointmentModal";
 import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";
+import { SlotAvailabilityModal } from "@/components/appointments/SlotAvailabilityModal";
+import { GOOGLE_SHEET_URL } from "@/lib/googleSheetsSync";
 import { useStaffDirectory } from "@/lib/useStaffDirectory";
-import { extractIpNumber, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
+import { extractIpNumber, isNonClinicalAppointment, formatStaffTimestamp, getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
 import { deleteAppointmentFromTriageApi } from "@/lib/triageSync";
 import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
+import { archiveToRecentlyDeleted } from "@/lib/recentlyDeleted";
 
 function normalizeDispensaryName(str: string): string {
   if (!str) return "";
@@ -81,6 +96,39 @@ function formatCancellationReason(reason?: string): string {
     .replace(/triage/gi, "Source");
 }
 
+function formatBookingDateTime(bookedAt?: any, createdAt?: any): string {
+  const val = bookedAt || createdAt;
+  if (!val) return "N/A";
+  try {
+    let d: Date;
+    if (val && typeof val.toDate === "function") {
+      d = val.toDate();
+    } else if (typeof val === "number") {
+      d = new Date(val);
+    } else if (typeof val === "string") {
+      if (/^\d+$/.test(val)) {
+        d = new Date(parseInt(val, 10));
+      } else {
+        d = new Date(val);
+      }
+    } else {
+      d = new Date(val);
+    }
+    if (isNaN(d.getTime())) return String(val);
+
+    return d.toLocaleString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return String(val);
+  }
+}
+
 const ITEMS_PER_PAGE = 30;
 
 export default function AdminManageAppointmentPage() {
@@ -89,9 +137,18 @@ export default function AdminManageAppointmentPage() {
   const { getStaffName, getDoctorName } = useStaffDirectory();
   const isDispensaryStaff = isDispensaryStaffAccount(userProfile);
 
-  const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
+  useEffect(() => {
+    document.title = "Manage Appointments";
+  }, []);
+
+  const [appointments, setAppointments] = useState<AppointmentRecord[]>(() => {
+    if (typeof window !== "undefined") {
+      return getCachedAppointments() || [];
+    }
+    return [];
+  });
   const [dispensaries, setDispensaries] = useState<Facility[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   // Filters & Search
   const [searchTerm, setSearchTerm] = useState("");
@@ -100,6 +157,8 @@ export default function AdminManageAppointmentPage() {
   >("all");
   const [dateFilter, setDateFilter] = useState("");
   const [dispensaryFilter, setDispensaryFilter] = useState("all");
+  const [agentFilter, setAgentFilter] = useState("all");
+  const [slotAvailabilityOpen, setSlotAvailabilityOpen] = useState(false);
 
   // Sync date filter with mini-bar icons
   useEffect(() => {
@@ -110,6 +169,22 @@ export default function AdminManageAppointmentPage() {
   const [staffFilter, setStaffFilter] = useState("all");
   const [dispensaryStaffUsers, setDispensaryStaffUsers] = useState<UserProfile[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
+
+  // Extract unique agents for agent filter
+  const uniqueAgents = useMemo(() => {
+    const map = new Map<string, { name: string; email: string }>();
+    appointments.forEach((a) => {
+      const name = (a.bookedByName || "").trim();
+      const email = (a.bookedByEmail || "").trim();
+      if (name || email) {
+        const key = email || name;
+        if (!map.has(key)) {
+          map.set(key, { name: name || email.split("@")[0], email });
+        }
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [appointments]);
 
   // Details Modal State
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
@@ -134,78 +209,122 @@ export default function AdminManageAppointmentPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  // 1. Live Sync from ekmsbooking database with query limit for minimum Firestore reads
+  // 1. Live Sync from active booking database with automated secondary failover & IndexedDB caching
   useEffect(() => {
     let isMounted = true;
+    let unsubPrimary: (() => void) | null = null;
+    let unsubSecondary: (() => void) | null = null;
 
-    const q = query(
-      collection(bookingDb, "dispensary_appointments"),
-      orderBy("createdAt", "desc"),
-      limit(500)
-    );
+    const setupLiveListener = (useSecondary: boolean) => {
+      const targetDb = useSecondary ? casesSettingsDb : bookingDb;
+      const dbLabel = useSecondary ? "Secondary (casesSettingsDb)" : "Primary (ekmsbooking)";
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list: AppointmentRecord[] = [];
-        snap.forEach((d) => {
-          const data = d.data();
-          list.push({
-            ...data,
-            id: d.id,
-            tokenNo: data.tokenNo || d.id,
-            referenceNo: data.referenceNo || data.tokenNo || d.id,
-            ipName: data.ipName || data.patientName || "Insured Person",
-            ipNumber: extractIpNumber(data),
-            phone: data.phone || data.patientPhone || "",
-            age: data.age || data.patientAge || "",
-            gender: data.gender || data.patientSex || "Male",
-            dispensaryName: data.dispensaryName || data.facilityName || "ESIS Dispensary",
-            dispensaryId: data.dispensaryId || "",
-            location: data.location || data.patientAddress || "",
-            district: data.district || data.facilityDistrict || "",
-            date: data.date || "",
-            timeSlot: data.timeSlot || "10:00 AM - 11:00 AM",
-            department: data.department || "General Medicine / Primary Care OPD",
-            purpose: data.purpose || data.chiefComplaint || "General Health Check",
-            chiefComplaint: data.chiefComplaint || data.purpose || "",
-            notes: data.notes || data.agentNotes || "",
-            status: data.status || "scheduled",
-            bookedByEmail: data.bookedByEmail || "",
-            bookedByName: data.bookedByName || "Staff",
-            bookedAt: data.bookedAt || "",
-            createdAt: data.createdAt || Date.now(),
-            visitedAt: data.visitedAt,
-            visitedBy: data.visitedBy,
-            visitedNotes: data.visitedNotes,
-            receptionCheckedInAt: data.receptionCheckedInAt,
-            receptionCheckedInBy: data.receptionCheckedInBy,
-            doctorConsultedAt: data.doctorConsultedAt,
-            doctorName: data.doctorName,
-            doctorEmail: data.doctorEmail,
-            consultationType: data.consultationType,
-            diagnosis: data.diagnosis,
-            doctorNotes: data.doctorNotes,
-            prescriptions: data.prescriptions || [],
-            dispensedAt: data.dispensedAt,
-            dispensedBy: data.dispensedBy,
-            dispensationNotes: data.dispensationNotes,
-            vitals: data.vitals,
-            cancellationReason: data.cancellationReason,
-            updatedAt: data.updatedAt,
-            source: data.source,
+      const q = query(
+        collection(targetDb, "dispensary_appointments"),
+        orderBy("createdAt", "desc")
+      );
+
+      const unsub = onSnapshot(
+        q,
+        (snap) => {
+          const list: AppointmentRecord[] = [];
+          snap.forEach((d) => {
+            const data = d.data();
+            list.push({
+              ...data,
+              id: d.id,
+              tokenNo: data.tokenNo || d.id,
+              referenceNo: data.referenceNo || data.tokenNo || d.id,
+              ipName: data.ipName || data.patientName || "Insured Person",
+              ipNumber: extractIpNumber(data),
+              phone: data.phone || data.patientPhone || "",
+              age: data.age || data.patientAge || "",
+              gender: data.gender || data.patientSex || "Male",
+              dispensaryName: data.dispensaryName || data.facilityName || "ESIS Dispensary",
+              dispensaryId: data.dispensaryId || "",
+              location: data.location || data.patientAddress || "",
+              district: data.district || data.facilityDistrict || "",
+              date: data.date || "",
+              timeSlot: data.timeSlot || "10:00 AM - 11:00 AM",
+              department: data.department || "General Medicine / Primary Care OPD",
+              purpose: data.purpose || data.chiefComplaint || "General Health Check",
+              chiefComplaint: data.chiefComplaint || data.purpose || "",
+              notes: data.notes || data.agentNotes || "",
+              status: data.status || "scheduled",
+              bookedByEmail: data.bookedByEmail || data.agentEmail || "",
+              bookedByName: (() => {
+                const bName = (data.bookedByName || data.bookedBy || data.agentName || "").trim();
+                if (bName && bName.toLowerCase() !== "agent" && bName.toLowerCase() !== "staff") return bName;
+                if (data.bookedByEmail) {
+                  const parts = data.bookedByEmail.split("@")[0].split(/[._\-\s]+/).filter(Boolean);
+                  return parts.map((p: string) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
+                }
+                return "Authorized Agent";
+              })(),
+              bookedAt: data.bookedAt || "",
+              createdAt: data.createdAt || Date.now(),
+              visitedAt: data.visitedAt,
+              visitedBy: data.visitedBy,
+              visitedNotes: data.visitedNotes,
+              receptionCheckedInAt: data.receptionCheckedInAt,
+              receptionCheckedInBy: data.receptionCheckedInBy,
+              doctorConsultedAt: data.doctorConsultedAt,
+              doctorName: data.doctorName,
+              doctorEmail: data.doctorEmail,
+              consultationType: data.consultationType,
+              diagnosis: data.diagnosis,
+              doctorNotes: data.doctorNotes,
+              prescriptions: data.prescriptions || [],
+              dispensedAt: data.dispensedAt,
+              dispensedBy: data.dispensedBy,
+              dispensationNotes: data.dispensationNotes,
+              vitals: data.vitals,
+              cancellationReason: data.cancellationReason,
+              updatedAt: data.updatedAt,
+              source: data.source,
+            });
           });
-        });
-        if (isMounted) {
-          setAppointments(list);
-          setLoading(false);
+          if (isMounted) {
+            setAppointments((prev) => {
+              const map = new Map<string, AppointmentRecord>();
+              list.forEach((a) => map.set(a.id, a));
+              prev.forEach((a) => {
+                if (!map.has(a.id)) {
+                  map.set(a.id, a);
+                }
+              });
+              const merged = Array.from(map.values());
+              setCachedAppointments(merged);
+              return merged;
+            });
+            setLoading(false);
+          }
+        },
+        (err: any) => {
+          console.warn(`Dispensary appointments sync warning from ${dbLabel}:`, err);
+          const isQuota =
+            err?.code === "resource-exhausted" ||
+            err?.code === "permission-denied" ||
+            /quota|exhausted|limit/i.test(err?.message || "");
+
+          if (!useSecondary && isQuota && isMounted) {
+            console.warn("⚡ Primary bookingDb quota reached! Automatically switching to Secondary Database...");
+            setBookingFailoverActive(true);
+            unsubSecondary = setupLiveListener(true);
+          } else if (isMounted) {
+            setLoading(false);
+          }
         }
-      },
-      (err) => {
-        console.warn("Dispensary appointments sync warning:", err);
-        if (isMounted) setLoading(false);
-      }
-    );
+      );
+
+      return unsub;
+    };
+
+    if (getIsBookingFailoverActive()) {
+      unsubSecondary = setupLiveListener(true);
+    } else {
+      unsubPrimary = setupLiveListener(false);
+    }
 
     // Fetch Dispensaries
     const loadDispensaries = async () => {
@@ -249,8 +368,9 @@ export default function AdminManageAppointmentPage() {
 
     return () => {
       isMounted = false;
-      unsub();
-      unsubStaff();
+      if (unsubPrimary) unsubPrimary();
+      if (unsubSecondary) unsubSecondary();
+      if (unsubStaff) unsubStaff();
     };
   }, []);
 
@@ -263,6 +383,16 @@ export default function AdminManageAppointmentPage() {
       // Dispensary filter
       if (dispensaryFilter !== "all") {
         if (!isDispensaryMatch(app.dispensaryName, dispensaryFilter, app.dispensaryId)) {
+          return false;
+        }
+      }
+
+      // Agent filter
+      if (agentFilter !== "all") {
+        const bName = (app.bookedByName || "").toLowerCase().trim();
+        const bEmail = (app.bookedByEmail || "").toLowerCase().trim();
+        const target = agentFilter.toLowerCase().trim();
+        if (bName !== target && bEmail !== target) {
           return false;
         }
       }
@@ -283,18 +413,17 @@ export default function AdminManageAppointmentPage() {
       }
 
       if (statusFilter !== "all") {
+        const stage = getEffectiveAppointmentStage(app);
         if (statusFilter === "reception") {
-          if (app.status !== "scheduled") return false;
+          if (stage !== "scheduled") return false;
         } else if (statusFilter === "doctor") {
-          if (isNonClinicalAppointment(app)) return false;
-          if (app.status !== "with_doctor" && app.status !== "visited") return false;
+          if (stage !== "with_doctor") return false;
         } else if (statusFilter === "pharmacy") {
-          if (isNonClinicalAppointment(app)) return false;
-          if (app.status !== "pharmacy_queue") return false;
+          if (stage !== "with_pharmacist") return false;
         } else if (statusFilter === "completed") {
-          if (app.status !== "completed") return false;
+          if (stage !== "completed") return false;
         } else if (statusFilter === "cancelled") {
-          if (app.status !== "cancelled") return false;
+          if (stage !== "cancelled") return false;
         }
       }
 
@@ -317,21 +446,30 @@ export default function AdminManageAppointmentPage() {
 
       return true;
     });
-  }, [appointments, searchTerm, statusFilter, dateFilter, dispensaryFilter, staffFilter, dispensaryStaffUsers]);
+  }, [appointments, searchTerm, statusFilter, dateFilter, dispensaryFilter, staffFilter, agentFilter, dispensaryStaffUsers]);
 
   // Reset pagination on filter change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, dateFilter, dispensaryFilter, staffFilter]);
+  }, [searchTerm, statusFilter, dateFilter, dispensaryFilter, staffFilter, agentFilter]);
 
-  // Metrics
+  // Metrics: Derived using actual lifecycle stage
   const metrics = useMemo(() => {
     const total = appointments.length;
-    const pendingReception = appointments.filter((a) => a.status === "scheduled").length;
-    const pendingDoctor = appointments.filter((a) => !isNonClinicalAppointment(a) && (a.status === "with_doctor" || a.status === "visited")).length;
-    const pendingPharmacy = appointments.filter((a) => !isNonClinicalAppointment(a) && a.status === "pharmacy_queue").length;
-    const completed = appointments.filter((a) => a.status === "completed").length;
-    const cancelled = appointments.filter((a) => a.status === "cancelled").length;
+    let pendingReception = 0;
+    let pendingDoctor = 0;
+    let pendingPharmacy = 0;
+    let completed = 0;
+    let cancelled = 0;
+
+    appointments.forEach((a) => {
+      const stage = getEffectiveAppointmentStage(a);
+      if (stage === "scheduled") pendingReception++;
+      else if (stage === "with_doctor") pendingDoctor++;
+      else if (stage === "with_pharmacist") pendingPharmacy++;
+      else if (stage === "completed") completed++;
+      else if (stage === "cancelled") cancelled++;
+    });
 
     return {
       total,
@@ -357,11 +495,18 @@ export default function AdminManageAppointmentPage() {
     const finalReason = reason.trim() || "Cancelled by staff/beneficiary request";
 
     try {
-      await setDoc(
-        doc(bookingDb, "dispensary_appointments", cancelModalApp.id),
-        { status: "cancelled", cancellationReason: finalReason },
-        { merge: true }
-      );
+      await Promise.allSettled([
+        setDoc(
+          doc(bookingDb, "dispensary_appointments", cancelModalApp.id),
+          { status: "cancelled", cancellationReason: finalReason },
+          { merge: true }
+        ),
+        setDoc(
+          doc(casesSettingsDb, "dispensary_appointments", cancelModalApp.id),
+          { status: "cancelled", cancellationReason: finalReason },
+          { merge: true }
+        ),
+      ]);
       toast.info(`Appointment ${cancelModalApp.tokenNo} cancelled.`);
       logUserActivity(user?.email, {
         desc: `Admin cancelled appointment ${cancelModalApp.tokenNo} for ${cancelModalApp.ipName}. Reason: ${finalReason}`,
@@ -402,9 +547,11 @@ export default function AdminManageAppointmentPage() {
 
     if (app.id) {
       promises.push(deleteDoc(doc(bookingDb, "dispensary_appointments", app.id)).catch(() => {}));
+      promises.push(deleteDoc(doc(casesSettingsDb, "dispensary_appointments", app.id)).catch(() => {}));
       promises.push(deleteDoc(doc(db, "dispensary_appointments", app.id)).catch(() => {}));
       promises.push(deleteDoc(doc(db, "appointments", app.id)).catch(() => {}));
       promises.push(deleteDoc(doc(bookingDb, "appointments", app.id)).catch(() => {}));
+      promises.push(deleteDoc(doc(casesSettingsDb, "appointments", app.id)).catch(() => {}));
     }
 
     const identifiers = [app.tokenNo, app.referenceNo, app.id].filter(Boolean) as string[];
@@ -454,10 +601,19 @@ export default function AdminManageAppointmentPage() {
     if (!confirmed) return;
 
     try {
+      try {
+        await archiveToRecentlyDeleted({
+          item: app,
+          itemType: "appointment",
+          deletedBy: user?.displayName || user?.email || "Administrator",
+          deletedByEmail: user?.email || "",
+        });
+      } catch (_) {}
+
       await deleteAppointmentFromAllDatabases(app);
-      toast.success(`Appointment ${app.tokenNo} deleted from all databases.`);
+      toast.success(`Appointment ${app.tokenNo} moved to 7-day Recently Deleted vault.`);
       logUserActivity(user?.email, {
-        desc: `Admin deleted appointment record ${app.tokenNo} from all databases`,
+        desc: `Admin deleted appointment record ${app.tokenNo} (${app.ipName})`,
         type: "delete",
       });
       setSelectedIds((prev) => {
@@ -526,6 +682,17 @@ export default function AdminManageAppointmentPage() {
       // Immediately filter local state
       setAppointments((prev) => prev.filter((a) => !selectedIds.has(a.id)));
 
+      for (const app of appsToDelete) {
+        try {
+          await archiveToRecentlyDeleted({
+            item: app,
+            itemType: "appointment",
+            deletedBy: user?.displayName || user?.email || "Administrator",
+            deletedByEmail: user?.email || "",
+          });
+        } catch (_) {}
+      }
+
       await Promise.all(appsToDelete.map((app) => deleteAppointmentFromAllDatabases(app)));
 
       // Purge in bulk from Triage database via API
@@ -548,8 +715,66 @@ export default function AdminManageAppointmentPage() {
     }
   };
 
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
+
+  const handleExportExcel = async () => {
+    try {
+      setIsExportingExcel(true);
+      const XLSX = await import("xlsx");
+      const listToExport = appointments && appointments.length > 0 ? appointments : [];
+      if (listToExport.length === 0) {
+        toast.error("No appointment records available to extract.");
+        return;
+      }
+
+      const rows = listToExport.map((app) => {
+        const cleanPhone = String(app.phone || "").replace(/\D/g, "");
+        const callerId = (app.caller_id && !app.caller_id.startsWith("CAL-")) ? app.caller_id : ((app.callerId && !app.callerId.startsWith("CAL-")) ? app.callerId : (cleanPhone ? getCallerIdForPhone(cleanPhone) : ""));
+        const bookedByAccount = app.bookedByName || app.bookedBy || app.agentName || (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : "Staff");
+
+        return {
+          "Token / Ref": app.tokenNo || app.referenceNo || app.id || "",
+          "Caller ID": callerId,
+          "Patient / IP Name": app.patientName || app.ipName || "Anonymous",
+          "Phone Number": app.phone || "",
+          "IP Number": app.ipNumber || "N/A",
+          "Age": app.age || "",
+          "Gender": app.gender || "",
+          "Target Dispensary": app.dispensaryName || "",
+          "District": app.district || "Kamrup Metro",
+          "Booking Date & Time": formatBookingDateTime(app.bookedAt, app.createdAt),
+          "Booked By": bookedByAccount,
+          "OPD Slot Schedule": `${app.date || ""} ${app.timeSlot || ""}`.trim(),
+          "Chief Complaint": app.chiefComplaint || app.purpose || "",
+          "Status": (app.status || "scheduled").toUpperCase(),
+          "Reception Check-in": app.receptionCheckedInAt ? `${getStaffName(app.receptionCheckedInBy || app.visitedBy)} (${formatStaffTimestamp(app.receptionCheckedInAt)})` : "—",
+          "Doctor Prescribed": app.doctorConsultedAt ? `${getDoctorName(app.doctorName)} (${formatStaffTimestamp(app.doctorConsultedAt)})` : "—",
+          "Pharmacy Dispensed": app.dispensedAt ? `${getStaffName(app.dispensedBy)} (${formatStaffTimestamp(app.dispensedAt)})` : "—",
+          "Notes": app.notes || "",
+        };
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      const colWidths = Object.keys(rows[0] || {}).map((key) => ({
+        wch: Math.max(key.length + 4, 16),
+      }));
+      worksheet["!cols"] = colWidths;
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Appointments");
+      const dStr = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(workbook, `EKMS_Dispensary_Appointments_${dStr}.xlsx`);
+      toast.success(`Extracted ${rows.length} appointment records with updated Caller IDs!`);
+    } catch (err: any) {
+      console.error("Excel export error:", err);
+      toast.error("Failed to extract Excel sheet: " + (err.message || "Unknown error"));
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-200">
+    <div className="w-full max-w-[1720px] mx-auto space-y-5 animate-in fade-in duration-200">
       {/* 1. Header & Filters Row */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-1">
         <div>
@@ -565,7 +790,7 @@ export default function AdminManageAppointmentPage() {
                 !dateFilter ? "bg-white text-teal-700 shadow-2xs" : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              All
+              All Dates
             </button>
             <button
               onClick={() => setDateFilter("today")}
@@ -599,39 +824,41 @@ export default function AdminManageAppointmentPage() {
             <span>Doctor Availability</span>
           </button>
 
-          {/* Dispensary Filter */}
-          <select
-            value={dispensaryFilter}
-            onChange={(e) => {
-              setDispensaryFilter(e.target.value);
-              if (e.target.value !== "all") setStaffFilter("all");
-            }}
-            className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer shadow-2xs max-w-[200px]"
+          {/* Slot Availability Management Button */}
+          <button
+            type="button"
+            onClick={() => setSlotAvailabilityOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-95 group"
+            title="Inspect live OPD slot occupancy and open slots across dispensaries"
           >
-            <option value="all">All Dispensaries ({dispensaries.length})</option>
-            {dispensaries.map((d) => (
-              <option key={d.id} value={d.name}>
-                {d.name} {d.district ? `(${d.district})` : ""}
-              </option>
-            ))}
-          </select>
+            <CalendarClock className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+            <span>Slot Availability</span>
+          </button>
 
-          {/* Dispensary Staff Filter */}
-          <select
-            value={staffFilter}
-            onChange={(e) => {
-              setStaffFilter(e.target.value);
-              if (e.target.value !== "all") setDispensaryFilter("all");
-            }}
-            className="px-3 py-2 bg-teal-50/60 border border-teal-200 rounded-xl text-xs font-bold text-teal-800 outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer shadow-2xs max-w-[180px]"
+          {/* Extract Excel Download Button (Between Slot Availability & Google Sheets) */}
+          <button
+            type="button"
+            onClick={handleExportExcel}
+            disabled={isExportingExcel}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-95 group"
+            title="Download all appointments with updated Caller IDs in Excel (.xlsx) format"
           >
-            <option value="all">All Staff ({dispensaryStaffUsers.length})</option>
-            {dispensaryStaffUsers.map((s) => (
-              <option key={s.email} value={s.dispensaryName || s.email}>
-                {s.displayName}
-              </option>
-            ))}
-          </select>
+            <Download className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+            <span>{isExportingExcel ? "Extracting..." : "Extract Excel"}</span>
+          </button>
+
+          {/* Google Sheets Synced Register */}
+          <a
+            href={GOOGLE_SHEET_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer active:scale-95 group"
+            title="Open synced Google Sheets master register in a new tab"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 group-hover:scale-110 transition-transform" />
+            <span>Google Sheets</span>
+            <ExternalLink className="w-3 h-3 text-emerald-600 opacity-70" />
+          </a>
         </div>
       </div>
 
@@ -752,31 +979,82 @@ export default function AdminManageAppointmentPage() {
         </div>
       </div>
 
-      {/* 3. Search Bar & Bulk Actions */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
-        <div className="relative flex-1 w-full">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search by Token, IP Name, Phone, IP Number, Dispensary, or Complaint..."
-            className="w-full pl-10 pr-8 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 shadow-2xs transition"
-          />
-          {searchTerm && (
-            <button
-              type="button"
-              onClick={() => setSearchTerm("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+      {/* 3. Search Bar & Dropdown Filters Line */}
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 flex-1">
+          {/* Small Search Bar */}
+          <div className="relative w-full sm:w-60 lg:w-64">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search token, IP, phone..."
+              className="w-full pl-8 pr-7 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 shadow-2xs transition"
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* All Agents Filter */}
+          <select
+            value={agentFilter}
+            onChange={(e) => setAgentFilter(e.target.value)}
+            className="px-2.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer shadow-2xs max-w-[170px]"
+          >
+            <option value="all">All Agents ({uniqueAgents.length})</option>
+            {uniqueAgents.map((ag) => (
+              <option key={ag.email || ag.name} value={ag.name || ag.email}>
+                {ag.name}
+              </option>
+            ))}
+          </select>
+
+          {/* All Dispensaries Filter */}
+          <select
+            value={dispensaryFilter}
+            onChange={(e) => {
+              setDispensaryFilter(e.target.value);
+              if (e.target.value !== "all") setStaffFilter("all");
+            }}
+            className="px-2.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer shadow-2xs max-w-[190px]"
+          >
+            <option value="all">All Dispensaries ({dispensaries.length})</option>
+            {dispensaries.map((d) => (
+              <option key={d.id} value={d.name}>
+                {d.name} {d.district ? `(${d.district})` : ""}
+              </option>
+            ))}
+          </select>
+
+          {/* All Staff Filter */}
+          <select
+            value={staffFilter}
+            onChange={(e) => {
+              setStaffFilter(e.target.value);
+              if (e.target.value !== "all") setDispensaryFilter("all");
+            }}
+            className="px-2.5 py-2 bg-teal-50/60 border border-teal-200 rounded-xl text-xs font-bold text-teal-800 outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer shadow-2xs max-w-[170px]"
+          >
+            <option value="all">All Staff ({dispensaryStaffUsers.length})</option>
+            {dispensaryStaffUsers.map((s) => (
+              <option key={s.email} value={s.dispensaryName || s.email}>
+                {s.displayName}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Bulk Selection Actions */}
         {selectedIds.size > 0 && (
-          <div className="flex items-center gap-2 animate-in fade-in shrink-0">
+          <div className="flex items-center gap-2 animate-in fade-in shrink-0 self-end lg:self-center">
             <span className="text-xs font-bold text-teal-800 bg-teal-50 px-2.5 py-1.5 rounded-lg border border-teal-200">
               {selectedIds.size} Selected
             </span>
@@ -793,12 +1071,12 @@ export default function AdminManageAppointmentPage() {
       </div>
 
       {/* 4. Table Records */}
-      <div className="bg-white border border-slate-200/80 rounded-2xl shadow-2xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden">
+        <div className="overflow-x-auto min-w-full">
+          <table className="w-full text-left border-collapse text-xs min-w-[1340px]">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
-                <th className="py-3 px-3 w-10 text-center">
+              <tr className="bg-slate-50/90 border-b border-slate-200 text-slate-500 font-extrabold uppercase tracking-wider text-[11px] select-none">
+                <th className="py-3.5 px-3 w-10 text-center">
                   <input
                     type="checkbox"
                     checked={selectedIds.size === paginatedAppointments.length && paginatedAppointments.length > 0}
@@ -807,13 +1085,13 @@ export default function AdminManageAppointmentPage() {
                     title="Select all on this page"
                   />
                 </th>
-                <th className="py-3 px-4">Token / Ref</th>
-                <th className="py-3 px-4">Patient / IP Details</th>
-                <th className="py-3 px-4">Target Dispensary</th>
-                <th className="py-3 px-4">Schedule</th>
-                <th className="py-3 px-4">Chief Complaint</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4 text-right">Actions</th>
+                <th className="py-3.5 px-4 w-36 whitespace-nowrap">Token / Ref</th>
+                <th className="py-3.5 px-4 min-w-[210px]">Patient / IP Details</th>
+                <th className="py-3.5 px-4 min-w-[170px]">Target Dispensary</th>
+                <th className="py-3.5 px-4 min-w-[160px] whitespace-nowrap">Booking Time</th>
+                <th className="py-3.5 px-4 min-w-[150px] whitespace-nowrap">OPD Slot Schedule</th>
+                <th className="py-3.5 px-4 min-w-[280px]">Chief Complaint</th>
+                <th className="py-3.5 px-4 text-right min-w-[200px]">Status & Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -831,8 +1109,9 @@ export default function AdminManageAppointmentPage() {
                 </tr>
               ) : (
                 paginatedAppointments.map((app) => {
-                  const isVisited = app.status === "visited" || app.status === "completed";
-                  const isCancelled = app.status === "cancelled";
+                  const stage = getEffectiveAppointmentStage(app);
+                  const isVisited = stage === "with_doctor" || stage === "with_pharmacist" || stage === "completed";
+                  const isCancelled = stage === "cancelled";
 
                   return (
                     <tr
@@ -908,9 +1187,29 @@ export default function AdminManageAppointmentPage() {
                         {app.district && <div className="text-[10px] text-slate-400 mt-0.5">{app.district}</div>}
                       </td>
 
-                      <td className="py-3.5 px-4">
-                        <div className="font-semibold text-slate-800">{app.date}</div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">{app.timeSlot}</div>
+                      {/* Booking Time Column */}
+                      <td className="py-3.5 px-3.5 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-800 text-xs">
+                          <Clock className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                          <span>{formatBookingDateTime(app.bookedAt, app.createdAt)}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
+                          <span className="text-slate-400">Booked by:</span>
+                          <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={app.bookedByName || app.bookedBy || app.agentName || app.bookedByEmail || "Staff"}>
+                            {app.bookedByName && app.bookedByName.toLowerCase() !== "agent" ? app.bookedByName : (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : "Ekmsoffice")}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* OPD Slot Schedule Column */}
+                      <td className="py-3.5 px-3.5 whitespace-nowrap">
+                        <div className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                          <Calendar className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                          <span>{app.date}</span>
+                        </div>
+                        <div className="text-[11px] font-semibold text-teal-800 bg-teal-50 border border-teal-200/80 rounded-md px-2 py-0.5 mt-1 inline-flex items-center gap-1">
+                          <span>Slot: {app.timeSlot}</span>
+                        </div>
                       </td>
 
                       <td className="py-3.5 px-4">
@@ -928,7 +1227,7 @@ export default function AdminManageAppointmentPage() {
                               </span>
                               {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null)) && (
                                 <span className="font-normal text-slate-500">
-                                  , {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null))}
+                                  • {formatStaffTimestamp(app.receptionCheckedInAt || app.visitedAt || (app.status !== "scheduled" ? (app.updatedAt || app.createdAt) : null))}
                                 </span>
                               )}
                               {(app.visitedNotes || (app as any).receptionNotes) && (app.visitedNotes || (app as any).receptionNotes).trim() && (
@@ -948,7 +1247,7 @@ export default function AdminManageAppointmentPage() {
                               </span>
                               {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null)) && (
                                 <span className="font-normal text-slate-500">
-                                  , {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null))}
+                                  • {formatStaffTimestamp(app.doctorConsultedAt || (app.status === "pharmacy_queue" || app.status === "completed" ? app.updatedAt : null))}
                                 </span>
                               )}
                               {app.doctorNotes && app.doctorNotes.trim() && (
@@ -965,7 +1264,7 @@ export default function AdminManageAppointmentPage() {
                               </span>
                               {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null)) && (
                                 <span className="font-normal text-slate-500">
-                                  , {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null))}
+                                  • {formatStaffTimestamp(app.dispensedAt || (app.status === "completed" ? app.updatedAt : null))}
                                 </span>
                               )}
                               {app.dispensationNotes && app.dispensationNotes.trim() && (
@@ -984,70 +1283,74 @@ export default function AdminManageAppointmentPage() {
                         </div>
                       </td>
 
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        {app.status === "completed" ? (
-                          <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                            <span>Visit Completed</span>
-                          </span>
-                        ) : app.status === "pharmacy_queue" ? (
-                          <span className="px-2.5 py-0.5 bg-purple-50 text-purple-800 border border-purple-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1">
-                            <span>With Pharmacist</span>
-                          </span>
-                        ) : app.status === "with_doctor" || app.status === "visited" ? (
-                          <span className="px-2.5 py-0.5 bg-blue-50 text-blue-800 border border-blue-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1">
-                            <Stethoscope className="w-3 h-3 text-blue-600" />
-                            <span>With Doctor</span>
-                          </span>
-                        ) : isCancelled ? (
-                          <span className="px-2.5 py-0.5 bg-rose-50 text-rose-800 border border-rose-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1">
-                            <XCircle className="w-3 h-3 text-rose-600" />
-                            <span>Cancelled</span>
-                          </span>
-                        ) : (
-                          <span className="px-2.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1">
-                            <Clock className="w-3 h-3 text-amber-600" />
-                            <span>Scheduled</span>
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => {
-                              setActiveAppointment(app as any);
-                              setDetailsModalOpen(true);
-                            }}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs whitespace-nowrap border ${
-                              isNonClinicalAppointment(app)
-                                ? "text-orange-700 hover:bg-orange-50 border-orange-300 bg-white"
-                                : "text-slate-700 bg-slate-100 hover:bg-slate-200 border-transparent"
-                            }`}
-                            title={isNonClinicalAppointment(app) ? "View Non-Clinical Summary" : "View Clinical Summary"}
-                          >
-                            <FileText className={`w-3 h-3 ${isNonClinicalAppointment(app) ? "text-orange-600" : "text-slate-500"}`} />
-                            <span>{isNonClinicalAppointment(app) ? "Non-Clinical Summary" : "Clinical summary"}</span>
-                          </button>
-
-                          {!isVisited && !isCancelled && (
-                            <button
-                              onClick={() => setCancelModalApp(app)}
-                              className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold rounded-lg text-[11px] transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
-                              title="Cancel appointment"
-                            >
-                              <X className="w-3 h-3 text-rose-600" />
-                              <span>Cancel</span>
-                            </button>
+                      {/* Merged Status & Actions Column */}
+                      <td className="py-3.5 px-3.5 whitespace-nowrap text-right">
+                        <div className="flex flex-col items-end gap-2">
+                          {/* Status Pill (Above Actions) */}
+                          {stage === "completed" ? (
+                            <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1 shadow-2xs">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              <span>Visit Completed</span>
+                            </span>
+                          ) : stage === "with_pharmacist" ? (
+                            <span className="px-2.5 py-0.5 bg-purple-50 text-purple-800 border border-purple-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1 shadow-2xs">
+                              <Pill className="w-3 h-3 text-purple-600" />
+                              <span>With Pharmacist</span>
+                            </span>
+                          ) : stage === "with_doctor" ? (
+                            <span className="px-2.5 py-0.5 bg-blue-50 text-blue-800 border border-blue-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1 shadow-2xs">
+                              <Stethoscope className="w-3 h-3 text-blue-600" />
+                              <span>With Doctor</span>
+                            </span>
+                          ) : isCancelled ? (
+                            <span className="px-2.5 py-0.5 bg-rose-50 text-rose-800 border border-rose-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1 shadow-2xs">
+                              <XCircle className="w-3 h-3 text-rose-600" />
+                              <span>Cancelled</span>
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-300 rounded-full text-[10px] font-black uppercase inline-flex items-center gap-1 shadow-2xs">
+                              <Clock className="w-3 h-3 text-amber-600" />
+                              <span>Scheduled</span>
+                            </span>
                           )}
 
-                          <button
-                            onClick={() => handleDeleteAppointment(app)}
-                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                            title="Delete appointment permanently"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {/* Action Buttons: Clinical summary + Cancel + Delete (Below Status Pill) */}
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => {
+                                setActiveAppointment(app as any);
+                                setDetailsModalOpen(true);
+                              }}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs whitespace-nowrap border ${
+                                isNonClinicalAppointment(app)
+                                  ? "text-orange-700 hover:bg-orange-50 border-orange-300 bg-white"
+                                  : "text-slate-700 bg-slate-100 hover:bg-slate-200 border-transparent"
+                              }`}
+                              title={isNonClinicalAppointment(app) ? "View Non-Clinical Summary" : "View Clinical Summary"}
+                            >
+                              <FileText className={`w-3 h-3 ${isNonClinicalAppointment(app) ? "text-orange-600" : "text-slate-500"}`} />
+                              <span>{isNonClinicalAppointment(app) ? "Non-Clinical Summary" : "Clinical summary"}</span>
+                            </button>
+
+                            {!isVisited && !isCancelled && (
+                              <button
+                                onClick={() => setCancelModalApp(app)}
+                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold rounded-lg text-[11px] transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                                title="Cancel appointment"
+                              >
+                                <X className="w-3 h-3 text-rose-600" />
+                                <span>Cancel</span>
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => handleDeleteAppointment(app)}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Delete appointment permanently"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -1138,6 +1441,14 @@ export default function AdminManageAppointmentPage() {
       <DoctorAvailabilityModal
         isOpen={doctorAvailabilityOpen}
         onClose={() => setDoctorAvailabilityOpen(false)}
+      />
+
+      {/* Slot Availability Management Modal */}
+      <SlotAvailabilityModal
+        isOpen={slotAvailabilityOpen}
+        onClose={() => setSlotAvailabilityOpen(false)}
+        appointments={appointments}
+        facilities={dispensaries}
       />
     </div>
   );

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { collection, doc, getDocs, setDoc, query, orderBy, limit as firestoreLimit } from "firebase/firestore";
 import { bookingDb } from "@/lib/firebase";
 import { validateApiKey, corsHeaders } from "@/lib/apiKeyAuth";
@@ -17,6 +18,15 @@ export async function OPTIONS() {
  * Query params: dispensary, status, date, tokenNo, limit
  */
 export async function GET(request: NextRequest) {
+  const clientIp = getClientIp(request);
+  const rateLimitResult = checkRateLimit(`appt_get_${clientIp}`, { limit: 200, windowMs: 60000 });
+  if (!rateLimitResult.allowed) {
+    return NextResponse.json(
+      { success: false, error: "Too many requests. Rate limit exceeded." },
+      { status: 429, headers: corsHeaders() }
+    );
+  }
+
   const authRes = await validateApiKey(request, "appointments:read");
   if (!authRes.valid) {
     return NextResponse.json(
@@ -98,6 +108,15 @@ export async function GET(request: NextRequest) {
  * Books a new appointment
  */
 export async function POST(request: NextRequest) {
+  const clientIp = getClientIp(request);
+  const rateLimitResult = checkRateLimit(`appt_post_${clientIp}`, { limit: 100, windowMs: 60000 });
+  if (!rateLimitResult.allowed) {
+    return NextResponse.json(
+      { success: false, error: "Too many requests. Rate limit exceeded." },
+      { status: 429, headers: corsHeaders() }
+    );
+  }
+
   const authRes = await validateApiKey(request, "appointments:create");
   if (!authRes.valid) {
     return NextResponse.json(
@@ -172,8 +191,8 @@ export async function POST(request: NextRequest) {
       chiefComplaint: body.chiefComplaint || body.purpose || "",
       notes: body.notes || body.agentNotes || "",
       status: body.status || "scheduled",
-      bookedByEmail: body.bookedByEmail || `${authRes.keyDoc?.name?.toLowerCase().replace(/\s+/g, ".") || "api"}@piramalswasthya.org`,
-      bookedByName: body.bookedByName || authRes.keyDoc?.name || "API Consumer",
+      bookedByEmail: body.bookedByEmail || ((authRes.keyDoc as any)?.email || ""),
+      bookedByName: body.bookedByName || authRes.keyDoc?.name || "Authorized Agent",
       bookedAt: body.bookedAt || new Date().toLocaleString("en-IN", {
         day: "2-digit",
         month: "short",
@@ -195,6 +214,8 @@ export async function POST(request: NextRequest) {
       pastCallsCount: body.pastCallsCount || (Array.isArray(body.past3Calls) ? body.past3Calls.length : 0),
       triageLevel: body.triageLevel || null,
       triageScore: body.triageScore ?? null,
+      case_ref: body.case_ref || body.caseId || null,
+      caseId: body.caseId || body.case_ref || null,
     };
 
     // Save in Firestore dispensary_appointments
@@ -209,6 +230,38 @@ export async function POST(request: NextRequest) {
       link: "/dispensary/reception",
       tokenNo,
     }).catch((e) => console.warn("Failed to dispatch dispensary booking notification:", e));
+
+    // Optional direct sync to Google Sheets ONLY for external API clients
+    // (EKMS Triage already executes dedicated deduplicated sync via recordAppointmentBookingToSheet)
+    if (!body._skipSheetWebhook && body.source !== "EKMS Triage") {
+      try {
+        const defaultWebhook =
+          "https://script.google.com/macros/s/AKfycbzzk3DPzW9urW_i350_Kq5Sm1rPw9pcha6pEafuTowHH1Vcbl08vRxWX89qnlJgTjQP6w/exec";
+        const webhookUrl =
+          process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
+          process.env.NEXT_PUBLIC_GOOGLE_SHEETS_WEBHOOK_URL ||
+          defaultWebhook;
+        fetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(6000),
+          body: JSON.stringify({
+            record_type: "Booking Done",
+            case_id: body.case_ref || body.caseId || "",
+            booking_ref_id: tokenNo,
+            reference_id: tokenNo,
+            name: patientName,
+            phone_no: phone,
+            ip_no: ipNumber,
+            date_time: `${appointmentDate} ${appointmentPayload.timeSlot || ""}`.trim(),
+            dispensary_name: dispensaryName,
+            agent_name: appointmentPayload.bookedByName || "Triage Desk",
+            chief_complaint: appointmentPayload.chiefComplaint || appointmentPayload.purpose || "",
+            status: "Booking Confirmed",
+          }),
+        }).catch((e) => console.warn("Google Sheet webhook booking notice:", e.message));
+      } catch (_) {}
+    }
 
     return NextResponse.json(
       {

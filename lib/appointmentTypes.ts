@@ -24,7 +24,7 @@ export interface AppointmentVitals {
 }
 
 export const CONSULTATION_TYPES = [
-  "Medical Certificate",
+  "Maternity Certificate",
   "Sickness Certificate",
   "Referral",
   "Medical Consultation",
@@ -210,22 +210,92 @@ export function extractIpNumber(data: any): string {
   return "N/A";
 }
 
-export function getStatusDisplay(status: string): {
+export type EffectiveAppointmentStage =
+  | "scheduled"        // Awaiting reception arrival & check-in
+  | "with_doctor"      // Checked in by reception, waiting for doctor consultation
+  | "with_pharmacist"  // Doctor consulted & Rx issued, waiting for pharmacy dispensation
+  | "completed"        // Dispensed by pharmacist (or non-clinical finalized at reception)
+  | "cancelled";       // Cancelled
+
+export function getEffectiveAppointmentStage(app: any): EffectiveAppointmentStage {
+  if (!app) return "scheduled";
+
+  const rawStatus = String(app.status || "").toLowerCase().trim();
+  if (rawStatus === "cancelled") return "cancelled";
+
+  const isNonClin = isNonClinicalAppointment(app);
+
+  // 1. Pharmacist Dispensation / Completed Visit (Enforce Rule 2.2: Doctor must consult before clinical completion)
+  const hasDoctorConsulted = Boolean(
+    app.doctorName ||
+    app.prescribedBy ||
+    app.doctor ||
+    app.doctorConsultedAt ||
+    app.doctorNotes ||
+    (app.prescriptions && Array.isArray(app.prescriptions) && app.prescriptions.length > 0)
+  );
+
+  const hasDispensed = Boolean(
+    (isNonClin || hasDoctorConsulted) && (
+      rawStatus === "completed" ||
+      rawStatus === "dispensed" ||
+      app.dispensedAt ||
+      app.dispensedBy ||
+      app.completedAt ||
+      (isNonClin && (app.receptionCheckedInAt || app.receptionCheckedInBy || app.visitedAt || app.visitedBy))
+    )
+  );
+  if (hasDispensed) return "completed";
+
+  // 2. Doctor Consultation done -> Waiting for Pharmacy
+  const hasDoctor = Boolean(
+    rawStatus === "pharmacy_queue" ||
+    rawStatus === "with_pharmacist" ||
+    app.doctorConsultedAt ||
+    (app.prescriptions && Array.isArray(app.prescriptions) && app.prescriptions.length > 0)
+  );
+  if (hasDoctor && !isNonClin) return "with_pharmacist";
+
+  // 3. Reception Check-in done -> Waiting for Doctor
+  const hasReception = Boolean(
+    rawStatus === "with_doctor" ||
+    rawStatus === "visited" ||
+    app.receptionCheckedInAt ||
+    app.receptionCheckedInBy ||
+    app.visitedAt ||
+    app.visitedBy
+  );
+  if (hasReception) return "with_doctor";
+
+  return "scheduled";
+}
+
+export function getStatusDisplay(statusOrApp: string | any): {
   label: string;
   bgClass: string;
   textClass: string;
   borderClass: string;
 } {
-  switch (status) {
+  const stage = typeof statusOrApp === "object" && statusOrApp !== null
+    ? getEffectiveAppointmentStage(statusOrApp)
+    : (() => {
+        const s = String(statusOrApp || "").toLowerCase().trim();
+        if (s === "completed" || s === "dispensed") return "completed";
+        if (s === "pharmacy_queue" || s === "with_pharmacist") return "with_pharmacist";
+        if (s === "with_doctor" || s === "visited") return "with_doctor";
+        if (s === "cancelled") return "cancelled";
+        return "scheduled";
+      })();
+
+  switch (stage) {
     case "with_doctor":
-    case "visited":
       return {
         label: "WITH DOCTOR",
         bgClass: "bg-blue-50",
         textClass: "text-blue-700",
         borderClass: "border-blue-300",
       };
-    case "pharmacy_queue":
+    case "with_pharmacist":
       return {
         label: "WITH PHARMACIST",
         bgClass: "bg-purple-50",

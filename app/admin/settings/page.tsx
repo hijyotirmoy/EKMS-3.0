@@ -1,11 +1,35 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, query, orderBy, limit, getDocs } from "firebase/firestore";
 import { db, logsDb, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { logUserActivity, SystemLogDoc, getTodayDateString } from "@/lib/activityLogger";
+import {
+  logUserActivity,
+  SystemLogDoc,
+  getTodayDateString,
+  deleteSystemAuditLog,
+  deleteBulkSystemAuditLogs,
+  clearAllSystemAuditLogs,
+} from "@/lib/activityLogger";
+import {
+  getFacilityAvailabilityMap,
+  saveAllFacilityAvailability,
+  isFacilityAccepting,
+  normalizeFacilityKey,
+} from "@/lib/facilityAvailability";
+import { getCachedFacilities } from "@/lib/clientCache";
+import {
+  getRecentlyDeletedList,
+  restoreRecentlyDeletedItem,
+  permanentlyDeleteRecentlyDeletedItem,
+  emptyAllRecentlyDeleted,
+  getLocalRecentlyDeleted,
+  archiveToRecentlyDeleted,
+  getExpiryRemainingText,
+  formatISTTime,
+} from "@/lib/recentlyDeleted";
 import { UserProfile } from "@/lib/types";
 import { ALL_AGENT_PAGES, ALL_ADMIN_PAGES, AppPageDef, isPageRestricted } from "@/lib/pageAccess";
 import { ApiKeyDoc, generateApiKey } from "@/lib/apiKeyAuth";
@@ -66,14 +90,37 @@ import {
   Stethoscope,
   Pill,
   CalendarClock,
+  ArchiveRestore,
+  Ban,
+  Loader2,
 } from "lucide-react";
 
 export default function AdminSettingsPage() {
   const { userProfile, isMasterAdmin } = useAuth();
   const { toast, showConfirm } = usePopup();
   const [activeTab, setActiveTab] = useState<
-    "privacy" | "access" | "session" | "maintenance" | "images" | "files" | "logs" | "api"
-  >("privacy");
+    "facility" | "privacy" | "access" | "api" | "logs" | "deleted" | "session" | "maintenance"
+  >("facility");
+
+  // Facility Availability State (Matches Triage & Screenshot 1 - Ultra Low Reads/Writes)
+  const [facilities, setFacilities] = useState<any[]>(() => getCachedFacilities() || []);
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, boolean>>(() => getFacilityAvailabilityMap());
+  const [facilitySearch, setFacilitySearch] = useState("");
+  const [facilityTypeFilter, setFacilityTypeFilter] = useState("all");
+  const [facilityStatusFilter, setFacilityStatusFilter] = useState("all");
+  const [savingFacilities, setSavingFacilities] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/facilities/availability")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.availability) {
+          setAvailabilityMap(data.availability);
+          saveAllFacilityAvailability(data.availability);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // System Logs State (Initial load from localStorage for 0-read instant render)
   const [systemLogs, setSystemLogs] = useState<SystemLogDoc[]>(() => {
@@ -90,6 +137,40 @@ export default function AdminSettingsPage() {
   const [loadingSystemLogs, setLoadingSystemLogs] = useState(false);
   const [systemLogsSearch, setSystemLogsSearch] = useState("");
   const [systemLogsTypeFilter, setSystemLogsTypeFilter] = useState<string>("all");
+  const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set());
+  const [isDeletingLogs, setIsDeletingLogs] = useState(false);
+
+  // Recently Deleted (7-Day Holding Vault) State
+  const [deletedItems, setDeletedItems] = useState<any[]>(() => getLocalRecentlyDeleted() || []);
+  const [deletedLoading, setDeletedLoading] = useState(false);
+  const [deletedSearch, setDeletedSearch] = useState("");
+  const [deletedTypeFilter, setDeletedTypeFilter] = useState("all");
+  const [deletedPage, setDeletedPage] = useState(1);
+  const DELETED_PER_PAGE = 8;
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [purgingId, setPurgingId] = useState<string | null>(null);
+
+  const loadDeletedItems = async () => {
+    setDeletedLoading(true);
+    try {
+      const list = await getRecentlyDeletedList();
+      setDeletedItems(list);
+    } catch (e) {
+      console.warn("loadDeletedItems notice:", e);
+    } finally {
+      setDeletedLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDeletedItems();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "deleted") {
+      loadDeletedItems();
+    }
+  }, [activeTab]);
 
   // System Logs Pagination (50 logs at a time)
   const [logsCurrentPage, setLogsCurrentPage] = useState(1);
@@ -273,8 +354,7 @@ export default function AdminSettingsPage() {
       let userName = rawUserName || "";
 
       // Extract email from document ID if email is missing or unknown
-      // e.g. hist_himangshu.bezbaruah@piramalswasthya.org_2026-09-16_1789555481853_1
-      if ((!email || email === "unknown@piramalswasthya.org") && logId) {
+      if ((!email || email.includes("unknown@")) && logId) {
         const cleanId = logId.replace("hist_", "");
         const parts = cleanId.split("_");
         if (parts[0] && parts[0].includes("@")) {
@@ -287,14 +367,14 @@ export default function AdminSettingsPage() {
         userName === "User" ||
         userName === "Unknown" ||
         !rawEmail ||
-        rawEmail === "unknown@piramalswasthya.org"
+        rawEmail.includes("unknown@")
       ) {
-        if (email && email !== "unknown@piramalswasthya.org" && email.includes("@")) {
+        if (email && !email.includes("unknown@") && email.includes("@")) {
           const namePart = email.split("@")[0];
           userName = namePart.replace(/[._]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
         } else {
           userName = "User";
-          email = "unknown@piramalswasthya.org";
+          email = "";
         }
       }
 
@@ -521,6 +601,271 @@ export default function AdminSettingsPage() {
     }
   };
 
+  // Facility Availability Counts & Filters
+  const facilityCounts = useMemo(() => {
+    let accepting = 0;
+    let offline = 0;
+    facilities.forEach((f) => {
+      if (isFacilityAccepting(f, availabilityMap)) {
+        accepting++;
+      } else {
+        offline++;
+      }
+    });
+    return { total: facilities.length, accepting, offline };
+  }, [facilities, availabilityMap]);
+
+  const filteredFacilities = useMemo(() => {
+    return facilities.filter((f) => {
+      if (facilityTypeFilter !== "all") {
+        const typeStr = (f.facility_type || f.type || "").toLowerCase();
+        if (facilityTypeFilter === "dispensary" && !typeStr.includes("dispensary")) return false;
+        if (facilityTypeFilter === "esic_hospital" && !typeStr.includes("esic") && !typeStr.includes("hospital")) return false;
+        if (facilityTypeFilter === "tie_up" && !typeStr.includes("tie-up") && !typeStr.includes("tie_up")) return false;
+        if (facilityTypeFilter === "govt" && !typeStr.includes("district") && !typeStr.includes("govt") && !typeStr.includes("civil")) return false;
+      }
+      if (facilityStatusFilter !== "all") {
+        const accepting = isFacilityAccepting(f, availabilityMap);
+        if (facilityStatusFilter === "accepting" && !accepting) return false;
+        if (facilityStatusFilter === "offline" && accepting) return false;
+      }
+      if (facilitySearch.trim()) {
+        const q = facilitySearch.toLowerCase().trim();
+        const name = (f.name || "").toLowerCase();
+        const district = (f.district || "").toLowerCase();
+        const pincode = (f.pincode || "").toLowerCase();
+        const address = (f.address || "").toLowerCase();
+        if (!name.includes(q) && !district.includes(q) && !pincode.includes(q) && !address.includes(q)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [facilities, availabilityMap, facilityTypeFilter, facilityStatusFilter, facilitySearch]);
+
+  const handleToggleFacility = (facility: any) => {
+    const current = isFacilityAccepting(facility, availabilityMap);
+    const next = !current;
+    const newMap = { ...availabilityMap };
+    const key = normalizeFacilityKey(facility);
+    newMap[key] = next;
+    if (facility.name) {
+      newMap[facility.name.toLowerCase().trim()] = next;
+      newMap[facility.name] = next;
+    }
+    setAvailabilityMap(newMap);
+    saveAllFacilityAvailability(newMap);
+  };
+
+  const handleBulkSetAvailability = (enableAll: boolean) => {
+    const newMap = { ...availabilityMap };
+    filteredFacilities.forEach((f) => {
+      const key = normalizeFacilityKey(f);
+      newMap[key] = enableAll;
+      if (f.name) {
+        newMap[f.name.toLowerCase().trim()] = enableAll;
+        newMap[f.name] = enableAll;
+      }
+    });
+    setAvailabilityMap(newMap);
+    saveAllFacilityAvailability(newMap);
+    toast.success(enableAll ? "All filtered facilities enabled" : "All filtered facilities disabled");
+  };
+
+  const handleSaveFacilityAvailability = async () => {
+    setSavingFacilities(true);
+    try {
+      saveAllFacilityAvailability(availabilityMap);
+      const res = await fetch("/api/facilities/availability", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ availability: availabilityMap }),
+      });
+      if (res.ok) {
+        toast.success("Facility operational status saved successfully!");
+        logUserActivity(userProfile?.email, {
+          desc: `Admin updated facility operational availability (${facilityCounts.accepting} accepting, ${facilityCounts.offline} offline)`,
+          type: "facility",
+        });
+      } else {
+        toast.info("Saved locally and broadcasted to active sessions.");
+      }
+    } catch (err: any) {
+      toast.info("Saved locally and broadcasted to active sessions.");
+    } finally {
+      setSavingFacilities(false);
+    }
+  };
+
+  // Recently Deleted Computed & Handlers
+  const deletedCounts = useMemo(() => {
+    const counts = { total: deletedItems.length, appointment: 0, case: 0, user: 0, log: 0 };
+    deletedItems.forEach((x) => {
+      if (counts[x.itemType as keyof typeof counts] !== undefined) {
+        (counts[x.itemType as keyof typeof counts] as number)++;
+      }
+    });
+    return counts;
+  }, [deletedItems]);
+
+  const filteredDeletedItems = useMemo(() => {
+    return deletedItems.filter((item) => {
+      if (deletedTypeFilter !== "all" && item.itemType !== deletedTypeFilter) return false;
+      if (deletedSearch.trim()) {
+        const q = deletedSearch.toLowerCase().trim();
+        const matchTitle = String(item.title || "").toLowerCase().includes(q);
+        const matchSubtitle = String(item.subtitle || "").toLowerCase().includes(q);
+        const matchId = String(item.originalId || "").toLowerCase().includes(q);
+        const matchDeletedBy = String(item.deletedBy || "").toLowerCase().includes(q);
+        if (!matchTitle && !matchSubtitle && !matchId && !matchDeletedBy) return false;
+      }
+      return true;
+    });
+  }, [deletedItems, deletedTypeFilter, deletedSearch]);
+
+  const totalDeletedPages = Math.max(1, Math.ceil(filteredDeletedItems.length / DELETED_PER_PAGE));
+  const paginatedDeletedItems = useMemo(() => {
+    const start = (deletedPage - 1) * DELETED_PER_PAGE;
+    return filteredDeletedItems.slice(start, start + DELETED_PER_PAGE);
+  }, [filteredDeletedItems, deletedPage]);
+
+  const handleRestoreItem = async (item: any) => {
+    setRestoringId(item.id);
+    try {
+      const res = await restoreRecentlyDeletedItem(item.id, userProfile);
+      if (res.success) {
+        toast.success(`${item.title || "Record"} successfully restored!`);
+        setDeletedItems((prev) => prev.filter((x) => x.id !== item.id));
+        logUserActivity(userProfile?.email, {
+          desc: `Restored deleted item: ${item.title || item.originalId} (${item.itemType})`,
+          type: "add",
+        });
+      } else {
+        toast.error("Failed to restore: " + (res.error || "Unknown error"));
+      }
+    } catch (err: any) {
+      toast.error("Failed to restore: " + err.message);
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
+  const handlePermanentDelete = async (item: any) => {
+    const confirmed = await showConfirm(`Permanently delete "${item.title || item.originalId}"? This record cannot be restored.`);
+    if (!confirmed) return;
+    setPurgingId(item.id);
+    try {
+      await permanentlyDeleteRecentlyDeletedItem(item.id);
+      toast.success(`${item.title || "Record"} permanently deleted.`);
+      setDeletedItems((prev) => prev.filter((x) => x.id !== item.id));
+      logUserActivity(userProfile?.email, {
+        desc: `Permanently deleted record from vault: ${item.title || item.originalId}`,
+        type: "delete",
+      });
+    } catch (err: any) {
+      toast.error("Failed to delete: " + err.message);
+    } finally {
+      setPurgingId(null);
+    }
+  };
+
+  const handleEmptyBin = async () => {
+    const confirmed = await showConfirm("Empty all items from Recently Deleted vault permanently?");
+    if (!confirmed) return;
+    try {
+      await emptyAllRecentlyDeleted();
+      toast.success("Recycle bin emptied.");
+      setDeletedItems([]);
+      logUserActivity(userProfile?.email, {
+        desc: `Admin emptied the 7-day Recently Deleted holding vault`,
+        type: "delete",
+      });
+    } catch (err: any) {
+      toast.error("Failed to empty recycle bin: " + err.message);
+    }
+  };
+
+  // Log Selection & Deletion Handlers
+  const handleToggleSelectLog = (id: string) => {
+    setSelectedLogIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleToggleSelectAllLogs = () => {
+    if (selectedLogIds.size === paginatedSystemLogs.length && paginatedSystemLogs.length > 0) {
+      setSelectedLogIds(new Set());
+    } else {
+      setSelectedLogIds(new Set(paginatedSystemLogs.map((l) => l.id)));
+    }
+  };
+
+  const handleDeleteSingleLog = async (logItem: SystemLogDoc) => {
+    const confirmed = await showConfirm("Delete this activity log? It will be held in Recently Deleted for 7 days.");
+    if (!confirmed) return;
+    setIsDeletingLogs(true);
+    try {
+      try {
+        await archiveToRecentlyDeleted({
+          item: logItem,
+          itemType: "log",
+          deletedBy: userProfile?.name || userProfile?.email || "Administrator",
+          deletedByEmail: userProfile?.email || "",
+        });
+      } catch (_) {}
+
+      await deleteSystemAuditLog(logItem.id);
+      setSystemLogs((prev) => prev.filter((l) => l.id !== logItem.id));
+      setSelectedLogIds((prev) => {
+        const next = new Set(prev);
+        next.delete(logItem.id);
+        return next;
+      });
+      loadDeletedItems();
+      toast.success("Activity log moved to 7-day Recently Deleted vault.");
+    } catch (e) {
+      toast.error("Failed to delete log");
+    } finally {
+      setIsDeletingLogs(false);
+    }
+  };
+
+  const handleDeleteBulkLogs = async () => {
+    if (selectedLogIds.size === 0) return;
+    const count = selectedLogIds.size;
+    const confirmed = await showConfirm(`Are you sure you want to delete ${count} selected activity log(s)? They will be held in Recently Deleted for 7 days.`);
+    if (!confirmed) return;
+    setIsDeletingLogs(true);
+    try {
+      const idsArray = Array.from(selectedLogIds);
+      const logsToDelete = systemLogs.filter((l) => selectedLogIds.has(l.id));
+
+      for (const item of logsToDelete) {
+        try {
+          await archiveToRecentlyDeleted({
+            item,
+            itemType: "log",
+            deletedBy: userProfile?.name || userProfile?.email || "Administrator",
+            deletedByEmail: userProfile?.email || "",
+          });
+        } catch (_) {}
+      }
+
+      await deleteBulkSystemAuditLogs(idsArray);
+      setSystemLogs((prev) => prev.filter((l) => !selectedLogIds.has(l.id)));
+      setSelectedLogIds(new Set());
+      loadDeletedItems();
+      toast.success(`Moved ${idsArray.length} activity logs to Recently Deleted vault.`);
+    } catch (e) {
+      toast.error("Failed to delete selected logs");
+    } finally {
+      setIsDeletingLogs(false);
+    }
+  };
+
   // 1. Fetch System Settings from Firestore
   useEffect(() => {
     const fetchSettings = async () => {
@@ -556,37 +901,97 @@ export default function AdminSettingsPage() {
     fetchSettings();
   }, []);
 
+  // Allowed pages for Dispensary Staff by default (all other pages default to OFF / LOCKED)
+  const DISPENSARY_DEFAULT_ALLOWED_PATHS = useMemo(
+    () => [
+      "/dispensary/appointment",
+      "/dispensary/reception",
+      "/dispensary/doctor",
+      "/dispensary/pharmacy",
+      "/profile",
+      "/reports",
+    ],
+    []
+  );
+
+  const getDefaultRestrictedPagesForRole = useCallback(
+    (role: string): string[] => {
+      const r = (role || "").toLowerCase().trim();
+      if (r.includes("dispensary")) {
+        return ALL_AGENT_PAGES.map((p) => p.path).filter(
+          (path) => !DISPENSARY_DEFAULT_ALLOWED_PATHS.includes(path)
+        );
+      }
+      return [];
+    },
+    [DISPENSARY_DEFAULT_ALLOWED_PATHS]
+  );
+
   // 2. Realtime listener for Users list (for Page Access Control)
   useEffect(() => {
+    let isMounted = true;
     const unsub = onSnapshot(
       collection(db, "users"),
       (snap) => {
         const list: UserProfile[] = [];
         snap.forEach((d) => {
           const data = d.data() as UserProfile;
-          const roleRaw = data.role || "Agent";
-          const normalizedRole = (roleRaw === "Dispensary" || roleRaw === "Dispensary Staff")
-            ? "Dispensary Staff"
-            : roleRaw;
+          const roleRaw = (data.role || "").trim();
+          const isDisp =
+            roleRaw === "Dispensary" ||
+            roleRaw === "Dispensary Staff" ||
+            roleRaw.toLowerCase().includes("dispensary") ||
+            Boolean(data.dispensaryName) ||
+            Boolean((data as any).dispensaryRole);
+          const normalizedRole = isDisp ? "Dispensary Staff" : (roleRaw || "Agent");
+          const normEmail = (data.email || d.id || "").toLowerCase().trim();
 
           list.push({
             ...data,
-            email: data.email || d.id,
-            displayName: data.displayName || (data as any).dispensaryName || data.name || (data.email ? data.email.split("@")[0] : d.id),
+            id: d.id,
+            email: normEmail,
+            displayName:
+              data.displayName ||
+              (data as any).dispensaryName ||
+              data.name ||
+              (normEmail ? normEmail.split("@")[0] : d.id),
             role: normalizedRole as any,
             restrictedPages: Array.isArray(data.restrictedPages) ? data.restrictedPages : [],
           });
         });
 
-        // Sort alphabetically by displayName or name
-        list.sort((a, b) => (a.displayName || a.email).localeCompare(b.displayName || b.email));
-        setUsersList(list);
+        // Deduplicate by email
+        const seenEmails = new Set<string>();
+        const uniqueList: UserProfile[] = [];
+        for (const u of list) {
+          if (!u.email || seenEmails.has(u.email)) continue;
+          seenEmails.add(u.email);
+          uniqueList.push(u);
+        }
 
-        // Auto-select first user if none selected
-        if (list.length > 0 && !selectedUserEmail) {
-          const defaultUser = list.find((u) => u.role === "Agent") || list[0];
-          setSelectedUserEmail(defaultUser.email);
-          setSelectedRestrictedPages(defaultUser.restrictedPages || []);
+        uniqueList.sort((a, b) => (a.displayName || a.email).localeCompare(b.displayName || b.email));
+
+        if (isMounted) {
+          setUsersList(uniqueList);
+
+          // Auto-select first user if none selected
+          setSelectedUserEmail((curr) => {
+            const normCurr = (curr || "").toLowerCase().trim();
+            if (normCurr && uniqueList.some((u) => u.email === normCurr)) {
+              return normCurr;
+            }
+            const defaultUser = uniqueList.find((u) => u.role === "Agent") || uniqueList[0];
+            if (defaultUser) {
+              const isDisp = (defaultUser.role || "").toLowerCase().includes("dispensary");
+              if (isDisp && (!defaultUser.restrictedPages || defaultUser.restrictedPages.length === 0)) {
+                setSelectedRestrictedPages(getDefaultRestrictedPagesForRole("Dispensary Staff"));
+              } else {
+                setSelectedRestrictedPages(defaultUser.restrictedPages || []);
+              }
+              return defaultUser.email;
+            }
+            return "";
+          });
         }
       },
       (err) => {
@@ -594,8 +999,11 @@ export default function AdminSettingsPage() {
       }
     );
 
-    return () => unsub();
-  }, [selectedUserEmail]);
+    return () => {
+      isMounted = false;
+      unsub();
+    };
+  }, [getDefaultRestrictedPagesForRole]);
 
   // Sync selected user restricted pages when selection changes
   const selectedUser = useMemo(() => {
@@ -603,9 +1011,21 @@ export default function AdminSettingsPage() {
   }, [usersList, selectedUserEmail]);
 
   const handleSelectUser = (email: string) => {
-    setSelectedUserEmail(email);
-    const target = usersList.find((u) => u.email.toLowerCase() === email.toLowerCase());
-    setSelectedRestrictedPages(target?.restrictedPages || []);
+    const norm = (email || "").toLowerCase().trim();
+    setSelectedUserEmail(norm);
+    const target = usersList.find((u) => u.email.toLowerCase().trim() === norm);
+    if (!target) return;
+    const isDisp = (target.role || "").toLowerCase().includes("dispensary");
+    if (isDisp) {
+      if (Array.isArray(target.restrictedPages) && target.restrictedPages.length > 0) {
+        setSelectedRestrictedPages(target.restrictedPages);
+      } else {
+        // By default, non-allowed pages are toggled OFF (restricted)
+        setSelectedRestrictedPages(getDefaultRestrictedPagesForRole("Dispensary Staff"));
+      }
+    } else {
+      setSelectedRestrictedPages(target.restrictedPages || []);
+    }
   };
 
   const handleRoleFilterChange = (role: "all" | "Agent" | "Dispensary Staff" | "Admin" | "Master Admin") => {
@@ -614,7 +1034,11 @@ export default function AdminSettingsPage() {
     const matching = usersList.filter((u) => {
       if (role === "all") return true;
       if (role === "Dispensary Staff") {
-        return u.role === "Dispensary Staff" || u.role === "Dispensary";
+        return (
+          u.role === "Dispensary Staff" ||
+          u.role === "Dispensary" ||
+          (u.role || "").toLowerCase().includes("dispensary")
+        );
       }
       return u.role === role;
     });
@@ -631,7 +1055,13 @@ export default function AdminSettingsPage() {
     return usersList.filter((u) => {
       if (userRoleFilter !== "all") {
         if (userRoleFilter === "Dispensary Staff") {
-          if (u.role !== "Dispensary Staff" && u.role !== "Dispensary") return false;
+          if (
+            u.role !== "Dispensary Staff" &&
+            u.role !== "Dispensary" &&
+            !(u.role || "").toLowerCase().includes("dispensary")
+          ) {
+            return false;
+          }
         } else if (u.role !== userRoleFilter) {
           return false;
         }
@@ -646,16 +1076,6 @@ export default function AdminSettingsPage() {
       return true;
     });
   }, [usersList, userRoleFilter, userSearchTerm]);
-
-  // Keep selectedUserEmail synced with filtered list
-  useEffect(() => {
-    if (filteredUsers.length > 0) {
-      const existsInFiltered = filteredUsers.some((u) => u.email.toLowerCase() === selectedUserEmail.toLowerCase());
-      if (!existsInFiltered) {
-        handleSelectUser(filteredUsers[0].email);
-      }
-    }
-  }, [filteredUsers, selectedUserEmail]);
 
   // Is selected user Master Admin?
   const isSelectedMasterAdmin = useMemo(() => {
@@ -703,9 +1123,15 @@ export default function AdminSettingsPage() {
   };
 
   const handleResetToDefault = () => {
-    // Default: all accessible for their role
-    setSelectedRestrictedPages([]);
-    toast.info("Permissions reset to default (All pages accessible).");
+    if (!selectedUser) return;
+    const isDisp = (selectedUser.role || "").toLowerCase().includes("dispensary");
+    if (isDisp) {
+      setSelectedRestrictedPages(getDefaultRestrictedPagesForRole("Dispensary Staff"));
+      toast.info("Permissions reset to Dispensary default (Only Dispensary desks & Profile allowed).");
+    } else {
+      setSelectedRestrictedPages([]);
+      toast.info("Permissions reset to default (All pages accessible).");
+    }
   };
 
   // Save Page Access Permissions to Firestore
@@ -926,6 +1352,29 @@ export default function AdminSettingsPage() {
         {/* Settings Navigation Sidebar (Narrower width for larger right panel) */}
         <div className="lg:col-span-3 bg-white border border-slate-200 rounded-3xl p-3 sm:p-4 shadow-xs space-y-1 select-none">
           <button
+            onClick={() => setActiveTab("facility")}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
+              activeTab === "facility"
+                ? "bg-blue-600 text-white shadow-xs"
+                : "text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <Building2 className="w-4 h-4 shrink-0" />
+              <span>Facility Availability</span>
+            </div>
+            {facilityCounts.offline > 0 && (
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                  activeTab === "facility" ? "bg-white/20 text-white" : "bg-rose-100 text-rose-700"
+                }`}
+              >
+                {facilityCounts.offline} off
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setActiveTab("privacy")}
             className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
               activeTab === "privacy"
@@ -970,7 +1419,30 @@ export default function AdminSettingsPage() {
             }`}
           >
             <History className="w-4 h-4 shrink-0" />
-            <span>System Logs</span>
+            <span>System Logs & Audit</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("deleted")}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
+              activeTab === "deleted"
+                ? "bg-blue-600 text-white shadow-xs"
+                : "text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <ArchiveRestore className="w-4 h-4 shrink-0" />
+              <span>Recently Deleted</span>
+            </div>
+            {deletedCounts.total > 0 && (
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                  activeTab === "deleted" ? "bg-white/20 text-white" : "bg-rose-100 text-rose-700"
+                }`}
+              >
+                {deletedCounts.total}
+              </span>
+            )}
           </button>
 
           <button
@@ -996,34 +1468,197 @@ export default function AdminSettingsPage() {
             <Wrench className="w-4 h-4 shrink-0" />
             <span>Global Maintenance Mode</span>
           </button>
-
-          <button
-            onClick={() => setActiveTab("images")}
-            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
-              activeTab === "images"
-                ? "bg-blue-600 text-white shadow-xs"
-                : "text-slate-700 hover:bg-slate-50"
-            }`}
-          >
-            <ImageIcon className="w-4 h-4 shrink-0" />
-            <span>Image Compression</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab("files")}
-            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
-              activeTab === "files"
-                ? "bg-blue-600 text-white shadow-xs"
-                : "text-slate-700 hover:bg-slate-50"
-            }`}
-          >
-            <Folder className="w-4 h-4 shrink-0" />
-            <span>Storage & Security Limits</span>
-          </button>
         </div>
 
         {/* Settings Panel Content Area (Larger & Expansive width) */}
         <div className="lg:col-span-9 bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xs min-w-0">
+          {/* ----------------------------------------------------
+              TAB: FACILITY AVAILABILITY & FORWARDING CONTROL
+              ---------------------------------------------------- */}
+          {activeTab === "facility" && (
+            <div className="space-y-6">
+              {/* Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-blue-600" />
+                    <span>Facility Booking & Forwarding Availability</span>
+                  </h2>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleSaveFacilityAvailability}
+                    disabled={savingFacilities}
+                    className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {savingFacilities ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Save className="w-3.5 h-3.5" />
+                    )}
+                    <span>Save Facility Status</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Status Stats */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] text-slate-500 font-semibold block">Total Registered</span>
+                    <span className="text-lg font-black text-slate-900">{facilityCounts.total} Facilities</span>
+                  </div>
+                  <Building2 className="w-5 h-5 text-slate-400" />
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-emerald-50/60 border border-emerald-100 flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] text-emerald-700 font-semibold block">Accepting Now</span>
+                    <span className="text-lg font-black text-emerald-700">{facilityCounts.accepting} Active</span>
+                  </div>
+                  <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-rose-50/60 border border-rose-100 flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] text-rose-700 font-semibold block">Suspended / Offline</span>
+                    <span className="text-lg font-black text-rose-700">{facilityCounts.offline} Disabled</span>
+                  </div>
+                  <Ban className="w-5 h-5 text-rose-500" />
+                </div>
+              </div>
+
+              {/* Filter and Search Bar */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+                <div className="relative flex-1 w-full">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={facilitySearch}
+                    onChange={(e) => setFacilitySearch(e.target.value)}
+                    placeholder="Search facility by name, district, or PIN code..."
+                    className="w-full pl-9 pr-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                  />
+                  {facilitySearch && (
+                    <button
+                      onClick={() => setFacilitySearch("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <select
+                    value={facilityTypeFilter}
+                    onChange={(e) => setFacilityTypeFilter(e.target.value)}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                  >
+                    <option value="all">All Types</option>
+                    <option value="dispensary">ESIS Dispensaries</option>
+                    <option value="esic_hospital">ESIC Hospitals</option>
+                    <option value="tie_up">Tie-Up Hospitals</option>
+                    <option value="govt">Govt District Hospitals</option>
+                  </select>
+
+                  <select
+                    value={facilityStatusFilter}
+                    onChange={(e) => setFacilityStatusFilter(e.target.value)}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="accepting">Accepting Only</option>
+                    <option value="offline">Offline Only</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Bulk Action Buttons */}
+              <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
+                <span>Showing {filteredFacilities.length} facilities</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleBulkSetAvailability(true)}
+                    className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                  >
+                    Enable All
+                  </button>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    onClick={() => handleBulkSetAvailability(false)}
+                    className="text-[11px] font-semibold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
+                  >
+                    Disable All
+                  </button>
+                </div>
+              </div>
+
+              {/* Facility Cards List */}
+              <div className="divide-y divide-slate-100 max-h-[520px] overflow-y-auto pr-1">
+                {filteredFacilities.map((facility) => {
+                  const isAccepting = isFacilityAccepting(facility, availabilityMap);
+
+                  return (
+                    <div
+                      key={facility.id || facility.name}
+                      className="py-3.5 flex items-center justify-between gap-4 transition hover:bg-slate-50/50 rounded-xl px-2"
+                    >
+                      <div className="space-y-1 min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-xs text-slate-900 truncate">
+                            {facility.name}
+                          </span>
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                            {facility.facility_type || facility.type || "Dispensary"}
+                          </span>
+                          {isAccepting ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              ACCEPTING
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                              OFFLINE / SUSPENDED
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="text-[11px] text-slate-500 flex items-center gap-3">
+                          {facility.district && <span>District: {facility.district}</span>}
+                          {facility.pincode && <span>PIN: {facility.pincode}</span>}
+                          {facility.address && <span className="truncate max-w-xs">{facility.address}</span>}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className={`text-[11px] font-semibold ${isAccepting ? "text-emerald-600" : "text-rose-600"}`}>
+                          {isAccepting ? "Accepting" : "Not Accepting"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleFacility(facility)}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                            isAccepting ? "bg-blue-600" : "bg-slate-200"
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                              isAccepting ? "translate-x-4" : "translate-x-0"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* ----------------------------------------------------
               TAB 0: MASK IP INFO (PRIVACY)
               ---------------------------------------------------- */}
@@ -1034,9 +1669,6 @@ export default function AdminSettingsPage() {
                   <EyeOff className="w-5 h-5 text-blue-600" />
                   <span>Mask IP Info (Privacy & Data Protection)</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Controls whether Insured Persons (IP) contact details are masked across Agent and Admin Booking interfaces.
-                </p>
               </div>
 
               <div className="space-y-5">
@@ -1056,9 +1688,6 @@ export default function AdminSettingsPage() {
                           </span>
                         )}
                       </h4>
-                      <p className="text-[11px] text-slate-500 leading-relaxed">
-                        When toggled ON, IP names show only the first 3 letters and last 3 letters (e.g. <strong>RAM*** ***ESH</strong>), and phone numbers show only the last 4 digits (e.g. <strong>******4821</strong>).
-                      </p>
                     </div>
 
                     <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
@@ -1095,9 +1724,6 @@ export default function AdminSettingsPage() {
                           {followUpDays} DAYS
                         </span>
                       </h4>
-                      <p className="text-[11px] text-slate-500 leading-relaxed">
-                        Configures how many days after a scheduled booking date a follow-up appointment is automatically calculated across agent and admin tables (Default: 8 days).
-                      </p>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0 ml-4">
@@ -1140,11 +1766,23 @@ export default function AdminSettingsPage() {
                       <History className="w-5 h-5 text-blue-600" />
                       <span>System Activity & Audit Logs</span>
                     </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Live audit trail recording all agent & admin actions across the portal (Add, Edit, Delete, Post, Bookings, Reports, Settings, etc.).
-                    </p>
                   </div>
                   <div className="shrink-0 flex items-center gap-2">
+                    {selectedLogIds.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleDeleteBulkLogs}
+                        disabled={isDeletingLogs}
+                        className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                      >
+                        {isDeletingLogs ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
+                        <span>Delete Selected ({selectedLogIds.size})</span>
+                      </button>
+                    )}
                     <span className="px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full font-bold text-xs flex items-center gap-1.5">
                       <Activity className="w-3.5 h-3.5 text-blue-600 animate-pulse" />
                       <span>Live Sync (3rd Account DB)</span>
@@ -1228,23 +1866,33 @@ export default function AdminSettingsPage() {
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 uppercase tracking-wider font-semibold">
-                      <th className="p-3.5 pl-4">User</th>
+                      <th className="p-3.5 pl-4 w-10 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedLogIds.size === paginatedSystemLogs.length && paginatedSystemLogs.length > 0}
+                          onChange={handleToggleSelectAllLogs}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          title="Select All on page"
+                        />
+                      </th>
+                      <th className="p-3.5">User</th>
                       <th className="p-3.5">Category</th>
                       <th className="p-3.5">Activity Description</th>
-                      <th className="p-3.5 pr-4 text-right">Timestamp</th>
+                      <th className="p-3.5 text-right">Timestamp</th>
+                      <th className="p-3.5 pr-4 text-center w-14">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
                     {loadingSystemLogs ? (
                       <tr>
-                        <td colSpan={4} className="text-center py-16 text-slate-400 text-xs">
+                        <td colSpan={6} className="text-center py-16 text-slate-400 text-xs">
                           <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
                           <span>Loading system activity logs...</span>
                         </td>
                       </tr>
                     ) : paginatedSystemLogs.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="text-center py-16 text-slate-400 text-xs">
+                        <td colSpan={6} className="text-center py-16 text-slate-400 text-xs">
                           <History className="w-8 h-8 opacity-30 mx-auto mb-2" />
                           <span>No system activity recorded matching your filters.</span>
                         </td>
@@ -1264,8 +1912,18 @@ export default function AdminSettingsPage() {
 
                         return (
                           <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
+                            {/* Checkbox */}
+                            <td className="p-3.5 pl-4 text-center">
+                              <input
+                                type="checkbox"
+                                checked={selectedLogIds.has(log.id)}
+                                onChange={() => handleToggleSelectLog(log.id)}
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                              />
+                            </td>
+
                             {/* User Info */}
-                            <td className="p-3.5 pl-4 min-w-[160px]">
+                            <td className="p-3.5 min-w-[160px]">
                               <div className="font-bold text-slate-900 leading-tight">
                                 {log.userName || log.email.split("@")[0]}
                               </div>
@@ -1291,8 +1949,21 @@ export default function AdminSettingsPage() {
                             </td>
 
                             {/* Timestamp */}
-                            <td className="p-3.5 pr-4 text-right whitespace-nowrap text-slate-500 font-mono text-[11px]">
+                            <td className="p-3.5 text-right whitespace-nowrap text-slate-500 font-mono text-[11px]">
                               {formattedTime}
+                            </td>
+
+                            {/* Action */}
+                            <td className="p-3.5 pr-4 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSingleLog(log)}
+                                disabled={isDeletingLogs}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                title="Delete log"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             </td>
                           </tr>
                         );
@@ -1333,6 +2004,290 @@ export default function AdminSettingsPage() {
           )}
 
           {/* ----------------------------------------------------
+              TAB: RECENTLY DELETED (7-DAY HOLDING VAULT)
+              ---------------------------------------------------- */}
+          {activeTab === "deleted" && (
+            <div className="space-y-6">
+              {/* Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+                    <ArchiveRestore className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <span>Recently Deleted Holding Vault</span>
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200/60">
+                        7-Day Auto Purge
+                      </span>
+                    </h2>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                  <button
+                    type="button"
+                    onClick={loadDeletedItems}
+                    disabled={deletedLoading}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="Refresh Recently Deleted"
+                  >
+                    <RotateCcw className={`w-3.5 h-3.5 ${deletedLoading ? "animate-spin" : ""}`} />
+                    <span>Refresh</span>
+                  </button>
+
+                  {deletedItems.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleEmptyBin}
+                      className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/80 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer active:scale-95"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Empty Bin</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* KPI Summary Badges */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDeletedTypeFilter("all")}
+                  className={`p-3 rounded-2xl border text-left transition cursor-pointer ${
+                    deletedTypeFilter === "all"
+                      ? "bg-blue-50/70 border-blue-200 text-blue-900 shadow-2xs"
+                      : "bg-slate-50/50 border-slate-200/70 text-slate-700 hover:bg-slate-100/60"
+                  }`}
+                >
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">All Items</div>
+                  <div className="text-xl font-extrabold mt-0.5">{deletedCounts.total}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDeletedTypeFilter("appointment")}
+                  className={`p-3 rounded-2xl border text-left transition cursor-pointer ${
+                    deletedTypeFilter === "appointment"
+                      ? "bg-emerald-50/70 border-emerald-200 text-emerald-900 shadow-2xs"
+                      : "bg-slate-50/50 border-slate-200/70 text-slate-700 hover:bg-slate-100/60"
+                  }`}
+                >
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Appointments</div>
+                  <div className="text-xl font-extrabold mt-0.5 text-emerald-700">{deletedCounts.appointment}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDeletedTypeFilter("case")}
+                  className={`p-3 rounded-2xl border text-left transition cursor-pointer ${
+                    deletedTypeFilter === "case"
+                      ? "bg-indigo-50/70 border-indigo-200 text-indigo-900 shadow-2xs"
+                      : "bg-slate-50/50 border-slate-200/70 text-slate-700 hover:bg-slate-100/60"
+                  }`}
+                >
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Cases</div>
+                  <div className="text-xl font-extrabold mt-0.5 text-indigo-700">{deletedCounts.case}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDeletedTypeFilter("user")}
+                  className={`p-3 rounded-2xl border text-left transition cursor-pointer ${
+                    deletedTypeFilter === "user"
+                      ? "bg-purple-50/70 border-purple-200 text-purple-900 shadow-2xs"
+                      : "bg-slate-50/50 border-slate-200/70 text-slate-700 hover:bg-slate-100/60"
+                  }`}
+                >
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Users & Team</div>
+                  <div className="text-xl font-extrabold mt-0.5 text-purple-700">{deletedCounts.user}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDeletedTypeFilter("log")}
+                  className={`p-3 rounded-2xl border text-left transition cursor-pointer ${
+                    deletedTypeFilter === "log"
+                      ? "bg-amber-50/70 border-amber-200 text-amber-900 shadow-2xs"
+                      : "bg-slate-50/50 border-slate-200/70 text-slate-700 hover:bg-slate-100/60"
+                  }`}
+                >
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Audit Logs</div>
+                  <div className="text-xl font-extrabold mt-0.5 text-amber-700">{deletedCounts.log}</div>
+                </button>
+              </div>
+
+              {/* Filter & Search Bar */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-1">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={deletedSearch}
+                    onChange={(e) => setDeletedSearch(e.target.value)}
+                    placeholder="Search by patient, phone, ID, facility, or agent..."
+                    className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
+                  />
+                  {deletedSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setDeletedSearch("")}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={deletedTypeFilter}
+                    onChange={(e) => setDeletedTypeFilter(e.target.value)}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition"
+                  >
+                    <option value="all">All Types</option>
+                    <option value="appointment">Appointments only</option>
+                    <option value="case">Cases only</option>
+                    <option value="user">Users only</option>
+                    <option value="log">Audit Logs only</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Deleted Items List */}
+              <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white">
+                {deletedLoading ? (
+                  <div className="py-16 text-center text-slate-400">
+                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-blue-600" />
+                    <span className="text-xs">Loading deleted items...</span>
+                  </div>
+                ) : paginatedDeletedItems.length === 0 ? (
+                  <div className="py-16 text-center space-y-2">
+                    <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                      <ArchiveRestore className="w-6 h-6" />
+                    </div>
+                    <div className="text-sm font-bold text-slate-700">No recently deleted items</div>
+                    <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                      {deletedSearch || deletedTypeFilter !== "all"
+                        ? "No deleted items match your search or filter."
+                        : "Any appointments, cases, users, or audit logs deleted by administrators will appear here for 7 days before permanent auto-purge."}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {paginatedDeletedItems.map((item) => {
+                      const isExpired = Date.now() > Number(item.expiresAt || 0);
+                      const expiryText = getExpiryRemainingText(item.expiresAt);
+
+                      return (
+                        <div
+                          key={item.id}
+                          className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/60 transition"
+                        >
+                          <div className="space-y-1 min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-xs text-slate-900">{item.title || item.originalId}</span>
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                  item.itemType === "appointment"
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                    : item.itemType === "case"
+                                    ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                                    : item.itemType === "user"
+                                    ? "bg-purple-50 text-purple-700 border-purple-200"
+                                    : "bg-amber-50 text-amber-700 border-amber-200"
+                                }`}
+                              >
+                                {item.itemType?.toUpperCase()}
+                              </span>
+                              {item.originalId && (
+                                <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                  {item.originalId}
+                                </span>
+                              )}
+                            </div>
+
+                            {item.subtitle && (
+                              <p className="text-xs text-slate-600 truncate">{item.subtitle}</p>
+                            )}
+
+                            <div className="flex items-center gap-3 text-[11px] text-slate-400 flex-wrap">
+                              <span>Deleted by: <strong className="text-slate-600">{item.deletedBy || "Administrator"}</strong></span>
+                              <span>•</span>
+                              <span>Deleted at: {formatISTTime(item.deletedTimestamp)}</span>
+                              <span>•</span>
+                              <span className={`font-semibold ${isExpired ? "text-rose-600 font-bold" : "text-amber-600"}`}>
+                                {expiryText}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleRestoreItem(item)}
+                              disabled={restoringId === item.id || isExpired}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-xs"
+                              title="Restore to original position"
+                            >
+                              {restoringId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RotateCcw className="w-3.5 h-3.5" />
+                              )}
+                              <span>Restore</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handlePermanentDelete(item)}
+                              disabled={purgingId === item.id}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
+                              title="Delete permanently"
+                            >
+                              {purgingId === item.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Pagination */}
+              {!deletedLoading && filteredDeletedItems.length > DELETED_PER_PAGE && (
+                <div className="flex items-center justify-between pt-2 px-1">
+                  <button
+                    onClick={() => setDeletedPage((p) => Math.max(1, p - 1))}
+                    disabled={deletedPage === 1}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-40 text-slate-700 font-bold text-xs rounded-xl shadow-2xs transition cursor-pointer"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Previous</span>
+                  </button>
+                  <span className="text-xs font-semibold text-slate-600">
+                    Page <strong className="text-slate-900">{deletedPage}</strong> of{" "}
+                    <strong className="text-slate-900">{totalDeletedPages}</strong>
+                  </span>
+                  <button
+                    onClick={() => setDeletedPage((p) => Math.min(totalDeletedPages, p + 1))}
+                    disabled={deletedPage >= totalDeletedPages}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-40 text-slate-700 font-bold text-xs rounded-xl shadow-2xs transition cursor-pointer"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ----------------------------------------------------
               TAB 1: PAGE ACCESS CONTROL (NEW FEATURE!)
               ---------------------------------------------------- */}
           {activeTab === "access" && (
@@ -1345,9 +2300,6 @@ export default function AdminSettingsPage() {
                       <ShieldCheck className="w-5 h-5 text-blue-600" />
                       <span>User Page Access Permissions</span>
                     </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Grant or restrict access to specific pages for individual Agents and Admins. By default, newly created users have full access to all pages for their role.
-                    </p>
                   </div>
                   <div className="shrink-0 flex items-center gap-1.5">
                     <span className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
@@ -1388,7 +2340,7 @@ export default function AdminSettingsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
                   <div className="md:col-span-7">
                     <select
-                      value={selectedUserEmail}
+                      value={selectedUserEmail.toLowerCase()}
                       onChange={(e) => handleSelectUser(e.target.value)}
                       className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-blue-500 shadow-2xs cursor-pointer"
                     >
@@ -1396,7 +2348,7 @@ export default function AdminSettingsPage() {
                         <option value="">No matching users found</option>
                       ) : (
                         filteredUsers.map((u) => (
-                          <option key={u.email} value={u.email}>
+                          <option key={u.email} value={u.email.toLowerCase()}>
                             {u.displayName || u.name || u.email} ({u.role}) — {u.email}
                           </option>
                         ))
@@ -1497,12 +2449,9 @@ export default function AdminSettingsPage() {
               {isSelectedMasterAdmin && (
                 <div className="bg-indigo-50 border border-indigo-200/80 rounded-2xl p-4 flex items-start gap-3">
                   <ShieldAlert className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
-                  <div className="space-y-1 text-xs text-indigo-950">
+                  <div className="text-xs text-indigo-950">
                     <p className="font-bold">
                       Master Administrator — Permanent Unrestricted Global Access
-                    </p>
-                    <p className="text-indigo-800 leading-relaxed text-[11px]">
-                      Master Administrators retain supreme administrative authority across all modules, databases, and configuration settings. Page permissions for Master Admins cannot be revoked or locked.
                     </p>
                   </div>
                 </div>
@@ -1660,18 +2609,12 @@ export default function AdminSettingsPage() {
             <div className="space-y-6">
               <div className="border-b border-slate-100 pb-4">
                 <h3 className="text-base font-bold text-slate-900">Inactivity Timeout Policy</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Automatically terminates idle terminal sessions to comply with security standards.
-                </p>
               </div>
 
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-2xl">
                   <div>
                     <h4 className="text-xs font-bold text-slate-900">Enable Inactivity Auto-Logout</h4>
-                    <p className="text-[11px] text-slate-500">
-                      Monitors mouse movements, keystrokes, and touch events on all terminals.
-                    </p>
                   </div>
                   <input
                     type="checkbox"
@@ -1723,18 +2666,12 @@ export default function AdminSettingsPage() {
                   <AlertTriangle className="w-5 h-5" />
                   <span>Global Maintenance Mode</span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Restricts portal access during major upgrades or database migrations. Master Admins bypass lockouts.
-                </p>
               </div>
 
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-4 bg-rose-50 border border-rose-200 rounded-2xl">
                   <div>
                     <h4 className="text-xs font-bold text-rose-900">Enable Maintenance Mode</h4>
-                    <p className="text-[11px] text-rose-600">
-                      When enabled, all non-Master Admins are immediately signed out and shown a maintenance modal.
-                    </p>
                   </div>
                   <input
                     type="checkbox"
@@ -1772,86 +2709,6 @@ export default function AdminSettingsPage() {
           )}
 
           {/* ----------------------------------------------------
-              TAB 4: IMAGE COMPRESSION
-              ---------------------------------------------------- */}
-          {activeTab === "images" && (
-            <div className="space-y-6">
-              <div className="border-b border-slate-100 pb-4">
-                <h3 className="text-base font-bold text-slate-900">Image Compression Settings</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Controls client-side image downscaling before uploading to avoid database bloat.
-                </p>
-              </div>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-2xl">
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-900">Auto-Compress Uploads</h4>
-                    <p className="text-[11px] text-slate-500">
-                      Downscales large camera photos to max 600px with 75% JPEG quality.
-                    </p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={autoCompress}
-                    onChange={(e) => setAutoCompress(e.target.checked)}
-                    className="w-5 h-5 text-blue-600 rounded"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Hard Maximum Upload Limit
-                  </label>
-                  <select
-                    value={maxImageSize}
-                    onChange={(e) => setMaxImageSize(Number(e.target.value))}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold"
-                  >
-                    <option value={1}>1 MB</option>
-                    <option value={2}>2 MB (Recommended)</option>
-                    <option value={5}>5 MB</option>
-                  </select>
-                </div>
-
-                <div className="pt-3 border-t border-slate-100 flex justify-end">
-                  <button
-                    onClick={() => toast.success("Image compression preferences saved locally.")}
-                    className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs"
-                  >
-                    Save Preferences
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ----------------------------------------------------
-              TAB 5: STORAGE & LIMITS
-              ---------------------------------------------------- */}
-          {activeTab === "files" && (
-            <div className="space-y-6">
-              <div className="border-b border-slate-100 pb-4">
-                <h3 className="text-base font-bold text-slate-900">Storage Policies</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Firestore document size constraints and Google Drive proxy rules.
-                </p>
-              </div>
-
-              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2">
-                <div className="flex items-center gap-2 font-bold text-xs text-emerald-900">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>Strict Firestore Document Size Guard (1 MB Limit)</span>
-                </div>
-                <p className="text-[11px] text-emerald-700 leading-relaxed">
-                  The client-side upload pipeline enforces a strict 950KB ceiling on raw document blobs to prevent
-                  database document overflows. Files exceeding this size are routed to the Google Apps Script Drive proxy.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* ----------------------------------------------------
               TAB 6: DEVELOPER API & KEYS
               ---------------------------------------------------- */}
           {activeTab === "api" && (
@@ -1863,9 +2720,6 @@ export default function AdminSettingsPage() {
                     <Key className="w-4 h-4 text-blue-600" />
                     Developer REST API & Keys
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Generate and manage secure API keys to allow external platforms (like EKMS Triage or Hospital Apps) to book and manage appointments.
-                  </p>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -2091,9 +2945,6 @@ export default function AdminSettingsPage() {
                       <Code2 className="w-4 h-4 text-blue-600" />
                       API Integration Reference & Code Samples
                     </h4>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      How external applications connect to EKMS using standard HTTP REST requests.
-                    </p>
                   </div>
                   <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold">
                     <button
@@ -2279,7 +3130,6 @@ print(response.json())`}
                     </div>
                     <div>
                       <h4 className="text-sm font-bold text-slate-900">Generate Developer API Key</h4>
-                      <p className="text-[11px] text-slate-500">Create a secure credential for external integrations.</p>
                     </div>
                   </div>
                   <button

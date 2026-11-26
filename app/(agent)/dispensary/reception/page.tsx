@@ -18,6 +18,7 @@ import { usePopup } from "@/context/PopupContext";
 import { AppointmentRecord, isDispensaryMatch, AppointmentVitals, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createDispensaryNotification } from "@/lib/notificationService";
+import { syncAppointmentUpdateToSheet } from "@/lib/googleSheetsSync";
 import {
   UserCheck,
   Search,
@@ -314,6 +315,11 @@ export default function ReceptionDeskPage() {
         } catch (e) {}
       }
 
+      // Automatically sync updated status and reception verification to Google Sheets
+      syncAppointmentUpdateToSheet(activePatient, updates, staffName).catch((e) =>
+        console.warn("Google Sheet reception sync notice:", e)
+      );
+
       if (isNonClin) {
         logUserActivity(user?.email, {
           desc: `Reception Check-in & Completed: ${activePatient.ipName} (Token ${activePatient.tokenNo}) - Non-Clinical Visit Finalized at Reception`,
@@ -576,7 +582,7 @@ export default function ReceptionDeskPage() {
 
                     <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
-                      <span>Booked: {app.date} • {app.timeSlot}</span>
+                      <span>Slot: {app.date} • {app.timeSlot}</span>
                     </span>
                   </div>
 

@@ -555,11 +555,12 @@ export default function AdminBookingsPage() {
     > = {};
 
     list.forEach((b) => {
-      const email = b.agentEmail?.toLowerCase() || "unknown@piramalswasthya.org";
-      const name = b.agentName || email.split("@")[0];
+      const email = b.agentEmail?.toLowerCase() || "";
+      const name = b.agentName || (email ? email.split("@")[0] : "Agent");
 
-      if (!agentMap[email]) {
-        agentMap[email] = {
+      const key = email || name || "agent";
+      if (!agentMap[key]) {
+        agentMap[key] = {
           name,
           email,
           total: 0,

@@ -26,6 +26,7 @@ import {
 import { syncConsultationToTriageApi } from "@/lib/triageSync";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createDispensaryNotification } from "@/lib/notificationService";
+import { syncAppointmentUpdateToSheet } from "@/lib/googleSheetsSync";
 import {
   Stethoscope,
   Search,
@@ -376,6 +377,11 @@ export default function DoctorDeskPage() {
         doctorConsultedAt: now,
       }).catch((e) => console.warn("Triage consultation sync notice:", e));
 
+      // Automatically sync doctor prescription and consultation details to Google Sheets
+      syncAppointmentUpdateToSheet(activePatient, updatePayload, docDoctorName).catch((e) =>
+        console.warn("Google Sheet doctor sync notice:", e)
+      );
+
       // Real-time notification delivered to the Pharmacist of that dispensary
       createDispensaryNotification({
         targetDispensary: activePatient.dispensaryName || staffDispensary,
@@ -634,7 +640,7 @@ export default function DoctorDeskPage() {
 
                     <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
-                      <span>Booked: {app.date} • {app.timeSlot}</span>
+                      <span>Slot: {app.date} • {app.timeSlot}</span>
                     </span>
                   </div>
 

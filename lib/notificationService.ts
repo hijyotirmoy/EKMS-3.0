@@ -3,6 +3,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  deleteDoc,
   updateDoc,
   arrayUnion,
   arrayRemove,
@@ -10,6 +11,14 @@ import {
 } from "firebase/firestore";
 import { db, logsDb } from "@/lib/firebase";
 import { AppNotification, NotificationType, UserProfile } from "@/lib/types";
+
+/**
+ * Global Notifications Kill-Switch / Pause Flag
+ * When true, all notifications are completely paused across the application,
+ * and ZERO writes/dispatches are made to Firebase.
+ * All existing functions, schemas, and logic are preserved intact for future reactivation.
+ */
+export const NOTIFICATIONS_PAUSED = true;
 
 /**
  * Gets cached read notification IDs for user from localStorage
@@ -48,7 +57,8 @@ export async function createDispensaryNotification(data: {
   link: string;
   tokenNo?: string;
 }) {
-  // All action notifications stopped per policy
+  // All notifications paused per policy: no data goes to Firebase (preserved for future use)
+  if (NOTIFICATIONS_PAUSED) return null;
   return null;
 }
 
@@ -69,9 +79,13 @@ export async function createNotification(
     createdAt?: number;
   }
 ) {
-  // All notifications for actions stopped per policy
-  // Only allow manual admin broadcasts (type === "announcement")
-  if (data.type !== "announcement") {
+  // All notifications paused per policy: no data goes to Firebase (preserved for future use)
+  if (NOTIFICATIONS_PAUSED) {
+    return null;
+  }
+
+  // Allow manual admin broadcasts (type === "announcement") and birthday alerts (type === "birthday")
+  if (data.type !== "announcement" && data.type !== "birthday") {
     return null;
   }
 
@@ -311,12 +325,128 @@ export function formatNotificationTime(timestamp?: number): string {
 }
 
 /**
- * Checks team members for birthdays in the upcoming 7 days or today,
- * and creates celebratory reminder notifications for other team members.
+ * Determines whether a birthday notification is stale/expired.
+ * A birthday notification is stale if:
+ * 1. It was created more than 3 days ago.
+ * 2. It indicates an event that has already passed or is more than 2 days away.
+ */
+export function isStaleBirthdayNotification(item: {
+  type?: string;
+  createdAt?: number;
+  metadata?: Record<string, any>;
+  title?: string;
+}): boolean {
+  if (item.type !== "birthday") return false;
+
+  const now = Date.now();
+  // 1. Created more than 3 days ago -> definitely stale (e.g. from previous months)
+  if (item.createdAt && now - item.createdAt > 3 * 24 * 60 * 60 * 1000) {
+    return true;
+  }
+
+  // 2. If metadata explicitly has daysRemaining > 2
+  if (typeof item.metadata?.daysRemaining === "number" && item.metadata.daysRemaining > 2) {
+    return true;
+  }
+
+  // 3. Check bdayDate against current month/day
+  if (item.metadata?.bdayDate && typeof item.metadata.bdayDate === "string") {
+    try {
+      const parts = item.metadata.bdayDate.trim().split(" ");
+      // e.g. "Sep 23"
+      if (parts.length === 2) {
+        const mStr = parts[0].toLowerCase();
+        const dNum = parseInt(parts[1], 10);
+        const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+        const mIdx = months.findIndex((m) => mStr.startsWith(m));
+        if (mIdx !== -1 && !isNaN(dNum)) {
+          const nowDate = new Date();
+          const todayMid = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()).getTime();
+          const bdayThisYear = new Date(nowDate.getFullYear(), mIdx, dNum).getTime();
+          const diffDays = Math.round((bdayThisYear - todayMid) / (1000 * 60 * 60 * 24));
+          // If birthday already passed (> 1 day ago) or is more than 2 days in the future
+          if (diffDays < -1 || diffDays > 2) {
+            return true;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  return false;
+}
+
+/**
+ * Checks team members for birthdays strictly within 2 days (2 days before, tomorrow, or today).
+ * Alerts are shown strictly 2 days before the birthday.
+ * Stale or past birthday notifications are automatically cleaned up from Firestore.
  */
 export async function checkAndCreateBirthdayNotifications(users: UserProfile[]) {
-  // All action notifications stopped per policy
-  return;
+  // All notifications paused per policy: no data goes to Firebase (preserved for future use)
+  if (NOTIFICATIONS_PAUSED) return;
+  if (!users || users.length === 0) return;
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+
+  for (const user of users) {
+    const dobString = user.birthday || (user as any).dob;
+    if (!dobString || !user.email) continue;
+
+    const bdayInfo = parseBirthdayDaysRemaining(dobString);
+    if (!bdayInfo) continue;
+
+    const { daysRemaining, formattedBday, nextBdayYear } = bdayInfo;
+    const sanitizedEmail = user.email.toLowerCase().replace(/[^a-z0-9]/g, "_");
+    const notifId = `bday_${sanitizedEmail}_${nextBdayYear}`;
+
+    // STRICT USER REQUIREMENT: Show alert strictly 2 days before the birthday (daysRemaining: 2, 1, or 0)
+    if (daysRemaining >= 0 && daysRemaining <= 2) {
+      let relativeText = "";
+      if (daysRemaining === 0) {
+        relativeText = "Today";
+      } else if (daysRemaining === 1) {
+        relativeText = "Tomorrow";
+      } else {
+        relativeText = "in 2 days";
+      }
+
+      const displayName = user.displayName || user.name || user.email.split("@")[0];
+
+      await createNotification({
+        id: notifId,
+        title: daysRemaining === 0 ? `🎂 Happy Birthday ${displayName}! 🎉` : `🎂 Upcoming Birthday: ${displayName}!`,
+        message:
+          daysRemaining === 0
+            ? `**${displayName}** is celebrating their birthday today (${formattedBday})! Send them your warmest wishes and greetings! 🎈🎉`
+            : `**${displayName}**'s birthday is **${relativeText}** (${formattedBday})! Don't forget to wish them! 🎈🎉`,
+        type: "birthday",
+        targetEmail: "all",
+        celebrantEmail: user.email.toLowerCase(),
+        link: "/team",
+        metadata: {
+          bdayUserEmail: user.email,
+          bdayUserName: displayName,
+          bdayDate: formattedBday,
+          daysRemaining,
+        },
+      });
+    } else {
+      // If birthday has passed or is more than 2 days away, purge any old/stale birthday doc
+      try {
+        const staleIdThisYear = `bday_${sanitizedEmail}_${currentYear}`;
+        const staleIdPrevYear = `bday_${sanitizedEmail}_${currentYear - 1}`;
+        await Promise.allSettled([
+          deleteDoc(doc(logsDb, "notifications", notifId)),
+          deleteDoc(doc(logsDb, "announcements", notifId)),
+          deleteDoc(doc(logsDb, "notifications", staleIdThisYear)),
+          deleteDoc(doc(logsDb, "announcements", staleIdThisYear)),
+          deleteDoc(doc(logsDb, "notifications", staleIdPrevYear)),
+          deleteDoc(doc(logsDb, "announcements", staleIdPrevYear)),
+        ]);
+      } catch (e) {}
+    }
+  }
 }
 
 /**

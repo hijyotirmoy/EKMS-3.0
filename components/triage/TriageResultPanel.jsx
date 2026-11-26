@@ -1,0 +1,2950 @@
+"use client";
+
+import { useState, useMemo, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import {
+  AlertOctagon,
+  Building2,
+  Copy,
+  Loader2,
+  MapPin,
+  MessageSquare,
+  Navigation,
+  ShieldAlert,
+  Stethoscope,
+  Check,
+  CheckCircle2,
+  PhoneCall,
+  PhoneForwarded,
+  ArrowRight,
+  Sparkles,
+  RotateCcw,
+  SlidersHorizontal,
+  Search,
+  Maximize2,
+  Minimize2,
+  Map as MapIcon,
+  Layers,
+  Crosshair,
+  X,
+  Send,
+  CalendarCheck,
+  Edit3,
+  FileText,
+} from "lucide-react";
+import { toast } from "sonner";
+import { urgencyStyle, normalizeUrgency } from "@/lib/api";
+import { UrgencyBadge } from "./UrgencyBadge";
+import { summarizeRedFlags, getDispensaryOperatingStatus, deduplicateRedFlags, extractCallerReportedProblems } from "@/lib/triageEngine";
+import { doesCaseNeedMedicalTreatment } from "@/lib/clinicalScoring";
+import { CaseHandoverForwarding } from "./CaseHandoverForwarding";
+import { getCachedCases } from "@/lib/clientCache";
+import { isFacilityAccepting } from "@/lib/facilityAvailability";
+import facilitiesCacheData from "@/data/facilities_cache.json";
+import { MapWrapper } from "./map/MapWrapper";
+import { ASSAM_DISTRICTS } from "@/lib/districts";
+import {
+  isHospital,
+  isDispensary,
+  isTieUp,
+  isEsicHospital,
+  isGovtDistrictHospital,
+  getFacilityCategoryLabel,
+  rankNearestFacilities,
+  calculateHaversineDistanceKm,
+  calculateRoadDistanceKm,
+} from "@/lib/geo";
+
+const formatApproxKm = (dist) => {
+  if (dist == null || isNaN(dist)) return null;
+  const num = Number(dist);
+  return num < 10 ? num.toFixed(1) : Math.round(num);
+};
+
+const getFacilityPincode = (f) => {
+  if (f?.pincode && /^\d{6}$/.test(String(f.pincode).trim())) {
+    return String(f.pincode).trim();
+  }
+  const match = f?.address && f.address.match(/\b(78\d{4})\b/);
+  return match ? match[1] : null;
+};
+
+export function normalizeFacilityTarget(text, facilitiesList = []) {
+  if (!text) return "";
+  const s = String(text).toLowerCase().trim();
+  if (s.includes("108") || s.includes("ambulance") || s === "call_108") return "108_AMBULANCE";
+  if (s.includes("104") || s.includes("helpline") || s.includes("tele-doctor") || s.includes("tele_104") || s === "104_medical") return "104_MEDICAL";
+  if (s === "tie_up_facility" || s === "tie-up facility" || s === "tie_up") return "TIE_UP_FACILITY";
+  if (s === "esic_hospital" || s === "esic hospital") return "ESIC_HOSPITAL";
+  if (s === "esis_dispensary" || s === "esis dispensary") return "ESIS_DISPENSARY";
+  if (s === "dist_hospital" || s === "govt district hospital" || s === "district hospital") return "DIST_HOSPITAL";
+
+  // Check against passed facilities list (or known matches)
+  if (Array.isArray(facilitiesList) && facilitiesList.length > 0) {
+    const matched = facilitiesList.find((f) => {
+      const fn = (f.name || "").toLowerCase().trim();
+      return fn === s || s.includes(fn) || fn.includes(s);
+    });
+    if (matched) {
+      if (isTieUp(matched)) return "TIE_UP_FACILITY";
+      if (isEsicHospital(matched)) return "ESIC_HOSPITAL";
+      if (isGovtDistrictHospital(matched)) return "DIST_HOSPITAL";
+      if (isDispensary(matched)) return "ESIS_DISPENSARY";
+    }
+  }
+
+  if (s.includes("district") || s.includes("dist_hospital") || s.includes("govt dist") || s.includes("public health") || s.includes("civil hospital") || s.includes("medical college") || s.includes("gmch")) return "DIST_HOSPITAL";
+  if (s.includes("beltola") || s.includes("esic hospital") || s.includes("esic_hospital") || (s.includes("esic") && s.includes("hospital")) || s.includes("casualty")) return "ESIC_HOSPITAL";
+  if (s.includes("dispensary") || s.includes("esis") || s.includes("noonmati")) return "ESIS_DISPENSARY";
+  if (s.includes("tie") || s.includes("empanelled") || s.includes("khaklari") || s.includes("swasti") || s.includes("ayursundra") || s.includes("dispur hospital") || s.includes("narayana") || s.includes("hayat") || s.includes("excelcare") || s.includes("down town")) return "TIE_UP_FACILITY";
+  if (s.includes("hospital")) return "ESIC_HOSPITAL";
+  return s;
+}
+
+export const ACTION_DIRECTIVES = {
+  CALL_108: {
+    id: "CALL_108",
+    title: "CALL 108 AMBULANCE IMMEDIATELY",
+    category: "Emergency",
+    badge: "108 Ambulance",
+    badgeColor: "bg-rose-700 text-white font-bold",
+    cardBorder: "border-rose-400 bg-rose-50 text-rose-950 shadow-xs",
+    panelLightTint: "border-rose-300/80 bg-rose-50/50 dark:bg-rose-950/25",
+    topBar: "bg-rose-700",
+    icon: "🚨",
+    summary: "Immediate 108 emergency ambulance dispatch.",
+    checklist: [
+      "1. Verify caller's current location, landmark, and contact phone number.",
+      "2. Initiate 108 Emergency Ambulance dispatch immediately.",
+      "3. Instruct patient to lie down, remain calm, and NOT exert or travel unassisted.",
+    ],
+  },
+  ESIC_HOSPITAL: {
+    id: "ESIC_HOSPITAL",
+    title: "REFER / FORWARD TO NEAREST ESIC HOSPITAL",
+    category: "ESIC Hospital",
+    badge: "ESIC Hospital",
+    badgeColor: "bg-amber-700 text-white font-bold",
+    cardBorder: "border-amber-400 bg-amber-50 text-amber-950 shadow-xs",
+    panelLightTint: "border-amber-300/80 bg-amber-50/50 dark:bg-amber-950/25",
+    topBar: "bg-amber-700",
+    icon: "🏥",
+    summary: "ESIC Hospital for clinical evaluation.",
+    checklist: [
+      "1. Locate the nearest ESIC Hospital shown in Facilities below.",
+      "2. Instruct caller to carry their Pehchan Card and government photo ID for urgent OPD/casualty.",
+    ],
+  },
+  ESIS_DISPENSARY: {
+    id: "ESIS_DISPENSARY",
+    title: "DIRECT TO NEAREST ESIS DISPENSARY",
+    category: "Dispensary",
+    badge: "ESIS Dispensary",
+    badgeColor: "bg-emerald-700 text-white font-bold",
+    cardBorder: "border-emerald-500 bg-emerald-50 text-emerald-950 shadow-xs",
+    panelLightTint: "border-emerald-300/80 bg-emerald-50/50 dark:bg-emerald-950/25",
+    topBar: "bg-emerald-700",
+    icon: "🩺",
+    summary: "ESIS Dispensary for doctor consultation.",
+    checklist: [
+      "1. Check the nearest ESIS Dispensary listed under Facilities below.",
+      "2. Remind IP to carry their ESIC Pehchan / Insurance card for free consultations and prescribed medicines.",
+    ],
+  },
+  TELE_104: {
+    id: "TELE_104",
+    title: "FORWARD TO 104 HEALTH HELPLINE",
+    category: "Tele-Doctor",
+    badge: "104 Health Helpline",
+    badgeColor: "bg-blue-700 text-white font-bold",
+    cardBorder: "border-blue-400 bg-blue-50 text-blue-950 shadow-xs",
+    panelLightTint: "border-blue-300/80 bg-blue-50/50 dark:bg-blue-950/25",
+    topBar: "bg-blue-700",
+    icon: "📞",
+    summary: "104 Health Helpline doctor on call.",
+    checklist: [
+      "1. Inform caller: 'Connecting you to 104 Health Helpline doctor now.'",
+      "2. Transfer call line to 104 Health Helpline triage queue.",
+      "3. Share case reference number for medical documentation.",
+    ],
+  },
+
+  TIE_UP_FACILITY: {
+    id: "TIE_UP_FACILITY",
+    title: "REFER TO EMPANELLED TIE-UP FACILITY",
+    category: "Tie-Up Care",
+    badge: "Tie-Up Facility",
+    badgeColor: "bg-cyan-700 text-white font-bold",
+    cardBorder: "border-cyan-400 bg-cyan-50 text-cyan-950 shadow-xs",
+    panelLightTint: "border-cyan-300/80 bg-cyan-50/50 dark:bg-cyan-950/25",
+    topBar: "bg-cyan-700",
+    icon: "🏥",
+    summary: "Empanelled Tie-Up hospital for care.",
+    checklist: [
+      "1. Check the nearest empanelled tie-up facility listed under Facilities below.",
+      "2. Remind IP to carry their ESIC Pehchan / Insurance card for cashless treatment under ESIC tie-up guidelines.",
+    ],
+  },
+  DIST_HOSPITAL: {
+    id: "DIST_HOSPITAL",
+    title: "REFER TO DISTRICT HOSPITAL / PUBLIC HEALTHCARE",
+    category: "District Hospital",
+    badge: "Govt District Hospital",
+    badgeColor: "bg-blue-800 text-white font-bold",
+    cardBorder: "border-blue-500 bg-blue-50 text-blue-950 shadow-xs",
+    panelLightTint: "border-blue-300/80 bg-blue-50/50 dark:bg-blue-950/25",
+    topBar: "bg-blue-800",
+    icon: "🏥",
+    summary: "Govt District Hospital for public care.",
+    checklist: [
+      "1. Check the nearest Govt District Hospital listed under Facilities below.",
+      "2. Remind caller to carry government photo ID / Aadhaar and medical records for OPD/admissions.",
+    ],
+  },
+};
+
+export function mapDestinationToDirectiveId(dest) {
+  if (!dest || typeof dest !== "string") return "ESIS_DISPENSARY";
+  const s = dest.trim();
+  if (ACTION_DIRECTIVES[s]) return s;
+  const d = dest.toLowerCase();
+  if (d.includes("108") || d.includes("ambulance") || d.includes("emergency dispatch")) return "CALL_108";
+  if (d.includes("104") || d.includes("tele-doctor") || d.includes("phone doctor") || d.includes("health helpline") || d.includes("advice") || d.includes("naco") || d.includes("1097") || d.includes("hiv") || d.includes("aids") || d.includes("manas") || d.includes("psych") || d.includes("counsel")) return "TELE_104";
+  if (d.includes("tie") || d.includes("empanelled") || d.includes("swasti") || d.includes("ayursundra") || d.includes("dispur hospital") || d.includes("narayana") || d.includes("hayat") || d.includes("excelcare") || d.includes("down town") || d.includes("city clinic")) return "TIE_UP_FACILITY";
+  if (d === "dist_hospital" || d.includes("dist_hosp") || d.includes("district") || d.includes("civil hospital") || d.includes("govt hospital") || d.includes("govt district") || d.includes("public health") || d.includes("b.p.civil") || d.includes("mch wing") || d.includes("j.s.b") || d.includes("chirang") || d.includes("nagaon") || d.includes("gmch") || d.includes("medical college") || d.includes("immunization")) return "DIST_HOSPITAL";
+  if (d === "esic_hospital" || d.includes("esic") || d.includes("beltola") || d.includes("tinsukia")) return "ESIC_HOSPITAL";
+  if (d.includes("dispensary") || d.includes("clinic") || d.includes("noonmati")) return "ESIS_DISPENSARY";
+  if (d.includes("hospital") || d.includes("casualty")) return "DIST_HOSPITAL";
+  return "ESIS_DISPENSARY";
+}
+
+export function resolveDirectiveIds(t, result, activeFacilities = null) {
+  const chatMsgs = result?.ekms_ai_context?.chatHistory || [];
+  const callerChatText = Array.isArray(chatMsgs)
+    ? chatMsgs
+        .filter((m) => m && (m.sender === "user" || m.role === "user"))
+        .map((m) => m.text || m.content || "")
+        .join(" ")
+        .toLowerCase()
+    : "";
+  const intakeText = `${result?.intake?.symptom_notes || ""} ${result?.intake?.complaint || ""} ${result?.ekms_ai_context?.triageState?.condition || ""}`.toLowerCase();
+  const allCallerText = `${intakeText} ${callerChatText}`.toLowerCase();
+
+  const isNacoHIV = /\b(hiv|aids|naco|1097|post.?exposure|pep\b|anti.?retroviral|art\s*center)\b/i.test(allCallerText);
+  const isPsych = /\b(suicid|depress|anxiety|mental|counsel|udaas)\b/i.test(allCallerText);
+  const isCertOnly = Boolean(
+    t?.is_certificate_only ||
+    result?.is_certificate_only ||
+    (/\bcertificate\b/i.test(allCallerText) &&
+      !/\b(chest pain|shortness of breath|fever|bukhar|vomit|ulti|bleeding|headache|fracture|burn|unconscious|seizure)\b/i.test(allCallerText))
+  );
+
+  // Check off-hours (between 4:00 PM and 10:00 AM)
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(Date.now() + (new Date().getTimezoneOffset() * 60 * 1000) + istOffset);
+  const currentMinutes = istDate.getHours() * 60 + istDate.getMinutes();
+  const isOffHours = currentMinutes >= 960 || currentMinutes < 600; // 4:00 PM to 10:00 AM
+  const istHour = istDate.getHours();
+  const isMorningOrDaytime = istHour >= 6 && istHour < 18; // 6:00 AM to 6:00 PM
+
+  const normSeverity = normalizeUrgency(
+    t?.urgency_level ||
+    result?.ekms_ai_context?.triageState?.severity ||
+    result?.intake?.severity_reported
+  );
+
+  const scoreNum = Number(
+    t?.urgency_score ??
+    result?.ekms_ai_context?.triageState?.severityScore ??
+    result?.intake?.severity_reported ??
+    (normSeverity === "Severe" ? 9 : normSeverity === "Moderate" ? 6 : 3)
+  );
+
+  // Use activeFacilities (from location search/pincode entry) if available, else fallback to result facilities
+  const facs = Array.isArray(activeFacilities) && activeFacilities.length > 0
+    ? activeFacilities
+    : (result?.nearest_facilities || result?.facilities || []);
+
+  const nearestEsic = facs.find((f) => isEsicHospital(f));
+  const isEsicWithin15Km = Boolean(nearestEsic && nearestEsic.distance_km != null && nearestEsic.distance_km <= 15);
+
+  const isExtremeLifeThreat = Boolean(
+    /\b(cardiac arrest|unconscious|behosh|not breathing|saans nahi|collapse|crushing chest.*(?:sweat|pasina|left arm|radiat)|arterial bleed|snake\s*bite|drank poison|status epilepticus)\b/i.test(allCallerText)
+  );
+
+  const hasAcuteLifeThreat = Boolean(
+    Boolean(t?.call_108) ||
+    /\b(struggling\s*(?:to|for)\s*breath\w*|cannot\s*breathe|unable\s*to\s*breathe|gasping for air|not breathing|saans nahi|cyanosis|heavy active bleed|spurting bleed|arterial bleed|crushing chest.*(?:sweat|pasina|left arm|radiat|collapse)|cardiac arrest|unconscious|behosh|unresponsive|collapse|seizure.*>|status epilepticus|drank poison|acid ingestion|snake\s*bite)\b/i.test(allCallerText) ||
+    isExtremeLifeThreat
+  );
+
+  // User mandate:
+  // - Forward to 108 if it is severe life-threatening emergency in case of score 9 and 10.
+  // - In score 8 forward to hospital if not life-threatening and manageable in the hospital!
+  // - Not all chest pain is an emergency! Only real life-threatening chest pain forwards to 108.
+  const isScore8 = scoreNum === 8;
+  const isScore8Manageable = isScore8 && !isExtremeLifeThreat;
+  const shouldForward108 = normSeverity === "Severe" && ((scoreNum >= 9 && hasAcuteLifeThreat) || isExtremeLifeThreat) && !isScore8Manageable;
+
+  // Caller explicit facility preferences
+  const callerWantsHospital =
+    (t?.call_referral_primary || "").toLowerCase().includes("hospital") ||
+    (t?.referral_destination || "").toLowerCase().includes("hospital") ||
+    (result?.ekms_ai_context?.triageState?.referralDestination || "").toLowerCase().includes("hospital") ||
+    /\b(hospital|aspatal|hospital jaana|hospital jana|visit hospital|esic hospital|admit|emergency casualty|casualty|visit esic hospital casualty|hospital casualty|visit esic hospital|go to hospital|wants to go to hospital|want to go to hospital)\b/i.test(allCallerText);
+
+  let orderedDirectiveIds = [];
+
+  // Strictly prioritize according to user mandate and real-time 15km threshold
+  if (normSeverity === "Severe") {
+    if (shouldForward108) {
+      if (isEsicWithin15Km) {
+        orderedDirectiveIds = ["CALL_108", "ESIC_HOSPITAL", "DIST_HOSPITAL", "TIE_UP_FACILITY", "TELE_104", "ESIS_DISPENSARY"];
+      } else {
+        orderedDirectiveIds = ["CALL_108", "DIST_HOSPITAL", "TIE_UP_FACILITY", "ESIC_HOSPITAL", "TELE_104", "ESIS_DISPENSARY"];
+      }
+    } else {
+      // Score 8 or manageable in hospital -> Hospital is primary!
+      if (isEsicWithin15Km) {
+        orderedDirectiveIds = ["ESIC_HOSPITAL", "DIST_HOSPITAL", "TIE_UP_FACILITY", "CALL_108", "TELE_104", "ESIS_DISPENSARY"];
+      } else {
+        orderedDirectiveIds = ["DIST_HOSPITAL", "TIE_UP_FACILITY", "ESIC_HOSPITAL", "CALL_108", "TELE_104", "ESIS_DISPENSARY"];
+      }
+    }
+  } else if (normSeverity === "Moderate" || callerWantsHospital) {
+    if (isEsicWithin15Km) {
+      orderedDirectiveIds = ["ESIC_HOSPITAL", "DIST_HOSPITAL", "TIE_UP_FACILITY", "ESIS_DISPENSARY", "TELE_104", "CALL_108"];
+    } else {
+      orderedDirectiveIds = ["DIST_HOSPITAL", "TIE_UP_FACILITY", "ESIC_HOSPITAL", "ESIS_DISPENSARY", "TELE_104", "CALL_108"];
+    }
+  } else {
+    // Mild
+    if (isCertOnly) {
+      orderedDirectiveIds = ["ESIS_DISPENSARY", "ESIC_HOSPITAL", "DIST_HOSPITAL", "TIE_UP_FACILITY", "TELE_104", "CALL_108"];
+    } else {
+      const dispensaryStatus = getDispensaryOperatingStatus();
+      const needsMedicalTreatment = doesCaseNeedMedicalTreatment({
+        severity: normSeverity,
+        score: scoreNum,
+        text: allCallerText,
+        isPsych,
+        isNaco: isNacoHIV,
+      });
+
+      if (needsMedicalTreatment) {
+        if (dispensaryStatus.isOpen && !isOffHours) {
+          orderedDirectiveIds = ["ESIS_DISPENSARY", isEsicWithin15Km ? "ESIC_HOSPITAL" : "DIST_HOSPITAL", isEsicWithin15Km ? "DIST_HOSPITAL" : "ESIC_HOSPITAL", "TIE_UP_FACILITY", "TELE_104", "CALL_108"];
+        } else {
+          // Dispensary is CLOSED: USER MANDATE: Do NOT stop at 104! Forward to hospital!
+        if (isEsicWithin15Km) {
+          orderedDirectiveIds = ["ESIC_HOSPITAL", "DIST_HOSPITAL", "TIE_UP_FACILITY", "TELE_104", "ESIS_DISPENSARY", "CALL_108"];
+        } else {
+          orderedDirectiveIds = ["DIST_HOSPITAL", "TIE_UP_FACILITY", "ESIC_HOSPITAL", "TELE_104", "ESIS_DISPENSARY", "CALL_108"];
+        }
+      }
+    } else {
+      // Pure consultation case (only advice/guidance/counseling needed): 104 is primary
+      orderedDirectiveIds = ["TELE_104", "ESIS_DISPENSARY", "ESIC_HOSPITAL", "DIST_HOSPITAL", "TIE_UP_FACILITY", "CALL_108"];
+    }
+    }
+  }
+
+  // Ensure 6 unique IDs in order
+  const uniqueOrdered = Array.from(new Set(orderedDirectiveIds));
+  const allIds = ["ESIS_DISPENSARY", "TELE_104", "ESIC_HOSPITAL", "DIST_HOSPITAL", "TIE_UP_FACILITY", "CALL_108"];
+  for (const id of allIds) {
+    if (!uniqueOrdered.includes(id)) uniqueOrdered.push(id);
+  }
+
+  const primaryId = uniqueOrdered[0] || "ESIS_DISPENSARY";
+  const secondaryId = uniqueOrdered[1] || "TELE_104";
+
+  return {
+    primaryId,
+    secondaryId,
+    orderedDirectiveIds: uniqueOrdered,
+    isDual: false,
+    primaryBadge: ACTION_DIRECTIVES[primaryId]?.badge || primaryId,
+    secondaryBadge: ACTION_DIRECTIVES[secondaryId]?.badge || secondaryId,
+    isEsicWithin15Km,
+  };
+}
+
+const Empty = () => (
+  <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm grid-lines flex min-h-[480px] sm:min-h-[540px] flex-col items-center justify-center p-8 text-center">
+    <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-3 shadow-sm border border-emerald-100">
+      <Stethoscope className="h-7 w-7 text-emerald-600" strokeWidth={1.75} />
+    </div>
+    <h3 className="mt-2 text-base font-bold text-slate-800">Triage output appears here</h3>
+    <p className="mt-1 text-xs text-slate-500 max-w-xs leading-relaxed">
+      Fill caller symptoms or use AI probing on the left. Clinical recommendations, severity scores, and nearest facilities will appear here.
+    </p>
+  </div>
+);
+
+const Loading = () => (
+  <div className="space-y-5 animate-in fade-in duration-300" data-testid="triage-skeleton">
+    {/* Main Outcome Card Skeleton */}
+    <div className="panel overflow-hidden border border-border/80 bg-card p-5 sm:p-6 shadow-sm">
+      {/* Top Shimmer Bar */}
+      <div className="h-1.5 w-full bg-gradient-to-r from-emerald-500/40 via-primary/60 to-emerald-500/40 animate-pulse rounded-full" />
+
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-b border-border/50 pb-4">
+        <div className="space-y-2">
+          <div className="h-3 w-20 rounded bg-muted/70 animate-pulse" />
+          <div className="flex items-center gap-2.5">
+            <div className="h-7 w-28 rounded-full bg-primary/25 animate-pulse" />
+            <div className="h-7 w-24 rounded-full bg-muted/60 animate-pulse" />
+          </div>
+        </div>
+        <div className="space-y-1.5 text-right">
+          <div className="h-3.5 w-32 rounded bg-muted/70 animate-pulse ml-auto" />
+          <div className="h-3 w-24 rounded bg-muted/50 animate-pulse ml-auto" />
+        </div>
+      </div>
+
+      {/* Summary Skeleton */}
+      <div className="mt-5 space-y-2.5">
+        <div className="h-3.5 w-24 rounded bg-muted/70 animate-pulse" />
+        <div className="h-4 w-full rounded bg-muted/50 animate-pulse" />
+        <div className="h-4 w-11/12 rounded bg-muted/50 animate-pulse" />
+        <div className="h-4 w-3/4 rounded bg-muted/40 animate-pulse" />
+      </div>
+
+      {/* Clinical Reasoning Box Skeleton */}
+      <div className="mt-5 rounded-xl border border-border/60 bg-secondary/30 p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-4 rounded-full bg-primary/30 animate-pulse" />
+          <div className="h-3.5 w-36 rounded bg-muted/70 animate-pulse" />
+        </div>
+        <div className="h-3.5 w-full rounded bg-muted/40 animate-pulse" />
+        <div className="h-3.5 w-4/5 rounded bg-muted/40 animate-pulse" />
+      </div>
+
+      {/* Red Flags Skeleton Box */}
+      <div className="mt-5 rounded-xl border border-rose-500/20 bg-rose-500/5 p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-4 rounded-full bg-rose-500/30 animate-pulse" />
+          <div className="h-3.5 w-28 rounded bg-rose-500/20 animate-pulse" />
+        </div>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <div className="h-6 w-36 rounded-full bg-rose-500/15 animate-pulse" />
+          <div className="h-6 w-44 rounded-full bg-rose-500/15 animate-pulse" />
+        </div>
+      </div>
+
+      {/* Recommended Action Banner Skeleton */}
+      <div className="mt-5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="h-3.5 w-44 rounded bg-emerald-500/30 animate-pulse" />
+          <div className="h-5 w-24 rounded-full bg-emerald-500/20 animate-pulse" />
+        </div>
+        <div className="h-4 w-3/4 rounded bg-emerald-500/20 animate-pulse" />
+      </div>
+    </div>
+
+    {/* Nearest Facilities Card Skeleton */}
+    <div className="panel border border-border/80 bg-card p-5 sm:p-6 shadow-sm space-y-3.5">
+      <div className="flex items-center justify-between border-b border-border/50 pb-3">
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-4 rounded bg-primary/30 animate-pulse" />
+          <div className="h-4 w-40 rounded bg-muted/70 animate-pulse" />
+        </div>
+        <div className="h-5 w-16 rounded-full bg-muted/60 animate-pulse" />
+      </div>
+
+      {/* 2 Facility items placeholder */}
+      {[1, 2].map((i) => (
+        <div key={i} className="flex items-start justify-between gap-3 rounded-xl border border-border/50 p-3.5 bg-secondary/20">
+          <div className="space-y-2 flex-1">
+            <div className="h-4 w-52 rounded bg-muted/70 animate-pulse" />
+            <div className="h-3 w-4/5 rounded bg-muted/50 animate-pulse" />
+            <div className="h-3 w-32 rounded bg-muted/40 animate-pulse" />
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <div className="h-5 w-16 rounded-full bg-muted/60 animate-pulse" />
+            <div className="h-7 w-20 rounded-md bg-primary/20 animate-pulse" />
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+export const TriageResultPanel = ({
+  result,
+  loading,
+  callerIntake,
+  currentAgent,
+  onUpdatePincode,
+  onUpdateLocation,
+  onRunTriageWithPincode,
+  onDirectiveChange,
+  callerHistory = [],
+  onForwardSuccess,
+  onAppointmentBooked,
+  caseRef: propCaseRef,
+  isFreshTriage = false,
+  isCrmPage = false,
+  isAppointmentTab = false,
+}) => {
+  if (loading) return <Loading />;
+  if (!result) return <Empty />;
+
+  const { triage: t, nearest_facilities: facs, resolved_location: loc } = result;
+  const s = urgencyStyle(t.urgency_level);
+
+  const [searchPincode, setSearchPincode] = useState("");
+  const [largeViewSearchPin, setLargeViewSearchPin] = useState("");
+  const [searchedFacilities, setSearchedFacilities] = useState(null);
+  const [searchedLocation, setSearchedLocation] = useState(null);
+  const [isSearchingFacilities, setIsSearchingFacilities] = useState(false);
+
+  // Assam Map States (from EKMS Map)
+  const mapRef = useRef(null);
+  const fullScreenMapRef = useRef(null);
+  const [mapLayer, setMapLayer] = useState("minimal");
+  const [isPinModeActive, setIsPinModeActive] = useState(false);
+  const [isMapExpanded, setIsMapExpanded] = useState(false);
+  const [selectedFacilityForMap, setSelectedFacilityForMap] = useState(null);
+  const [droppedPinLocation, setDroppedPinLocation] = useState(null);
+  const [selectedDistrictFilter, setSelectedDistrictFilter] = useState("all");
+
+  // Reset search and pin state on new case
+  useEffect(() => {
+    setSearchedFacilities(null);
+    setSearchedLocation(null);
+    setDroppedPinLocation(null);
+    setIsPinModeActive(false);
+    setSearchPincode("");
+    setLargeViewSearchPin("");
+    lastCallerIntakeLocRef.current = "";
+  }, [result?.case_ref, result?.case_id, result?.id]);
+
+  const lastCallerIntakeLocRef = useRef("");
+
+  // Automatically re-query and display facilities whenever caller's recent address (district or pincode) changes
+  useEffect(() => {
+    const rawPin = callerIntake?.pincode ? String(callerIntake.pincode).trim() : "";
+    const rawDist = callerIntake?.district ? String(callerIntake.district).trim() : "";
+    const rawCity = callerIntake?.city ? String(callerIntake.city).trim() : "";
+
+    const locKey = `${rawPin}|${rawDist}|${rawCity}`;
+    if (!lastCallerIntakeLocRef.current) {
+      lastCallerIntakeLocRef.current = locKey;
+      return;
+    }
+
+    if (lastCallerIntakeLocRef.current !== locKey) {
+      lastCallerIntakeLocRef.current = locKey;
+      const targetQuery = (/^\d{6}$/.test(rawPin))
+        ? rawPin
+        : (rawDist || rawCity || rawPin);
+      if (targetQuery) {
+        handleFacilitySearch(targetQuery);
+      }
+    }
+  }, [callerIntake?.pincode, callerIntake?.district, callerIntake?.city]);
+
+  const handleFacilitySearch = async (targetQuery) => {
+    const raw = targetQuery !== undefined ? targetQuery : (largeViewSearchPin || searchPincode);
+    const query = String(raw || "").trim();
+    if (!query) {
+      return toast.error("Please enter a 6-digit Assam PIN code or District");
+    }
+
+    // Immediately clear any prior dropped pin and deactivate pin mode
+    setDroppedPinLocation(null);
+    setIsPinModeActive(false);
+    setSelectedDistrictFilter("all");
+    setSearchPincode(query);
+    setLargeViewSearchPin(query);
+    setDrawerSearchQuery(""); // Clear drawer text filter so all nearest facilities of new PIN are displayed
+
+    setIsSearchingFacilities(true);
+    try {
+      const isSevere = normalizeUrgency(t.urgency_level) === "Severe" || t.call_108;
+      const isPin = /^\d{6}$/.test(query);
+
+      // Geocode using exact same method as EKMS Map: OpenStreetMap Nominatim (${query}, Assam, India)
+      let geoLat = null;
+      let geoLon = null;
+      try {
+        const nomRes = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+            query + ", Assam, India"
+          )}&limit=1`
+        );
+        if (nomRes.ok) {
+          const nomData = await nomRes.json();
+          if (nomData && nomData.length > 0 && nomData[0].lat && nomData[0].lon) {
+            const pLat = parseFloat(nomData[0].lat);
+            const pLon = parseFloat(nomData[0].lon);
+            if (pLat >= 24.0 && pLat <= 28.5 && pLon >= 89.5 && pLon <= 96.5) {
+              geoLat = pLat;
+              geoLon = pLon;
+            }
+          }
+        }
+      } catch (nomErr) {
+        // Fallback to internal dataset
+      }
+
+      let url = "";
+      if (geoLat != null && geoLon != null) {
+        url = `/api/facilities/nearest?lat=${geoLat}&lon=${geoLon}&pincode=${encodeURIComponent(isPin ? query : "")}&district=${encodeURIComponent(!isPin ? query : "")}&severe=${isSevere}`;
+      } else if (isPin) {
+        url = `/api/facilities/nearest?pincode=${encodeURIComponent(query)}&severe=${isSevere}`;
+      } else {
+        url = `/api/facilities/nearest?district=${encodeURIComponent(query)}&severe=${isSevere}`;
+      }
+
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("Failed to fetch facilities");
+      const data = await res.json();
+
+      setSearchedFacilities(data.nearest_facilities || []);
+      setSearchedLocation(data.resolved_location || null);
+      setVisibleFacilityCount(6);
+      setDrawerVisibleCount(6);
+
+      // Only pass 6-digit numeric string to pincode; place names go to city / town!
+      const validPin = isPin
+        ? query
+        : (data.resolved_location?.pincode && /^\d{6}$/.test(String(data.resolved_location.pincode).trim())
+            ? String(data.resolved_location.pincode).trim()
+            : null);
+      const placeCity = !isPin ? query : (data.resolved_location?.city || null);
+      const placeDistrict = data.resolved_location?.district || (!isPin ? query : null);
+
+      if (onUpdateLocation) {
+        onUpdateLocation({
+          pincode: validPin,
+          city: placeCity,
+          district: placeDistrict,
+        });
+      } else if (onUpdatePincode && validPin) {
+        onUpdatePincode(validPin);
+      }
+
+      if (data.resolved_location?.latitude != null && data.resolved_location?.longitude != null) {
+        const coords = [Number(data.resolved_location.latitude), Number(data.resolved_location.longitude)];
+        mapRef.current?.flyTo(coords, 11);
+        fullScreenMapRef.current?.flyTo(coords, 11);
+      }
+
+      if (data.nearest_facilities?.length > 0) {
+        toast.success(`Found ${data.nearest_facilities.length} facilities near ${query}!`);
+      } else {
+        toast.info(`No facilities found within 50 KM of ${query}.`);
+      }
+    } catch (err) {
+      console.error("Search facilities error:", err);
+      toast.error("Could not load facilities for this location.");
+    } finally {
+      setIsSearchingFacilities(false);
+    }
+  };
+
+  const effectiveLoc = searchedLocation || loc;
+
+  // Compute effective target location for Assam Map
+  const effectiveTargetLocation = useMemo(() => {
+    if (droppedPinLocation && droppedPinLocation.lat != null && droppedPinLocation.lng != null) {
+      return {
+        lat: Number(droppedPinLocation.lat),
+        lng: Number(droppedPinLocation.lng),
+        radius: droppedPinLocation.radius || 15,
+        name: droppedPinLocation.name || "Dropped Pin",
+      };
+    }
+    if (
+      effectiveLoc &&
+      effectiveLoc.latitude != null &&
+      effectiveLoc.longitude != null &&
+      !effectiveLoc.isNoLocation
+    ) {
+      const pinPart = effectiveLoc.pincode ? `PIN: ${effectiveLoc.pincode}` : "";
+      const distPart = effectiveLoc.district || "";
+      const displayName = [distPart, pinPart].filter(Boolean).join(" · ") || effectiveLoc.matched || "Target Location";
+
+      return {
+        lat: Number(effectiveLoc.latitude),
+        lng: Number(effectiveLoc.longitude),
+        radius: 15,
+        name: displayName,
+      };
+    }
+    return null;
+  }, [droppedPinLocation, effectiveLoc]);
+
+  // Handle Drop Pin on Assam Map
+  const handlePinDropped = async (pinLoc) => {
+    setDroppedPinLocation(pinLoc);
+    setIsPinModeActive(false);
+    setIsSearchingFacilities(true);
+    try {
+      const isSevere = normalizeUrgency(t.urgency_level) === "Severe" || t.call_108;
+      const url = `/api/facilities/nearest?lat=${pinLoc.lat}&lon=${pinLoc.lng}&is_drop_pin=true&severe=${isSevere}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setSearchedFacilities(data.nearest_facilities || []);
+        setVisibleFacilityCount(6);
+        setDrawerVisibleCount(6);
+
+        const resolved = data.resolved_location || {
+          latitude: pinLoc.lat,
+          longitude: pinLoc.lng,
+          matched: pinLoc.name,
+          pincode: pinLoc.pincode || null,
+          city: pinLoc.city || pinLoc.name || null,
+          district: pinLoc.district || null,
+          method: "dropped_pin",
+          isNoLocation: false,
+          isDroppedPin: true,
+        };
+
+        setSearchedLocation(resolved);
+
+        // Put place name into City / town, and ONLY a valid 6-digit numeric postal code into Pincode!
+        const resolvedPin = (resolved.pincode && /^\d{6}$/.test(String(resolved.pincode).trim()))
+          ? String(resolved.pincode).trim()
+          : (pinLoc.pincode && /^\d{6}$/.test(String(pinLoc.pincode).trim()) ? String(pinLoc.pincode).trim() : null);
+
+        const placeCity =
+          (resolved.city && resolved.city !== "." ? resolved.city : null) ||
+          (pinLoc.city && !pinLoc.city.startsWith("Dropped Pin") ? pinLoc.city : null) ||
+          (pinLoc.name && !pinLoc.name.startsWith("Dropped Pin") ? pinLoc.name : null);
+        const placeDistrict = resolved.district || pinLoc.district || null;
+
+        if (onUpdateLocation) {
+          onUpdateLocation({
+            pincode: resolvedPin,
+            city: placeCity,
+            district: placeDistrict,
+          });
+        } else if (onUpdatePincode && resolvedPin) {
+          onUpdatePincode(resolvedPin);
+        }
+
+        toast.success(`Dropped pin set to "${pinLoc.name}"! Found ${data.nearest_facilities?.length || 0} facilities.`);
+      }
+    } catch (err) {
+      console.error("Pin drop search error:", err);
+      toast.error("Could not fetch facilities for dropped pin.");
+    } finally {
+      setIsSearchingFacilities(false);
+    }
+  };
+
+  const handleDistrictSelect = (districtName) => {
+    setSelectedDistrictFilter(districtName);
+    setSearchPincode(districtName);
+    handleFacilitySearch(districtName);
+  };
+
+  const focusFacilityOnMap = (f) => {
+    setSelectedFacilityForMap(f);
+    if (mapRef.current) {
+      mapRef.current.focusFacility(f);
+    }
+    if (fullScreenMapRef.current) {
+      fullScreenMapRef.current.focusFacility(f);
+    }
+  };
+
+  const [drawerSearchQuery, setDrawerSearchQuery] = useState("");
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isMapExpanded) return;
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setIsMapExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isMapExpanded]);
+
+  useEffect(() => {
+    if (isMapExpanded) {
+      const activePin = searchPincode || effectiveLoc?.pincode || (effectiveLoc?.district && effectiveLoc.district !== "all" ? effectiveLoc.district : "") || "";
+      if (activePin) setLargeViewSearchPin(activePin);
+      const timer = setTimeout(() => {
+        fullScreenMapRef.current?.invalidateSize();
+      }, 250);
+      return () => clearTimeout(timer);
+    } else {
+      const timer = setTimeout(() => {
+        mapRef.current?.invalidateSize();
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [isMapExpanded, searchPincode, effectiveLoc?.pincode, effectiveLoc?.district]);
+
+  const effectiveRawFacs =
+    searchedFacilities !== null ? searchedFacilities : (Array.isArray(facs) ? facs : []);
+
+  const directiveIds = useMemo(() => {
+    return resolveDirectiveIds(t, result, effectiveRawFacs);
+  }, [t, result, effectiveRawFacs]);
+
+  const [forwardedStatus, setForwardedStatus] = useState(() => {
+    if (isFreshTriage || result?.is_fresh_triage) return null;
+    const caseRef = propCaseRef || result?.case_ref || result?.case_id || result?.id;
+    if (result?.is_forwarded || result?.forwarded_at || result?.dispatch_id) {
+      return {
+        directiveId: result.forwarded_directive_id || result.dispatch_info?.directiveId,
+        targetTeamId: result.forwarded_team_id || result.dispatch_info?.targetTeamId,
+        shortName: result.forwarded_short_name || (result.forwarded_to?.includes("Dispensary") ? "ESIS Dispensary" : (result.forwarded_to?.includes("104") ? "104 Health Helpline" : (result.forwarded_to?.includes("108") ? "108 Ambulance" : result.forwarded_to))) || "Facility",
+        teamName: result.forwarded_to || "ESIS Dispensary",
+        facilityName: result.forwarded_facility_name || result.forwarded_to,
+        dispatchId: result.dispatch_id || `DISP-${String(caseRef || "SENT").slice(-6)}`,
+        timestamp: result.forwarded_at || new Date().toISOString(),
+      };
+    }
+    if (typeof window !== "undefined" && caseRef) {
+      try {
+        const stored =
+          sessionStorage.getItem(`ekms_forwarded_${caseRef}`) ||
+          localStorage.getItem(`ekms_forwarded_${caseRef}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.is_forwarded && (parsed.case_ref === caseRef || parsed.dispatch_id)) {
+            return {
+              directiveId: parsed.directive_id || parsed.forwarded_directive_id,
+              targetTeamId: parsed.target_team_id || parsed.forwarded_team_id,
+              shortName: parsed.forwarded_short_name || "Facility",
+              teamName: parsed.forwarded_to || "ESIS Dispensary",
+              facilityName: parsed.forwarded_facility_name || parsed.forwarded_to,
+              dispatchId: parsed.dispatch_id || `DISP-${String(caseRef || "SENT").slice(-6)}`,
+              timestamp: parsed.forwarded_at || new Date().toISOString(),
+            };
+          }
+        }
+      } catch (e) {}
+    }
+    return null;
+  });
+
+  // Track appointment booking status for current case
+  const [bookedStatus, setBookedStatus] = useState(() => {
+    if (isFreshTriage || result?.is_fresh_triage) return null;
+    const caseRef = propCaseRef || result?.case_ref || result?.case_id || result?.id;
+    if (result?.booked_appointment) {
+      return result.booked_appointment;
+    }
+    if (typeof window !== "undefined" && caseRef) {
+      try {
+        const stored = localStorage.getItem(`ekms_appt_${caseRef}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const activePhone = String(callerIntake?.phone || result?.intake?.phone || "").replace(/\D/g, "").slice(-10);
+          const savedPhone = String(parsed.patientPhone || parsed.phone || "").replace(/\D/g, "").slice(-10);
+          if (activePhone && savedPhone && activePhone !== savedPhone) {
+            return null;
+          }
+          return parsed;
+        }
+      } catch (e) {}
+    }
+    return null;
+  });
+
+  const lastTrackedCaseRef = useRef(null);
+
+  useEffect(() => {
+    if (isFreshTriage || result?.is_fresh_triage) {
+      setBookedStatus(null);
+      setForwardedStatus(null);
+      lastTrackedCaseRef.current = propCaseRef || result?.case_ref || result?.case_id || result?.id;
+      return;
+    }
+
+    const caseRef = propCaseRef || result?.case_ref || result?.case_id || result?.id;
+    if (!caseRef) {
+      setBookedStatus(null);
+      return;
+    }
+
+    const activePhone = String(callerIntake?.phone || result?.intake?.phone || "").replace(/\D/g, "").slice(-10);
+
+    if (lastTrackedCaseRef.current !== caseRef) {
+      lastTrackedCaseRef.current = caseRef;
+      if (result?.booked_appointment) {
+        setBookedStatus(result.booked_appointment);
+        return;
+      }
+      if (typeof window !== "undefined") {
+        try {
+          const stored = localStorage.getItem(`ekms_appt_${caseRef}`);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            const savedPhone = String(parsed.patientPhone || parsed.phone || "").replace(/\D/g, "").slice(-10);
+            if (activePhone && savedPhone && activePhone !== savedPhone) {
+              setBookedStatus(null);
+              return;
+            }
+            setBookedStatus(parsed);
+            return;
+          }
+        } catch (e) {}
+      }
+      setBookedStatus(null);
+    } else {
+      if (result?.booked_appointment && !bookedStatus) {
+        setBookedStatus(result.booked_appointment);
+      }
+    }
+  }, [result, propCaseRef, bookedStatus, isFreshTriage, callerIntake?.phone]);
+
+  useEffect(() => {
+    const handleCaseBooked = (e) => {
+      const detail = e.detail;
+      const caseRef = result?.case_ref || result?.case_id || result?.id;
+      if (detail && (!detail.case_ref || !caseRef || detail.case_ref === caseRef)) {
+        setBookedStatus(detail.appointment);
+      }
+    };
+    const handleCaseCancelled = (e) => {
+      const detail = e.detail;
+      const caseRef = result?.case_ref || result?.case_id || result?.id;
+      if (detail && (!detail.case_ref || !caseRef || detail.case_ref === caseRef)) {
+        setBookedStatus(null);
+      }
+    };
+    window.addEventListener("CASE_APPOINTMENT_BOOKED", handleCaseBooked);
+    window.addEventListener("CASE_APPOINTMENT_CANCELLED", handleCaseCancelled);
+    return () => {
+      window.removeEventListener("CASE_APPOINTMENT_BOOKED", handleCaseBooked);
+      window.removeEventListener("CASE_APPOINTMENT_CANCELLED", handleCaseCancelled);
+    };
+  }, [result]);
+
+  const forwardedDirectiveId = useMemo(() => {
+    if (forwardedStatus?.directiveId && ACTION_DIRECTIVES[forwardedStatus.directiveId]) {
+      return forwardedStatus.directiveId;
+    }
+    if (forwardedStatus?.targetTeamId) {
+      if (forwardedStatus.targetTeamId === "108_AMBULANCE") return "CALL_108";
+      if (forwardedStatus.targetTeamId === "104_MEDICAL") return "TELE_104";
+      if (ACTION_DIRECTIVES[forwardedStatus.targetTeamId]) return forwardedStatus.targetTeamId;
+    }
+    const teamName =
+      forwardedStatus?.facilityName ||
+      forwardedStatus?.teamName ||
+      result?.forwarded_facility_name ||
+      result?.forwarded_to;
+    if (teamName) {
+      const norm = normalizeFacilityTarget(teamName, effectiveRawFacs);
+      if (norm === "108_AMBULANCE") return "CALL_108";
+      if (norm === "104_MEDICAL") return "TELE_104";
+      if (ACTION_DIRECTIVES[norm]) return norm;
+    }
+    return null;
+  }, [forwardedStatus, result, effectiveRawFacs]);
+
+  const bookedDirectiveId = useMemo(() => {
+    if (!bookedStatus) return null;
+    if (bookedStatus.facilityTeamId && ACTION_DIRECTIVES[bookedStatus.facilityTeamId]) {
+      return bookedStatus.facilityTeamId;
+    }
+    const facName = bookedStatus.facilityName || "";
+    if (facName) {
+      const norm = normalizeFacilityTarget(facName, effectiveRawFacs);
+      if (ACTION_DIRECTIVES[norm]) return norm;
+    }
+    return null;
+  }, [bookedStatus, effectiveRawFacs]);
+
+  // Strict locking: If forwarded or booked, lock directive strictly so agent cannot switch
+  // But if it is a fresh triage, ensure no old lock is active unless this fresh case was specifically forwarded
+  const isFresh = Boolean(isFreshTriage || result?.is_fresh_triage);
+  const lockedDirectiveId = isFresh
+    ? (result?.is_forwarded ? forwardedDirectiveId : null)
+    : (forwardedDirectiveId || bookedDirectiveId);
+
+  const [manualDirectiveId, setManualDirectiveId] = useState(null);
+
+  // When locked, activeDirective CANNOT be changed by manualDirectiveId
+  const activeDirective =
+    ACTION_DIRECTIVES[lockedDirectiveId || manualDirectiveId || directiveIds.primaryId] ||
+    ACTION_DIRECTIVES.ESIS_DISPENSARY;
+  const secondaryDirective =
+    ACTION_DIRECTIVES[directiveIds.secondaryId] || ACTION_DIRECTIVES.TELE_104;
+
+  // 6 Forwarding Options List: strictly ordered according to 6-tier hierarchy
+  const directiveList = useMemo(() => {
+    const ordered = directiveIds.orderedDirectiveIds || [directiveIds.primaryId, directiveIds.secondaryId];
+    const all = Object.values(ACTION_DIRECTIVES);
+    const result = [];
+    for (const id of ordered) {
+      const match = all.find((d) => d.id === id);
+      if (match && !result.some((r) => r.id === match.id)) {
+        result.push(match);
+      }
+    }
+    for (const d of all) {
+      if (!result.some((r) => r.id === d.id)) result.push(d);
+    }
+    return result;
+  }, [directiveIds]);
+
+  const [visibleFacilityCount, setVisibleFacilityCount] = useState(6);
+  const [drawerVisibleCount, setDrawerVisibleCount] = useState(6);
+
+  // Reset manual directive when a new case is selected or location/pincode is searched
+  useEffect(() => {
+    setManualDirectiveId(null);
+  }, [searchedFacilities, result?.case_ref, result?.case_id, result?.id]);
+
+  // Reset pagination to 6 when search / filter / pin / directive changes
+  useEffect(() => {
+    setVisibleFacilityCount(6);
+    setDrawerVisibleCount(6);
+  }, [searchPincode, droppedPinLocation, manualDirectiveId, effectiveLoc?.district, effectiveLoc?.pincode]);
+
+  useEffect(() => {
+    setDrawerVisibleCount(6);
+  }, [drawerSearchQuery]);
+
+  useEffect(() => {
+    if (isFreshTriage || result?.is_fresh_triage) {
+      if (!result?.is_forwarded) {
+        setForwardedStatus(null);
+        return;
+      }
+    }
+    const caseRef = propCaseRef || result?.case_ref || result?.case_id || result?.id;
+    if (result?.is_forwarded || result?.forwarded_at || result?.dispatch_id) {
+      setForwardedStatus({
+        directiveId: result.forwarded_directive_id || result.dispatch_info?.directiveId,
+        targetTeamId: result.forwarded_team_id || result.dispatch_info?.targetTeamId,
+        shortName: result.forwarded_short_name || (result.forwarded_to?.includes("Dispensary") ? "ESIS Dispensary" : (result.forwarded_to?.includes("104") ? "104 Health Helpline" : (result.forwarded_to?.includes("108") ? "108 Ambulance" : result.forwarded_to))) || "Facility",
+        teamName: result.forwarded_to || "ESIS Dispensary",
+        facilityName: result.forwarded_facility_name || result.forwarded_to,
+        dispatchId: result.dispatch_id || `DISP-${String(caseRef || "SENT").slice(-6)}`,
+        timestamp: result.forwarded_at || new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Only search stored or cached cases if this is explicitly an existing saved case (never for fresh intake triages!)
+    if (!isFreshTriage && !result?.is_fresh_triage && typeof window !== "undefined" && caseRef) {
+      try {
+        const stored =
+          sessionStorage.getItem(`ekms_forwarded_${caseRef}`) ||
+          localStorage.getItem(`ekms_forwarded_${caseRef}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.is_forwarded && (parsed.case_ref === caseRef || parsed.dispatch_id)) {
+            setForwardedStatus({
+              directiveId: parsed.directive_id || parsed.forwarded_directive_id,
+              targetTeamId: parsed.target_team_id || parsed.forwarded_team_id,
+              shortName: parsed.forwarded_short_name || "Facility",
+              teamName: parsed.forwarded_to || "ESIS Dispensary",
+              facilityName: parsed.forwarded_facility_name || parsed.forwarded_to,
+              dispatchId: parsed.dispatch_id || `DISP-${String(caseRef || "SENT").slice(-6)}`,
+              timestamp: parsed.forwarded_at || new Date().toISOString(),
+            });
+            return;
+          }
+        }
+
+        const cached = getCachedCases().find((c) => String(c.case_ref) === String(caseRef) || String(c.id) === String(caseRef));
+        if (cached && (cached.is_forwarded || cached.forwarded_at || cached.status === "forwarded")) {
+          setForwardedStatus({
+            directiveId: cached.forwarded_directive_id || cached.dispatch_info?.directiveId,
+            targetTeamId: cached.forwarded_team_id || cached.dispatch_info?.targetTeamId,
+            shortName: cached.forwarded_short_name || (cached.forwarded_to?.includes("Dispensary") ? "ESIS Dispensary" : (cached.forwarded_to?.includes("104") ? "104 Health Helpline" : (cached.forwarded_to?.includes("108") ? "108 Ambulance" : cached.forwarded_to))) || "Facility",
+            teamName: cached.forwarded_to || "ESIS Dispensary",
+            facilityName: cached.forwarded_facility_name || cached.forwarded_to,
+            dispatchId: cached.dispatch_id || `DISP-${String(caseRef).slice(-6)}`,
+            timestamp: cached.forwarded_at,
+          });
+          return;
+        }
+      } catch (e) {}
+    }
+
+    // Default to null if this case is not specifically forwarded
+    setForwardedStatus(null);
+  }, [result, isFreshTriage, propCaseRef]);
+
+  // Listen to broadcast CASE_FORWARDED event
+  useEffect(() => {
+    const handleCaseForwarded = (e) => {
+      const detail = e.detail;
+      const caseRef = result?.case_ref || result?.case_id || result?.id;
+      if (detail && (!detail.case_ref || detail.case_ref === caseRef)) {
+        if (detail.dispatch_info) {
+          setForwardedStatus(detail.dispatch_info);
+        } else {
+          setForwardedStatus({
+            directiveId: detail.forwarded_directive_id || detail.directive_id,
+            targetTeamId: detail.forwarded_team_id || detail.target_team_id,
+            teamName: detail.forwarded_to,
+            shortName: detail.forwarded_short_name,
+            facilityName: detail.forwarded_facility_name || detail.forwarded_to,
+          });
+        }
+      }
+    };
+    window.addEventListener("CASE_FORWARDED", handleCaseForwarded);
+    return () => window.removeEventListener("CASE_FORWARDED", handleCaseForwarded);
+  }, [result]);
+
+  // Real-time facility availability sync
+  const [availabilityVersion, setAvailabilityVersion] = useState(0);
+  useEffect(() => {
+    const handleAvailChange = () => setAvailabilityVersion((v) => v + 1);
+    window.addEventListener("facility_availability_change", handleAvailChange);
+    window.addEventListener("storage", handleAvailChange);
+    return () => {
+      window.removeEventListener("facility_availability_change", handleAvailChange);
+      window.removeEventListener("storage", handleAvailChange);
+    };
+  }, []);
+
+  const isFacilityForwarded = (f) => {
+    if (!f || !f.name) return false;
+    const fwdName = (
+      forwardedStatus?.facilityName ||
+      forwardedStatus?.teamName ||
+      result?.forwarded_facility_name ||
+      result?.forwarded_to ||
+      ""
+    ).toLowerCase().trim();
+    if (!fwdName) return false;
+    if (fwdName.includes("104") || fwdName.includes("108")) return false;
+    const currentName = f.name.toLowerCase().trim();
+    return fwdName === currentName || fwdName.includes(currentName) || currentName.includes(fwdName);
+  };
+
+  const isFacilityBooked = (f) => {
+    if (!f || !f.name) return false;
+    const bookedName = (
+      bookedStatus?.facilityName ||
+      result?.booked_appointment?.facilityName ||
+      ""
+    ).toLowerCase().trim();
+    if (!bookedName) return false;
+    const currentName = f.name.toLowerCase().trim();
+    return bookedName === currentName || bookedName.includes(currentName) || currentName.includes(bookedName);
+  };
+
+  const [externalActionTrigger, setExternalActionTrigger] = useState(null);
+
+  const handleCardAction = (facility, actionType) => {
+    if (!facility) return;
+
+    // Rule 0: Check if facility is accepting appointments & forwarding
+    if (!isFacilityAccepting(facility)) {
+      toast.error(`${facility.name} is currently OFFLINE / SUSPENDED. Referrals and bookings are unavailable.`);
+      return;
+    }
+
+    // Rule 1: Check existing Forward lock
+    const lockedForward =
+      forwardedStatus?.facilityName ||
+      forwardedStatus?.teamName ||
+      forwardedStatus?.shortName ||
+      result?.forwarded_facility_name ||
+      result?.forwarded_to;
+
+    // Rule 2: Check existing Booked lock
+    const lockedBooked =
+      bookedStatus?.facilityName ||
+      result?.booked_appointment?.facilityName;
+
+    const facilityClean = (facility.name || "").toLowerCase().trim();
+
+    // If clinical summary is already forwarded:
+    if (lockedForward) {
+      const forwardClean = lockedForward.toLowerCase().trim();
+      const isTeleOrAmbulance = forwardClean.includes("104") || forwardClean.includes("108");
+
+      if (isTeleOrAmbulance) {
+        toast.warning(
+          `Case is already forwarded to ${lockedForward}. Once details are forwarded to a helpline or ambulance, you cannot book an appointment or switch to a medical facility.`
+        );
+        return;
+      }
+
+      const isSame =
+        forwardClean === facilityClean ||
+        forwardClean.includes(facilityClean) ||
+        facilityClean.includes(forwardClean);
+      if (!isSame) {
+        toast.warning(
+          `Cannot ${actionType === "forward" ? "forward to" : "book at"} ${facility.name}. Clinical summary is already forwarded to ${lockedForward}. Both referral and appointment must be for the same facility.`
+        );
+        return;
+      }
+    }
+
+    // If an appointment is already booked:
+    if (lockedBooked) {
+      const bookedClean = lockedBooked.toLowerCase().trim();
+      const isSame =
+        bookedClean === facilityClean ||
+        bookedClean.includes(facilityClean) ||
+        facilityClean.includes(bookedClean);
+      if (!isSame) {
+        toast.warning(
+          `Cannot ${actionType === "forward" ? "forward to" : "book at"} ${facility.name}. An OPD appointment is already booked at ${lockedBooked}. Both referral and appointment must be for the same facility.`
+        );
+        return;
+      }
+    }
+
+    // Determine directive matching this facility
+    const dirId = isTieUp(facility)
+      ? "TIE_UP_FACILITY"
+      : isEsicHospital(facility)
+      ? "ESIC_HOSPITAL"
+      : isGovtDistrictHospital(facility)
+      ? "DIST_HOSPITAL"
+      : "ESIS_DISPENSARY";
+
+    // Switch active directive if not locked
+    if (!lockedDirectiveId) {
+      setManualDirectiveId(dirId);
+    }
+
+    setSelectedFacilityForMap(facility);
+
+    // Trigger the corresponding modal in CaseHandoverForwarding
+    setExternalActionTrigger({
+      type: actionType,
+      facility,
+      timestamp: Date.now(),
+    });
+  };
+
+  useEffect(() => {
+    if (activeDirective && onDirectiveChange) {
+      onDirectiveChange(activeDirective);
+    }
+  }, [activeDirective, onDirectiveChange]);
+
+  const dispensaryStatus = useMemo(() => getDispensaryOperatingStatus(), []);
+  const isWeekend = dispensaryStatus.isWeekend;
+
+  const isFacilityRequired = [
+    "ESIC_HOSPITAL",
+    "ESIS_DISPENSARY",
+    "TIE_UP_FACILITY",
+    "DIST_HOSPITAL",
+    "CALL_108",
+  ].includes(activeDirective.id);
+
+  // Dynamically organize facilities with clear categorization badges and all 4 facility types
+  const dynamicFacilities = useMemo(() => {
+    let rawList = [...(effectiveRawFacs || [])];
+
+    // Guarantee: Ensure ALL facilities accepting bookings are included, regardless of caller location / pincode
+    const allKnown = Array.isArray(facilitiesCacheData) ? facilitiesCacheData : [];
+    const acceptingAll = allKnown.filter((f) => isFacilityAccepting(f));
+    const rawIds = new Set(rawList.map((f) => f.id || f.name));
+    for (const af of acceptingAll) {
+      if (!rawIds.has(af.id) && !rawIds.has(af.name)) {
+        rawList.push(af);
+        rawIds.add(af.id || af.name);
+      }
+    }
+
+    if (!rawList || rawList.length === 0) return [];
+
+    const effectiveFacs = rawList.map((f) => {
+      let calcDist = f.distance_km;
+      const refLat = droppedPinLocation?.lat ?? searchedLocation?.latitude ?? (effectiveLoc?.isNoLocation ? null : effectiveLoc?.latitude);
+      const refLng = droppedPinLocation?.lng ?? searchedLocation?.longitude ?? (effectiveLoc?.isNoLocation ? null : effectiveLoc?.longitude);
+
+      if (refLat != null && refLng != null && f.latitude != null && f.longitude != null) {
+        const d = calculateRoadDistanceKm(
+          Number(refLat),
+          Number(refLng),
+          Number(f.latitude),
+          Number(f.longitude)
+        );
+        if (d != null) {
+          calcDist = Math.round(d * 10) / 10;
+        }
+      }
+      return {
+        ...f,
+        distance_km: calcDist != null ? calcDist : f.distance_km,
+      };
+    });
+
+    const getTag = (f) => {
+      if (f.facility_tag) return f.facility_tag;
+      return getFacilityCategoryLabel(f);
+    };
+
+    const getCategoryStyle = (f) => {
+      if (isDispensary(f)) {
+        return "bg-rose-500/15 border-rose-500/40 text-rose-800 dark:text-rose-300 font-bold";
+      }
+      if (isEsicHospital(f)) {
+        return "bg-blue-500/15 border-blue-500/40 text-blue-800 dark:text-blue-300 font-bold";
+      }
+      if (isTieUp(f)) {
+        return "bg-amber-500/15 border-amber-500/40 text-amber-800 dark:text-amber-300 font-bold";
+      }
+      if (isGovtDistrictHospital(f)) {
+        return "bg-purple-500/15 border-purple-500/40 text-purple-800 dark:text-purple-300 font-bold";
+      }
+      return "bg-secondary/80 border-border/70 text-foreground/90 font-bold";
+    };
+
+    const byDistance = (a, b) => {
+      const distA = a.distance_km != null ? a.distance_km : 9999;
+      const distB = b.distance_km != null ? b.distance_km : 9999;
+      return distA - distB;
+    };
+
+    const isOpenFacility = (f) =>
+      isHospital(f) || isEsicHospital(f) || isGovtDistrictHospital(f) || isTieUp(f) || !isDispensary(f);
+
+    let orderedFacs = [...effectiveFacs];
+
+    if (manualDirectiveId === "TIE_UP_FACILITY" || activeDirective.id === "TIE_UP_FACILITY") {
+      const tieUps = effectiveFacs.filter(isTieUp).sort(byDistance);
+      const topTieUp = tieUps[0];
+      const rest = effectiveFacs.filter((f) => f !== topTieUp).sort(byDistance);
+      orderedFacs = topTieUp ? [topTieUp, ...rest] : rest;
+    } else if (manualDirectiveId === "DIST_HOSPITAL" || activeDirective.id === "DIST_HOSPITAL") {
+      const distHosps = effectiveFacs.filter(isGovtDistrictHospital).sort(byDistance);
+      const topDistHosp = distHosps[0];
+      const rest = effectiveFacs.filter((f) => f !== topDistHosp).sort(byDistance);
+      orderedFacs = topDistHosp ? [topDistHosp, ...rest] : rest;
+    } else if (manualDirectiveId === "ESIC_HOSPITAL" || activeDirective.id === "ESIC_HOSPITAL") {
+      const esicHosps = effectiveFacs.filter(isEsicHospital).sort(byDistance);
+      const topEsicHosp = esicHosps[0];
+      const rest = effectiveFacs.filter((f) => f !== topEsicHosp).sort(byDistance);
+      orderedFacs = topEsicHosp ? [topEsicHosp, ...rest] : rest;
+    } else if (manualDirectiveId === "ESIS_DISPENSARY" || activeDirective.id === "ESIS_DISPENSARY") {
+      if (isWeekend) {
+        // On weekends, dispensaries are closed. Prioritize open facilities (hospitals / tie-ups) first
+        const openFacs = effectiveFacs.filter(isOpenFacility).sort(byDistance);
+        const closedDispensaries = effectiveFacs.filter(isDispensary).sort(byDistance);
+        const minOpen = Math.max(4, openFacs.length >= 4 ? 4 : openFacs.length);
+        orderedFacs = [
+          ...openFacs.slice(0, minOpen),
+          ...closedDispensaries,
+          ...openFacs.slice(minOpen),
+        ];
+      } else {
+        const sortedDispensaries = effectiveFacs.filter(isDispensary).sort(byDistance);
+        const topDispensary = sortedDispensaries[0];
+        const rest = effectiveFacs.filter((f) => f !== topDispensary).sort(byDistance);
+        orderedFacs = topDispensary ? [topDispensary, ...rest] : rest;
+      }
+    } else {
+      if (isWeekend) {
+        // On weekends, prioritize open facilities first
+        const openFacs = effectiveFacs.filter(isOpenFacility).sort(byDistance);
+        const closedDispensaries = effectiveFacs.filter(isDispensary).sort(byDistance);
+        const minOpen = Math.max(4, openFacs.length >= 4 ? 4 : openFacs.length);
+        orderedFacs = [
+          ...openFacs.slice(0, minOpen),
+          ...closedDispensaries,
+          ...openFacs.slice(minOpen),
+        ];
+      } else {
+        orderedFacs = [...effectiveFacs].sort(byDistance);
+      }
+    }
+
+    // Pin booked or forwarded physical facility to the very top (index 0) of the directory
+    const activeTargetFacilityName = (
+      bookedStatus?.facilityName ||
+      result?.booked_appointment?.facilityName ||
+      forwardedStatus?.facilityName ||
+      result?.forwarded_facility_name ||
+      ""
+    ).toLowerCase().trim();
+
+    if (activeTargetFacilityName && !activeTargetFacilityName.includes("104") && !activeTargetFacilityName.includes("108")) {
+      let topFacility = orderedFacs.find((f) => {
+        const fn = (f.name || "").toLowerCase().trim();
+        return fn === activeTargetFacilityName || fn.includes(activeTargetFacilityName) || activeTargetFacilityName.includes(fn);
+      });
+      if (topFacility) {
+        orderedFacs = [topFacility, ...orderedFacs.filter((f) => (f.id ? f.id !== topFacility.id : f.name !== topFacility.name))];
+      }
+    }
+
+    // Prioritize facilities where booking is OPEN to the very top of the directory
+    const acceptingFacs = orderedFacs.filter((f) => isFacilityAccepting(f));
+    const offlineFacs = orderedFacs.filter((f) => !isFacilityAccepting(f));
+    orderedFacs = [...acceptingFacs, ...offlineFacs];
+
+    const seenKeys = new Set();
+    const dedupedFacs = [];
+    for (const f of orderedFacs) {
+      const key = f.id || `${f.name}-${f.latitude}-${f.longitude}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        dedupedFacs.push(f);
+      }
+    }
+
+    return dedupedFacs.map((f) => ({
+      ...f,
+      facility_tag: getTag(f),
+      category_style: getCategoryStyle(f),
+    }));
+  }, [
+    effectiveRawFacs,
+    manualDirectiveId,
+    activeDirective.id,
+    dispensaryStatus.isOpen,
+    isWeekend,
+    droppedPinLocation,
+    effectiveLoc,
+    bookedStatus,
+    forwardedStatus,
+    result,
+    availabilityVersion,
+  ]);
+
+  const modalDrawerFacilities = useMemo(() => {
+    let list = dynamicFacilities || [];
+    if (drawerSearchQuery.trim()) {
+      const q = drawerSearchQuery.toLowerCase().trim();
+      // If drawerSearchQuery is a 6-digit pin matching searched pin, don't filter out nearest results
+      if (/^\d{6}$/.test(q) && (searchPincode === q || largeViewSearchPin === q)) {
+        return list;
+      }
+      list = list.filter(
+        (f) =>
+          (f.name && f.name.toLowerCase().includes(q)) ||
+          (f.district && f.district.toLowerCase().includes(q)) ||
+          (f.address && f.address.toLowerCase().includes(q)) ||
+          (f.pincode && String(f.pincode).toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [dynamicFacilities, drawerSearchQuery, searchPincode, largeViewSearchPin]);
+
+  const dispatchSms = (f) => {
+    navigator.clipboard?.writeText(
+      `${f.name}, ${f.address}. Directions: ${f.maps_url}`
+    );
+    toast.success("Facility address copied — ready to SMS to the caller");
+  };
+
+  const callerProblems = useMemo(() => {
+    return extractCallerReportedProblems({
+      result,
+      callerIntake,
+      t,
+    });
+  }, [result, callerIntake, t]);
+
+  const allRedFlags = useMemo(() => {
+    const raw = [];
+    if (Array.isArray(t?.red_flags)) raw.push(...t.red_flags);
+    const ctxFlags =
+      result?.ekms_ai_context?.triageState?.redFlagsDetected ||
+      result?.ekms_ai_context?.clinicalState?.redFlagsDetected ||
+      result?.ekms_ai_context?.redFlagsDetected;
+    if (Array.isArray(ctxFlags)) raw.push(...ctxFlags);
+    if (Array.isArray(result?.booked_appointment?.redFlags)) {
+      raw.push(...result.booked_appointment.redFlags);
+    }
+
+    // Include any danger flags detected in callerProblems
+    if (Array.isArray(callerProblems)) {
+      const isDanger = (s) =>
+        /\b(uncontrollable pain|danger sign|severe pain|intense pain|sudden severe|emergency|difficulty breathing|shortness of breath|dyspnea|sudden acute severe headache|chest pain|fracture|bleed|numbness)\b/i.test(s);
+      callerProblems.filter(isDanger).forEach((p) => raw.push(p));
+    }
+
+    // Comprehensive text context: includes intake, chat messages, clinical complaints, and triage condition
+    const callerChat = Array.isArray(result?.ekms_ai_context?.chatHistory)
+      ? result.ekms_ai_context.chatHistory
+          .filter((m) => m.sender === "user" || m.role === "user")
+          .map((m) => m.text || m.content || "")
+          .join(" ")
+      : "";
+
+    const fullCallerContext = [
+      result?.intake?.symptom_notes,
+      result?.intake?.complaint,
+      result?.caller_spoken_text,
+      callerIntake?.symptom_notes,
+      callerIntake?.complaint,
+      callerChat,
+      result?.ekms_ai_context?.triageState?.condition,
+      result?.ekms_ai_context?.triageState?.suspectedCondition,
+      result?.ekms_ai_context?.triageState?.initialChiefComplaint,
+      result?.ekms_ai_context?.triageState?.symptom,
+      result?.triage?.primary_complaint,
+      result?.triage?.condition,
+      result?.triage?.summary_en,
+      result?.triage?.reasoning,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .trim();
+
+    const isSafe = /\b(safe|surakshit|no,?\s*i am safe|i am safe|not suicidal|no self.?harm|theek hoon)\b/i.test(fullCallerContext);
+
+    return deduplicateRedFlags(summarizeRedFlags(raw, fullCallerContext, isSafe));
+  }, [t, result, callerIntake, callerProblems]);
+
+  const primaryComplaint = useMemo(() => {
+    const isGenericPlaceholder = (val) =>
+      !val || /^(certificate request|certificate|medical consultation|general medical|under assessment|reported symptoms|primary clinical)/i.test(String(val).trim());
+
+    const specificChief =
+      (!isGenericPlaceholder(result?.ekms_ai_context?.triageState?.initialChiefComplaint) ? result?.ekms_ai_context?.triageState?.initialChiefComplaint : null) ||
+      (!isGenericPlaceholder(result?.initialChiefComplaint) ? result?.initialChiefComplaint : null) ||
+      (!isGenericPlaceholder(result?.ekms_ai_context?.triageState?.suspectedCondition) ? result?.ekms_ai_context?.triageState?.suspectedCondition : null) ||
+      (!isGenericPlaceholder(result?.ekms_ai_context?.triageState?.condition) ? result?.ekms_ai_context?.triageState?.condition : null) ||
+      (!isGenericPlaceholder(callerIntake?.initialChiefComplaint) ? callerIntake?.initialChiefComplaint : null);
+
+    if (specificChief) {
+      return specificChief;
+    }
+
+    const lockedChief =
+      result?.ekms_ai_context?.triageState?.initialChiefComplaint ||
+      result?.initialChiefComplaint ||
+      callerIntake?.initialChiefComplaint;
+
+    if (lockedChief && !/^(reported symptoms|general medical|primary clinical)/i.test(lockedChief.trim())) {
+      return lockedChief;
+    }
+
+    if (callerProblems.length > 0) {
+      return callerProblems.join(" · ");
+    }
+    return (
+      t.primary_complaint ||
+      t.cleanPrimaryComplaint ||
+      result?.cleanPrimaryComplaint ||
+      result?.ekms_ai_context?.triageState?.suspectedCondition ||
+      result?.ekms_ai_context?.triageState?.condition ||
+      result?.ekms_ai_context?.triageState?.symptom ||
+      result?.intake?.symptom ||
+      result?.intake?.symptoms ||
+      (t.is_psychiatric ? "Emotional Distress / Mental Health Support" : "Primary Clinical Assessment")
+    );
+  }, [callerProblems, t, result, callerIntake]);
+
+  const callerSpokenText = String(
+    callerIntake?.symptom_notes ||
+    callerIntake?.complaint ||
+    result?.caller_spoken_text ||
+    result?.intake?.symptom_notes ||
+    result?.intake?.complaint ||
+    primaryComplaint ||
+    ""
+  ).toLowerCase();
+
+  const isCertOnly = Boolean(
+    t.is_certificate_only ||
+    result?.is_certificate_only ||
+    (/\bcertificate\b/i.test(primaryComplaint) &&
+      !/\b(chest pain|shortness of breath|fever|bukhar|vomit|ulti|bleeding|headache|fracture|burn|unconscious|seizure)\b/i.test(callerSpokenText))
+  );
+
+  const detectedComorbidities = useMemo(() => {
+    if (isCertOnly) return null;
+    const raw =
+      t.comorbidity ||
+      t.comorbidities ||
+      result?.comorbidity ||
+      result?.comorbidities ||
+      result?.intake?.comorbidities ||
+      result?.intake?.comorbidity ||
+      result?.ekms_ai_context?.triageState?.comorbidity ||
+      result?.ekms_ai_context?.triageState?.comorbidities;
+    if (!raw || typeof raw !== "string" || /^(none|no|nil|absent|none reported|not reported|n\/a)$/i.test(raw.trim())) {
+      return null;
+    }
+    return raw;
+  }, [t, result, isCertOnly]);
+
+  const detectedAssociated = useMemo(() => {
+    if (isCertOnly) return null;
+    const raw =
+      t.associated ||
+      t.associatedSymptoms ||
+      result?.associated ||
+      result?.associatedSymptoms ||
+      result?.intake?.associatedSymptoms ||
+      result?.ekms_ai_context?.triageState?.associated;
+    if (Array.isArray(raw) && raw.length > 0) return raw;
+    if (typeof raw === "string" && raw.trim() && !/^(none|no|nil|none reported)$/i.test(raw.trim())) {
+      return [raw];
+    }
+    return null;
+  }, [t, result, isCertOnly]);
+
+  const assessedSeverity = normalizeUrgency(
+    t.assessed_severity ||
+    t.urgency_level ||
+    (t.urgency_score >= 8 ? "Severe" : t.urgency_score >= 5 ? "Moderate" : "Mild")
+  );
+  let rawDuration =
+    t.duration ||
+    result?.intake?.duration ||
+    result?.ekms_ai_context?.triageState?.duration ||
+    "";
+  if (/\b(fall|fell|falling|accident|injury|trauma|pain|chot|gir gaya|impact)\b/i.test(rawDuration)) {
+    rawDuration = "";
+  }
+  const hasRealDuration = Boolean(
+    rawDuration &&
+    !/^(reported today|not specified|not noted|none|unknown)$/i.test(rawDuration.trim())
+  );
+  const durationText = (!isCertOnly && hasRealDuration) ? rawDuration.trim() : "";
+  const severityAndDuration = durationText ? `${assessedSeverity} · ${durationText}` : assessedSeverity;
+
+  const isNonClinical = Boolean(
+    result?.intake?.call_type === "non_clinical" ||
+    result?.call_type === "non_clinical" ||
+    callerIntake?.call_type === "non_clinical" ||
+    callerIntake?.isNonClinical
+  );
+
+  const nonClinEnquiryType =
+    result?.intake?.enquiry_type ||
+    callerIntake?.enquiry_type ||
+    callerIntake?.enquiryType ||
+    result?.enquiry_type ||
+    "Reimbursement";
+
+  const nonClinChiefIssue =
+    result?.intake?.chief_issue ||
+    callerIntake?.chief_issue ||
+    callerIntake?.chiefIssue ||
+    result?.chief_issue ||
+    result?.intake?.symptom_notes ||
+    "General Enquiry";
+
+  const nonClinRemarks =
+    result?.intake?.remarks ||
+    callerIntake?.remarks ||
+    callerIntake?.remarksText ||
+    result?.remarks ||
+    "";
+
+  const computedSummaryEn = useMemo(() => {
+    if (isNonClinical) {
+      const demoStr = callerIntake.age && callerIntake.sex
+        ? `${callerIntake.age}-year-old ${callerIntake.sex.toLowerCase()} caller`
+        : callerIntake.age
+        ? `${callerIntake.age}-year-old caller`
+        : callerIntake.sex
+        ? `${callerIntake.sex.toLowerCase()} caller`
+        : "Caller";
+      return `${demoStr} reports Non-Clinical: ${nonClinEnquiryType}, referred to facility for in-person discussion.`;
+    }
+    const activeComplaint = primaryComplaint;
+    if (activeComplaint && activeComplaint !== "Primary Clinical Assessment") {
+      const demoStr = callerIntake.age && callerIntake.sex
+        ? `${callerIntake.age}-year-old ${callerIntake.sex.toLowerCase()} caller`
+        : callerIntake.age
+        ? `${callerIntake.age}-year-old caller`
+        : callerIntake.sex
+        ? `${callerIntake.sex} caller`
+        : "Caller";
+      const actionClause = activeDirective.id === "CALL_108"
+        ? "requiring immediate 108 Emergency Ambulance dispatch for acute emergency/trauma care."
+        : activeDirective.id === "ESIC_HOSPITAL"
+        ? "referred to nearest ESIC Hospital for in-person medical evaluation and secondary care."
+        : activeDirective.id === "DIST_HOSPITAL"
+        ? "referred to nearest Govt District Hospital for acute hospital care."
+        : activeDirective.id === "TIE_UP_FACILITY"
+        ? "referred to nearest Empanelled Tie-Up Facility for clinical care."
+        : activeDirective.id === "TELE_104"
+        ? "guided to 104 Health Helpline for tele-doctor consultation."
+        : "guided to nearest ESIS Dispensary for primary doctor consultation and medicine dispensing.";
+      if (isCertOnly) {
+        return `${demoStr} reports ${activeComplaint} (${assessedSeverity}); guided to nearest ESIS Dispensary for Insurance Medical Officer (IMO) verification and certificate issuance.`;
+      }
+      const sevDur = durationText ? `${assessedSeverity} · ${durationText}` : assessedSeverity;
+      return `${demoStr} reports ${activeComplaint} (${sevDur}); ${actionClause}`;
+    }
+    return t.summary_en || "";
+  }, [isNonClinical, isCertOnly, callerIntake, nonClinEnquiryType, primaryComplaint, activeDirective.id, assessedSeverity, durationText, t.summary_en]);
+
+  // USER MANDATE: Near Urgent and Primary Referral 01 MUST show the exact same referral!
+  const primaryReferralDest = activeDirective.badge;
+
+  const cleanReason = (reason) => {
+    if (!reason || typeof reason !== "string") return "";
+    if (reason.includes("Symptoms require secondary hospital casualty")) return "";
+    return reason;
+  };
+
+  const nearestDistHosp = effectiveRawFacs.find((f) => isGovtDistrictHospital(f));
+  const nearestEsic = effectiveRawFacs.find((f) => isEsicHospital(f));
+  const nearestTieUp = effectiveRawFacs.find((f) => isTieUp(f));
+
+  let primaryReferralReason = cleanReason(
+    t.call_referral_primary_reason ||
+    t.referral_reason ||
+    activeDirective.summary ||
+    t.recommended_action ||
+    ""
+  );
+
+  if (activeDirective.id === "DIST_HOSPITAL") {
+    primaryReferralReason = nearestDistHosp
+      ? `Direct patient to ${nearestDistHosp.name} (${nearestDistHosp.distance_km != null ? `${nearestDistHosp.distance_km} km` : "nearest"}; ESIC > 15km).`
+      : "Direct patient to Govt District Hospital (ESIC > 15km).";
+  } else if (activeDirective.id === "ESIC_HOSPITAL") {
+    primaryReferralReason = nearestEsic
+      ? `Direct patient to ${nearestEsic.name} (${nearestEsic.distance_km != null ? `${nearestEsic.distance_km} km` : "<15km"}).`
+      : "Direct patient to ESIC Hospital (within 15km).";
+  }
+
+  const effectiveSecondaryDirective =
+    (secondaryDirective.id === activeDirective.id
+      ? (activeDirective.id === "ESIC_HOSPITAL" ? ACTION_DIRECTIVES.DIST_HOSPITAL : (activeDirective.id === "DIST_HOSPITAL" ? ACTION_DIRECTIVES.TIE_UP_FACILITY : ACTION_DIRECTIVES.TELE_104))
+      : secondaryDirective) || (activeDirective.id === "TELE_104" ? ACTION_DIRECTIVES.DIST_HOSPITAL : ACTION_DIRECTIVES.TELE_104);
+
+  const secondaryReferralDest = effectiveSecondaryDirective.badge;
+  let secondaryReferralReason = cleanReason(
+    t.call_referral_secondary_reason ||
+    t.secondary_referral_reason ||
+    effectiveSecondaryDirective?.summary ||
+    ""
+  );
+
+  if (effectiveSecondaryDirective.id === "TIE_UP_FACILITY") {
+    secondaryReferralReason = nearestTieUp
+      ? `Refer to empanelled ${nearestTieUp.name} (${nearestTieUp.distance_km != null ? `${nearestTieUp.distance_km} km away` : "nearest"}) for cashless hospital care.`
+      : "Refer to empanelled Tie-Up Hospital for cashless hospital care.";
+  } else if (effectiveSecondaryDirective.id === "DIST_HOSPITAL") {
+    secondaryReferralReason = nearestDistHosp
+      ? `Govt District Hospital (${nearestDistHosp.name}) for secondary hospital care backup.`
+      : "Govt District Hospital for secondary hospital care backup.";
+  } else if (effectiveSecondaryDirective.id === "ESIC_HOSPITAL") {
+    secondaryReferralReason = nearestEsic
+      ? `ESIC Hospital (${nearestEsic.name}) for specialized secondary hospital care.`
+      : "ESIC Hospital for specialized secondary hospital care.";
+  }
+
+  const forwardedTeamStr = String(
+    forwardedStatus?.targetTeamId ||
+    forwardedStatus?.directiveId ||
+    forwardedStatus?.facilityName ||
+    forwardedStatus?.shortName ||
+    forwardedStatus?.teamName ||
+    result?.forwarded_directive_id ||
+    result?.forwarded_team_id ||
+    result?.forwarded_facility_name ||
+    result?.forwarded_short_name ||
+    result?.forwarded_to ||
+    ""
+  ).toLowerCase();
+
+  const isCaseForwarded = Boolean(
+    forwardedStatus ||
+    result?.is_forwarded ||
+    result?.forwarded_at ||
+    result?.dispatch_id ||
+    result?.status === "forwarded"
+  );
+
+  const forwardedNorm = normalizeFacilityTarget(forwardedTeamStr, dynamicFacilities);
+  const primaryNorm = normalizeFacilityTarget(primaryReferralDest || activeDirective?.id || activeDirective?.badge, dynamicFacilities);
+  const secondaryNorm = normalizeFacilityTarget(secondaryReferralDest || effectiveSecondaryDirective?.id || effectiveSecondaryDirective?.badge, dynamicFacilities);
+
+  const isSentToPrimary = Boolean(
+    isCaseForwarded &&
+    forwardedNorm &&
+    primaryNorm &&
+    forwardedNorm === primaryNorm
+  );
+
+  const isSentToSecondary = Boolean(
+    isCaseForwarded &&
+    forwardedNorm &&
+    secondaryNorm &&
+    forwardedNorm === secondaryNorm
+  );
+
+  return (
+    <div className="space-y-5 rise w-full max-w-full min-w-0" data-testid="triage-result">
+      {/* Top Clinical/Outcome Section: ONLY rendered for Clinical cases (Hidden for Non-Clinical enquiries as requested) */}
+      {!isAppointmentTab && !isNonClinical && (
+        <div
+          className={`panel overflow-hidden transition-all duration-300 ${
+            activeDirective.panelLightTint || "bg-card border-border"
+          }`}
+        >
+        <div
+          className={`h-1.5 w-full transition-colors duration-300 ${
+            activeDirective.topBar || s.bar
+          }`}
+        />
+        <div className="p-5 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="eyebrow">Triage outcome</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2.5 sm:gap-3">
+                {result?.intake?.call_type === "non_clinical" ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-300 bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-900 shadow-2xs">
+                    <FileText className="h-3.5 w-3.5 text-indigo-600" />
+                    NON-CLINICAL ENQUIRY
+                  </span>
+                ) : (
+                  <UrgencyBadge level={t.urgency_level} score={t.urgency_score} />
+                )}
+                {activeDirective.id === "CALL_108" ? (
+                  <span
+                    data-testid="triage-call-108"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-red-300 bg-red-600 px-3 py-1 text-xs font-bold text-white shadow-2xs"
+                  >
+                    🚨 108 AMBULANCE
+                  </span>
+                ) : activeDirective.id === "TELE_104" ? (
+                  <span
+                    data-testid="triage-tele-104"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-blue-300 bg-blue-700 px-3 py-1 text-xs font-bold text-white shadow-2xs"
+                  >
+                    <PhoneCall className="h-3.5 w-3.5" /> 104 HEALTH HELPLINE
+                  </span>
+                ) : activeDirective.id === "ESIC_HOSPITAL" ? (
+                  <span
+                    data-testid="triage-esic-hospital"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-700 px-3 py-1 text-xs font-bold text-white shadow-2xs"
+                  >
+                    <Building2 className="h-3.5 w-3.5" /> ESIC HOSPITAL
+                  </span>
+                ) : activeDirective.id === "TIE_UP_FACILITY" ? (
+                  <span
+                    data-testid="triage-tie-up"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-cyan-300 bg-cyan-700 px-3 py-1 text-xs font-bold text-white shadow-2xs"
+                  >
+                    <Building2 className="h-3.5 w-3.5" /> TIE-UP FACILITY
+                  </span>
+                ) : activeDirective.id === "DIST_HOSPITAL" ? (
+                  <span
+                    data-testid="triage-dist-hospital"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-blue-300 bg-blue-800 px-3 py-1 text-xs font-bold text-white shadow-2xs"
+                  >
+                    <Building2 className="h-3.5 w-3.5" /> GOVT DISTRICT HOSPITAL
+                  </span>
+                ) : (
+                  <span
+                    data-testid="triage-esis-dispensary"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-700 px-3 py-1 text-xs font-bold text-white shadow-2xs"
+                  >
+                    <Stethoscope className="h-3.5 w-3.5" /> {activeDirective.badge || "ESIS DISPENSARY"}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <p className="mt-4 text-base font-semibold leading-snug" data-testid="triage-summary-en">
+            {computedSummaryEn}
+          </p>
+
+          {/* Unified Clinical Assessment & Action items directly inside Triage outcome panel */}
+          <div className="mt-5 space-y-4 pt-1">
+
+            {/* 1. Clinical Assessment Overview Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg bg-background/95 dark:bg-slate-900 p-2.5 border border-border shadow-2xs">
+                <span className="text-[10px] uppercase font-bold text-muted-foreground block mb-0.5">
+                  {isNonClinical ? "Enquiry Type" : "Chief Complaint"}
+                </span>
+                {isNonClinical ? (
+                  <span className="font-bold text-foreground text-sm">
+                    {nonClinEnquiryType}
+                  </span>
+                ) : callerProblems && callerProblems.length > 1 ? (
+                  <div className="space-y-1 mt-0.5">
+                    {callerProblems.map((prob, idx) => (
+                      <div key={idx} className="flex items-center gap-1.5 font-bold text-foreground text-xs sm:text-sm">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                        <span>{prob}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="font-bold text-foreground text-sm">
+                    {primaryComplaint}
+                  </span>
+                )}
+              </div>
+
+              <div className="rounded-lg bg-background/95 dark:bg-slate-900 p-2.5 border border-border shadow-2xs">
+                <span className="text-[10px] uppercase font-bold text-muted-foreground block mb-0.5">
+                  {isNonClinical ? "Chief Complaint / Issue" : "Assessed Severity & Duration"}
+                </span>
+                <span className="font-bold text-foreground text-sm">
+                  {isNonClinical ? nonClinChiefIssue : severityAndDuration}
+                </span>
+              </div>
+            </div>
+
+            {!isNonClinical && (detectedComorbidities || (detectedAssociated && detectedAssociated.length > 0)) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                {detectedComorbidities ? (
+                  <div className="rounded-lg bg-background/95 dark:bg-slate-900 p-2.5 border border-border shadow-2xs">
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground block mb-0.5">
+                      Comorbidity
+                    </span>
+                    <span className="font-semibold text-foreground text-xs sm:text-sm">
+                      {detectedComorbidities}
+                    </span>
+                  </div>
+                ) : null}
+                {detectedAssociated && detectedAssociated.length > 0 ? (
+                  <div className="rounded-lg bg-background/95 dark:bg-slate-900 p-2.5 border border-border shadow-2xs">
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground block mb-0.5">
+                      Associated Symptoms
+                    </span>
+                    <span className="font-semibold text-foreground text-xs sm:text-sm">
+                      {Array.isArray(detectedAssociated) ? detectedAssociated.join(", ") : detectedAssociated}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            )}
+
+            {/* 2. Red Flags Box OR Non-Clinical Remarks Box */}
+            {isNonClinical ? (
+              nonClinRemarks && nonClinRemarks.trim() ? (
+                <div
+                  className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/80 dark:bg-indigo-950/30 p-3.5 shadow-2xs"
+                  data-testid="non-clinical-remarks-box"
+                >
+                  <div className="mb-1 flex items-center justify-between">
+                    <p className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-indigo-900 dark:text-indigo-300">
+                      <FileText className="h-4 w-4 text-indigo-600" />
+                      Remarks / Action Taken
+                    </p>
+                    <span className="rounded px-1.5 py-0.5 text-[10px] font-black uppercase bg-indigo-600 text-white">
+                      Note
+                    </span>
+                  </div>
+                  <p className="text-xs sm:text-sm font-semibold text-indigo-950 dark:text-indigo-200 whitespace-pre-line">
+                    {nonClinRemarks}
+                  </p>
+                </div>
+              ) : null
+            ) : (
+              <div
+                className={`rounded-xl border p-3.5 shadow-2xs ${
+                  allRedFlags.length > 0
+                    ? "border-red-300 bg-rose-50/90 dark:bg-rose-950/40"
+                    : "border-emerald-300 bg-emerald-50/80 dark:bg-emerald-950/30"
+                }`}
+                data-testid="triage-red-flags-box"
+              >
+                <div className="mb-2 flex items-center justify-between">
+                  <p
+                    className={`flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider ${
+                      allRedFlags.length > 0
+                        ? "text-red-700 dark:text-red-400"
+                        : "text-emerald-800 dark:text-emerald-300"
+                    }`}
+                  >
+                    {allRedFlags.length > 0 ? (
+                      <>
+                        <ShieldAlert className="h-4 w-4 text-red-600" />
+                        Clinical Red Flags Detected ({allRedFlags.length} points)
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                        Clinical Red Flags Assessment
+                      </>
+                    )}
+                  </p>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-black uppercase ${
+                      allRedFlags.length > 0
+                        ? "bg-red-600 text-white"
+                        : "bg-emerald-600 text-white"
+                    }`}
+                  >
+                    {allRedFlags.length > 0 ? "High Alert" : "Stable"}
+                  </span>
+                </div>
+
+                {allRedFlags.length > 0 ? (
+                  <ul
+                    className="space-y-1.5 text-xs sm:text-sm text-red-950 dark:text-red-200"
+                    data-testid="triage-red-flags-list"
+                  >
+                    {allRedFlags.map((flag, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-start gap-2 py-0.5 text-red-950 dark:text-red-200"
+                      >
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-600" />
+                        <span className="font-semibold leading-snug">{flag}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="flex items-center gap-2 py-1 text-xs font-semibold text-emerald-900 dark:text-emerald-200">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    <span>No acute red-flag hemodynamic signs detected from caller inquiry.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 3. All 6 Referral & Forwarding Options (Horizontal responsive grid replacing separate boxes & Decision Switcher) */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <SlidersHorizontal className="h-3.5 w-3.5 text-primary" />
+                  <span>Recommended Referral &amp; Forwarding Channels</span>
+                  {lockedDirectiveId && (
+                    <span className="text-[10px] font-bold text-amber-800 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 px-2 py-0.5 rounded-full border border-amber-500/30">
+                      🔒 Locked to {forwardedStatus?.shortName || forwardedStatus?.teamName || bookedStatus?.facilityName || "dispatched channel"}
+                    </span>
+                  )}
+                </span>
+                {manualDirectiveId && !lockedDirectiveId && (
+                  <button
+                    type="button"
+                    onClick={() => setManualDirectiveId(null)}
+                    className="inline-flex items-center gap-1 text-[10px] font-bold text-primary hover:text-primary/80 transition bg-primary/10 px-2.5 py-0.5 rounded-full cursor-pointer shadow-2xs"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span>Reset to AI Primary</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {directiveList.map((dir, dirIndex) => {
+                  const isSelected = dir.id === activeDirective.id;
+                  const isPrimary = dir.id === directiveIds.primaryId;
+                  const isSecondary = dir.id === directiveIds.secondaryId;
+                  const isLockedOther = Boolean(lockedDirectiveId && dir.id !== lockedDirectiveId);
+                  const dirNorm = normalizeFacilityTarget(dir.id || dir.badge, dynamicFacilities);
+                  const isDirForwarded = Boolean(
+                    isCaseForwarded && (
+                      (forwardedStatus?.directiveId && dir.id === forwardedStatus.directiveId) ||
+                      (forwardedStatus?.targetTeamId && (
+                        dir.id === forwardedStatus.targetTeamId ||
+                        (dir.id === "CALL_108" && forwardedStatus.targetTeamId === "108_AMBULANCE") ||
+                        (dir.id === "TELE_104" && forwardedStatus.targetTeamId === "104_MEDICAL")
+                      )) ||
+                      (forwardedNorm && dirNorm && dirNorm === forwardedNorm)
+                    )
+                  );
+
+                  const getCompactBoxSentence = (dirItem) => {
+                    if (dirItem.id === "CALL_108") {
+                      return "Immediate 108 emergency ambulance dispatch.";
+                    }
+                    if (dirItem.id === "ESIC_HOSPITAL") {
+                      return nearestEsic
+                        ? `${nearestEsic.name} (${nearestEsic.distance_km != null ? `${nearestEsic.distance_km} km` : "<15km"}) for hospital care.`
+                        : "Nearest ESIC Hospital for clinical evaluation.";
+                    }
+                    if (dirItem.id === "DIST_HOSPITAL") {
+                      return nearestDistHosp
+                        ? `${nearestDistHosp.name} (${nearestDistHosp.distance_km != null ? `${nearestDistHosp.distance_km} km` : "nearest"}) for public care.`
+                        : "Govt District Hospital for public healthcare.";
+                    }
+                    if (dirItem.id === "TIE_UP_FACILITY") {
+                      return nearestTieUp
+                        ? `${nearestTieUp.name} (${nearestTieUp.distance_km != null ? `${nearestTieUp.distance_km} km` : "nearest"}) for cashless care.`
+                        : "Empanelled Tie-Up hospital for care.";
+                    }
+                    if (dirItem.id === "TELE_104") {
+                      return "104 Health Helpline doctor on call.";
+                    }
+                    if (dirItem.id === "ESIS_DISPENSARY") {
+                      const acceptingDisp = dynamicFacilities.find((f) => isDispensary(f) && isFacilityAccepting(f));
+                      return acceptingDisp
+                        ? `${acceptingDisp.name}${acceptingDisp.distance_km != null ? ` (${formatApproxKm(acceptingDisp.distance_km)} km)` : ""}`
+                        : "Nearest ESIS Dispensary for doctor consultation.";
+                    }
+                    return dirItem.summary || dirItem.category;
+                  };
+
+                  const compactSentence = getCompactBoxSentence(dir);
+
+                  return (
+                    <button
+                      key={dir.id}
+                      type="button"
+                      disabled={isLockedOther}
+                      onClick={() => {
+                        if (lockedDirectiveId) {
+                          const lockedName =
+                            forwardedStatus?.facilityName ||
+                            forwardedStatus?.teamName ||
+                            forwardedStatus?.shortName ||
+                            bookedStatus?.facilityName ||
+                            "selected channel";
+                          toast.warning(
+                            `Channel locked to ${lockedName}. Once clinical details are ${forwardedStatus ? "forwarded" : "booked"}, switching channels or selecting another facility is disabled.`
+                          );
+                          return;
+                        }
+                        setManualDirectiveId(dir.id);
+                        onDirectiveChange?.(dir.id);
+                      }}
+                      className={`group relative rounded-xl p-3 text-left transition-all duration-200 border flex flex-col justify-between gap-2 shadow-2xs ${
+                        isSelected
+                          ? `${dir.badgeColor} ring-2 ring-offset-1 ring-current shadow-md scale-[1.01] cursor-default`
+                          : isLockedOther
+                          ? "bg-muted/40 dark:bg-slate-900/40 border-border/50 text-muted-foreground opacity-50 cursor-not-allowed border-dashed"
+                          : "bg-background/95 dark:bg-slate-900 border-border/80 hover:bg-secondary/70 hover:border-foreground/30 text-foreground hover:shadow-xs cursor-pointer"
+                      }`}
+                    >
+                      {/* Top row: Label and Badges */}
+                      <div className="flex items-center justify-between gap-1.5 w-full">
+                        <span
+                          className={`text-[10px] font-bold uppercase tracking-wider ${
+                            isSelected ? "text-white/90" : "text-muted-foreground"
+                          }`}
+                        >
+                          {dir.category || "Referral"}
+                        </span>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          {isDirForwarded && (
+                            <span className="inline-flex items-center gap-1 rounded bg-emerald-600 text-white text-[9px] font-black px-1.5 py-0.5 shadow-2xs">
+                              <CheckCircle2 className="h-2.5 w-2.5" /> Booked
+                            </span>
+                          )}
+                          {dirIndex === 0 && (
+                            <span
+                              className={`rounded text-[9px] font-black px-1.5 py-0.5 uppercase tracking-wider shadow-2xs ${
+                                isSelected ? "bg-white/20 text-white border border-white/30" : "bg-emerald-700 text-white"
+                              }`}
+                            >
+                              ⭐ Primary
+                            </span>
+                          )}
+                          {dirIndex === 1 && (
+                            <span
+                              className={`rounded text-[9px] font-black px-1.5 py-0.5 uppercase tracking-wider shadow-2xs ${
+                                isSelected ? "bg-white/20 text-white border border-white/30" : "bg-blue-700 text-white"
+                              }`}
+                            >
+                              ⭐ Secondary
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Main Title Row with Icon */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-base shrink-0 leading-none">{dir.icon}</span>
+                        <div className="min-w-0">
+                          <p
+                            className={`text-sm font-extrabold tracking-tight leading-snug ${
+                              isSelected ? "text-white" : "text-foreground"
+                            }`}
+                          >
+                            {dir.badge}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Clinical routing note - completely visible small sentence */}
+                      {compactSentence && (
+                        <p
+                          className={`text-[11px] font-medium leading-normal pt-1 border-t ${
+                            isSelected ? "text-white/85 border-white/20" : "text-muted-foreground border-border/50"
+                          }`}
+                        >
+                          {compactSentence}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Referral Forwarding Dispatch Button & Confirmation */}
+            <CaseHandoverForwarding
+              currentAgent={currentAgent}
+              result={result}
+              caseRef={propCaseRef || result?.case_ref}
+              isFreshTriage={isFreshTriage || Boolean(result?.is_fresh_triage)}
+              activeDirective={activeDirective}
+              allRedFlags={allRedFlags}
+              callerIntake={callerIntake}
+              callerHistory={callerHistory}
+              externalTrigger={externalActionTrigger}
+              dynamicFacilities={dynamicFacilities}
+              effectiveLoc={effectiveLoc}
+              searchPincode={searchPincode}
+              isCrmPage={isCrmPage}
+              onForwardSuccess={(statusData) => {
+                setForwardedStatus(statusData);
+                onForwardSuccess?.(statusData);
+              }}
+              onAppointmentBooked={(bookingData) => {
+                setBookedStatus(bookingData);
+                setExternalActionTrigger(null);
+                onAppointmentBooked?.(bookingData);
+              }}
+              onAppointmentCancelled={() => {
+                setBookedStatus(null);
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    )}
+
+      {/* CaseHandoverForwarding Portal: When in dedicated Appointment tab or Non-Clinical enquiry, keep portal mounted */}
+      {(isAppointmentTab || isNonClinical) && (
+        <CaseHandoverForwarding
+          currentAgent={currentAgent}
+          result={result}
+          caseRef={propCaseRef || result?.case_ref}
+          isFreshTriage={isFreshTriage || Boolean(result?.is_fresh_triage)}
+          activeDirective={activeDirective}
+          allRedFlags={allRedFlags}
+          callerIntake={callerIntake}
+          callerHistory={callerHistory}
+          externalTrigger={externalActionTrigger}
+          dynamicFacilities={dynamicFacilities}
+          effectiveLoc={effectiveLoc}
+          searchPincode={searchPincode}
+          isCrmPage={isCrmPage}
+          hideReferralDispatch={isAppointmentTab || !bookedStatus}
+          onForwardSuccess={(statusData) => {
+            setForwardedStatus(statusData);
+            onForwardSuccess?.(statusData);
+          }}
+          onAppointmentBooked={(bookingData) => {
+            setBookedStatus(bookingData);
+            setExternalActionTrigger(null);
+            onAppointmentBooked?.(bookingData);
+          }}
+          onAppointmentCancelled={() => {
+            setBookedStatus(null);
+          }}
+        />
+      )}
+
+      <div className="panel p-5 sm:p-6" data-testid="triage-facilities-list">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3.5">
+          <div>
+            <h3 className="text-base sm:text-lg font-bold text-foreground">
+              Nearest Facilities Directory
+            </h3>
+            {isNonClinical && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Select an ESIS Dispensary, Hospital, or Tie-Up facility to book an in-person appointment or handover this enquiry.
+              </p>
+            )}
+          </div>
+          {effectiveLoc && (
+            <div className="inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-secondary/50 px-2.5 py-1 text-xs font-semibold text-foreground/80 shadow-2xs">
+              <MapPin className="h-3.5 w-3.5 text-primary shrink-0" />
+              <span>
+                {effectiveLoc.isNoLocation
+                  ? "No Location Provided"
+                  : [effectiveLoc.district, effectiveLoc.pincode].filter(Boolean).join(" · ") || effectiveLoc.matched || "Assam"}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Weekend Operating Notice */}
+        {isWeekend && dynamicFacilities?.length > 0 && (
+          <div className="mt-3.5 flex items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-50/80 dark:bg-amber-950/30 p-3 text-xs text-amber-950 dark:text-amber-200 shadow-2xs">
+            <AlertOctagon className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+            <div>
+              <p className="font-extrabold text-xs">
+                Dispensary Schedule ({dispensaryStatus.reason || "Closed"}):
+              </p>
+              <p className="text-[11.5px] text-amber-900 dark:text-amber-300 mt-0.5 leading-snug">
+                ESIS Dispensaries operate Mon–Fri &amp; 1st, 3rd, 5th Sat 10:00 AM – 4:00 PM (Closed 2nd &amp; 4th Sat, Sun). For emergency care, direct patient to 24x7 Casualty at the nearest Hospital.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ASSAM HEALTH NETWORK MAP CONTAINER */}
+        <div className="mt-4 rounded-xl border border-border/80 bg-card overflow-hidden shadow-xs">
+          {/* Map Top Control Toolbar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-secondary/40 px-3.5 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <MapIcon className="h-4 w-4 text-primary shrink-0" />
+              <span className="font-bold text-foreground">Assam Health Map</span>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {/* Layer Switcher: Minimal vs Detailed */}
+              <div className="inline-flex rounded-lg border border-border/80 bg-background p-0.5 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setMapLayer("minimal")}
+                  className={`rounded px-2 py-0.5 text-[11px] font-bold transition-colors cursor-pointer ${
+                    mapLayer === "minimal"
+                      ? "bg-primary text-primary-foreground shadow-2xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  title="Minimal Map Layer (CARTO Voyager)"
+                >
+                  Minimal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMapLayer("detailed")}
+                  className={`rounded px-2 py-0.5 text-[11px] font-bold transition-colors cursor-pointer ${
+                    mapLayer === "detailed"
+                      ? "bg-primary text-primary-foreground shadow-2xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  title="Detailed Map Layer (Google Maps)"
+                >
+                  Detailed
+                </button>
+              </div>
+
+              {/* Drop Pin Toggle */}
+              <button
+                type="button"
+                onClick={() => setIsPinModeActive((prev) => !prev)}
+                className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all cursor-pointer shadow-2xs border ${
+                  isPinModeActive
+                    ? "bg-rose-600 text-white border-rose-500 animate-pulse"
+                    : "bg-background border-border/80 text-foreground hover:bg-secondary hover:border-primary/50"
+                }`}
+                title="Drop custom pin on map to set location"
+              >
+                <Crosshair className="h-3 w-3" />
+                <span>{isPinModeActive ? "Click on Map" : "Drop Pin"}</span>
+              </button>
+
+              {/* Reset View */}
+              <button
+                type="button"
+                onClick={() => mapRef.current?.resetView()}
+                className="inline-flex items-center gap-1 rounded-lg border border-border/80 bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer shadow-2xs"
+                title="Reset Assam map view"
+              >
+                <RotateCcw className="h-3 w-3" />
+              </button>
+
+              {/* Full-Screen / Make Large Modal Button */}
+              <button
+                type="button"
+                onClick={() => setIsMapExpanded(true)}
+                className="inline-flex items-center gap-1 rounded-lg bg-primary/10 border border-primary/30 px-2.5 py-1 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-all cursor-pointer shadow-2xs"
+                title="Expand Assam Map Full Screen"
+              >
+                <Maximize2 className="h-3 w-3" />
+                <span>Large View</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Active Drop Pin Hint Banner */}
+          {isPinModeActive && (
+            <div className="bg-rose-500/15 border-b border-rose-500/30 px-3 py-1.5 text-center text-xs font-bold text-rose-700 dark:text-rose-300 animate-in fade-in">
+              📍 Drop Pin Active: Click anywhere inside Assam to set a custom location and recalculate distances!
+            </div>
+          )}
+
+          {/* Map Canvas */}
+          <div className="h-[340px] sm:h-[380px] w-full relative bg-[#0a1128]">
+            <MapWrapper
+              ref={mapRef}
+              theme="light"
+              isLargeView={false}
+              facilities={dynamicFacilities.slice(0, visibleFacilityCount)}
+              filters={{
+                mapLayer,
+                district: effectiveLoc?.district || "all",
+                searchQuery: searchPincode || "",
+                radius: 0,
+              }}
+              targetLocation={effectiveTargetLocation}
+              isPinModeActive={isPinModeActive}
+              onPinDropped={handlePinDropped}
+              onDistrictSelect={handleDistrictSelect}
+              selectedFacility={selectedFacilityForMap}
+            />
+          </div>
+        </div>
+
+        {/* Inline search bar to change/search another pincode anytime */}
+        <div className="mt-3.5 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/70 bg-secondary/40 p-2.5 text-xs shadow-2xs">
+          <div className="flex items-center gap-1.5 text-foreground font-semibold">
+            <Search className="h-3.5 w-3.5 text-primary shrink-0" />
+            <span>Search / Change Location:</span>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleFacilitySearch();
+            }}
+            className="flex items-center gap-1.5 flex-1 max-w-md ml-auto"
+          >
+            <input
+              type="text"
+              value={searchPincode}
+              onChange={(e) => setSearchPincode(e.target.value)}
+              placeholder="Enter PIN code (e.g. 782435) or District (e.g. Hojai)..."
+              className="flex-1 min-w-0 rounded-lg border border-border/80 bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-primary"
+            />
+            <button
+              type="submit"
+              disabled={isSearchingFacilities || !searchPincode.trim()}
+              className="flex items-center gap-1 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 cursor-pointer shrink-0 shadow-2xs"
+            >
+              {isSearchingFacilities ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Search className="h-3 w-3" />
+              )}
+              <span>Search</span>
+            </button>
+          </form>
+        </div>
+
+        {dynamicFacilities?.length ? (
+          <>
+            <ul className="mt-3 space-y-3">
+              {dynamicFacilities.slice(0, visibleFacilityCount).map((f, i) => {
+                const cleanDisplayAddress = f.address
+                  ? f.address
+                      .replace(/[\uFFFD\u00BF\u00EF\u00BF\u00BD]+/g, " - ")
+                      .replace(/\b(pin|pincode)?\s*[-:,]?\s*78\d{4}\b/gi, "")
+                      .replace(/\s*-\s*-\s*/g, " - ")
+                      .replace(/,\s*,/g, ",")
+                      .replace(/\s*,\s*$/g, "")
+                      .trim()
+                  : "";
+
+                const isSelectedOnMap = selectedFacilityForMap?.id === f.id || selectedFacilityForMap?.name === f.name;
+                const isForwarded = isFacilityForwarded(f);
+                const isBooked = isFacilityBooked(f);
+
+                const lockedForwardTarget =
+                  forwardedStatus?.facilityName ||
+                  forwardedStatus?.teamName ||
+                  forwardedStatus?.shortName ||
+                  result?.forwarded_facility_name ||
+                  result?.forwarded_to;
+                const lockedBookedTarget =
+                  bookedStatus?.facilityName ||
+                  result?.booked_appointment?.facilityName;
+
+                const isForwardedTo104Or108 = Boolean(
+                  lockedForwardTarget &&
+                  (lockedForwardTarget.includes("104") || lockedForwardTarget.includes("108"))
+                );
+
+                const isFacilityLockedOut = Boolean(
+                  isForwardedTo104Or108 ||
+                  (lockedForwardTarget && !isForwarded) ||
+                  (lockedBookedTarget && !isBooked)
+                );
+
+                const isAcc = isFacilityAccepting(f);
+
+                return (
+                  <li
+                    key={f.id || f.name + i}
+                    data-testid="facility-card-item"
+                    onClick={() => focusFacilityOnMap(f)}
+                    className={`group rounded-xl border p-4 transition-all duration-200 shadow-2xs cursor-pointer ${
+                      isSelectedOnMap
+                        ? "border-primary bg-primary/5 ring-2 ring-primary/30"
+                        : "border-border/70 bg-card/60 hover:bg-card hover:border-primary/50"
+                    }`}
+                  >
+                    <div className="flex flex-col space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`rounded-md border px-2 py-0.5 text-[10.5px] ${f.category_style || "bg-secondary/80 border-border/70 text-foreground/90 font-bold"}`}>
+                            {f.facility_tag}
+                          </span>
+
+                          {(f.is_dispensary || isDispensary(f)) && isWeekend && (
+                            <span className="rounded-full bg-rose-500/15 border border-rose-500/30 px-2 py-0.5 text-[10px] font-bold text-rose-800 dark:text-rose-300">
+                              Dispensary Closed ({dispensaryStatus.reason})
+                            </span>
+                          )}
+                          {(f.is_dispensary || isDispensary(f)) && !isWeekend && (
+                            <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:text-emerald-300">
+                              OPD: Mon–Fri 10AM–4PM · Sat 10AM–12PM
+                            </span>
+                          )}
+                          {(f.is_hospital || isHospital(f) || f.is_tie_up || isTieUp(f)) && (
+                            <span className="rounded-full bg-blue-500/10 border border-blue-500/25 px-2 py-0.5 text-[10px] font-semibold text-blue-800 dark:text-blue-300">
+                              Open · IPD &amp; Casualty: 24x7
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <p className="flex items-center gap-2 text-sm font-bold text-foreground">
+                        <Building2 className="h-4 w-4 shrink-0 text-primary" />
+                        <span>{f.name}</span>
+                      </p>
+
+                      {cleanDisplayAddress && (
+                        <p className="text-xs leading-relaxed text-muted-foreground">{cleanDisplayAddress}</p>
+                      )}
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {f.district && !/^(NA|N\/A|0|null|undefined|-+)$/i.test(String(f.district).trim()) && (
+                            <span className="rounded border border-border/70 px-1.5 py-0.5 text-muted-foreground font-medium">
+                              {f.district}
+                            </span>
+                          )}
+                          {getFacilityPincode(f) && !/^(NA|N\/A|0|null|undefined|-+)$/i.test(String(getFacilityPincode(f)).trim()) && (
+                            <span className="rounded border border-border/70 px-1.5 py-0.5 text-muted-foreground font-mono font-medium">
+                              {getFacilityPincode(f)}
+                            </span>
+                          )}
+                          {f.distance_km != null && Number(f.distance_km) > 0 && (
+                            <span className="inline-flex items-center rounded border border-border/70 bg-secondary/80 dark:bg-slate-800/80 px-2 py-0.5 text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                              Approx {formatApproxKm(f.distance_km)} KM
+                            </span>
+                          )}
+                          {f.phone && !/^(NA|N\/A|0|null|undefined|-+)$/i.test(String(f.phone).trim()) && (
+                            <span className="mono text-primary font-bold">{f.phone}</span>
+                          )}
+                        </div>
+
+                        {/* Unified Book & Modify Button for Facility Card */}
+                        <div className="flex items-center gap-1.5 ml-1">
+                          {isBooked ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCardAction(f, "book");
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-600 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 text-xs font-bold transition cursor-pointer shadow-xs active:scale-95 whitespace-nowrap"
+                              title={`Modify appointment booking for ${f.name}`}
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                              <span>Modify Booking</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={isFacilityLockedOut || !isAcc}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCardAction(f, "book");
+                              }}
+                              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition shadow-2xs whitespace-nowrap ${
+                                isFacilityLockedOut || !isAcc
+                                  ? "border-border/50 bg-muted/40 text-muted-foreground/50 opacity-40 cursor-not-allowed pointer-events-none"
+                                  : "border-orange-500/60 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700 text-white cursor-pointer active:scale-95 shadow-xs"
+                              }`}
+                              title={
+                                !isAcc
+                                  ? "Facility offline: bookings and forwarding suspended"
+                                  : isFacilityLockedOut
+                                  ? `Booking locked to ${lockedForwardTarget || lockedBookedTarget || "dispatched destination"}`
+                                  : `Book OPD appointment for ${f.name}`
+                              }
+                            >
+                              <CalendarCheck className="h-3.5 w-3.5" />
+                              <span>Book Appointment</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {visibleFacilityCount < dynamicFacilities.length && (
+              <div className="mt-4 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleFacilityCount((prev) => prev + 6)}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary px-6 py-2.5 text-xs font-bold transition-all duration-150 shadow-2xs hover:shadow-xs cursor-pointer active:scale-95"
+                >
+                  <span>Load More</span>
+                  <span className="text-[10px] opacity-75 font-mono">
+                    ({dynamicFacilities.length - visibleFacilityCount} remaining)
+                  </span>
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          /* Interactive Search Card when no pincode/location was provided */
+          <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-50/60 dark:bg-amber-950/20 p-5 space-y-4 shadow-xs">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
+                <MapPin className="h-5 w-5 text-amber-700" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-sm font-bold text-amber-950 dark:text-amber-200">
+                  No PIN Code Entered by Caller
+                </h4>
+                <p className="text-xs text-amber-900/90 dark:text-amber-300 leading-relaxed">
+                  Triage clinical decision is evaluated above. To view and rank nearest healthcare facilities in ascending distance order, please enter the caller&apos;s 6-digit Assam PIN code or District below, or click <strong>&quot;Drop Pin&quot;</strong> on the map above:
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Assam Location Shortcuts */}
+            <div className="space-y-2 pt-1">
+              <span className="text-[10.5px] font-bold uppercase tracking-wider text-amber-950 dark:text-amber-300 block">
+                Quick Location Shortcuts (Click to load):
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { name: "Hojai", pin: "782435" },
+                  { name: "Guwahati / Beltola", pin: "781022" },
+                  { name: "Dispur", pin: "781006" },
+                  { name: "Dibrugarh", pin: "786001" },
+                  { name: "Silchar", pin: "788001" },
+                  { name: "Tezpur", pin: "784001" },
+                  { name: "Tinsukia", pin: "786125" },
+                  { name: "Bongaigaon", pin: "783380" },
+                  { name: "Nagaon", pin: "782001" },
+                  { name: "Jorhat", pin: "785001" },
+                ].map((item, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setSearchPincode(item.pin);
+                      handleFacilitySearch(item.pin);
+                    }}
+                    className="flex items-center gap-1 rounded-full border border-amber-600/30 bg-white/90 dark:bg-card px-2.5 py-1 text-[11px] font-semibold text-foreground hover:border-primary hover:bg-primary/10 transition-all active:scale-95 cursor-pointer shadow-2xs"
+                  >
+                    <span>📍</span>
+                    <span>{item.name} ({item.pin})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* FULL-SCREEN / LARGE VIEW MODAL FOR ASSAM MAP (PORTALED TO DOCUMENT.BODY OVER ENTIRE WEBSITE) */}
+      {isMapExpanded && mounted && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[99999] flex flex-col w-screen h-screen min-w-[100vw] min-h-[100vh] bg-slate-100/98 dark:bg-slate-950/98 p-3 sm:p-4 lg:p-5 backdrop-blur-md animate-in fade-in zoom-in-95 duration-200">
+          {/* Modal Header Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl px-4 py-3 text-slate-800 dark:text-slate-100 shadow-sm mb-3 shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-xs">
+                <MapIcon className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white leading-tight">
+                    Assam Health Map — Large View
+                  </h3>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Toolbar Controls */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Search Location / PIN code in Large Map View */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (largeViewSearchPin.trim()) {
+                    handleFacilitySearch(largeViewSearchPin.trim());
+                  }
+                }}
+                className="flex items-center gap-1.5"
+              >
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={largeViewSearchPin}
+                    onChange={(e) => setLargeViewSearchPin(e.target.value)}
+                    placeholder="Enter PIN (e.g. 782410) or District..."
+                    className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 pl-8 pr-3 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 placeholder:text-slate-400 outline-none focus:border-blue-500 w-48 sm:w-56"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isSearchingFacilities || !largeViewSearchPin.trim()}
+                  className="rounded-xl bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer shadow-2xs flex items-center gap-1 shrink-0 disabled:opacity-50"
+                  title="Search facilities near this PIN code"
+                >
+                  {isSearchingFacilities ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                  <span>Search</span>
+                </button>
+              </form>
+
+              {/* District Filter Dropdown */}
+              <select
+                value={selectedDistrictFilter}
+                onChange={(e) => handleDistrictSelect(e.target.value)}
+                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500 shadow-2xs"
+              >
+                <option value="all">All Assam Districts</option>
+                {ASSAM_DISTRICTS.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+
+              {/* Minimal vs Detailed Layer Buttons */}
+              <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-0.5 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setMapLayer("minimal")}
+                  className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer ${
+                    mapLayer === "minimal"
+                      ? "bg-blue-600 text-white shadow-xs"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                  }`}
+                >
+                  Minimal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMapLayer("detailed")}
+                  className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-colors cursor-pointer ${
+                    mapLayer === "detailed"
+                      ? "bg-blue-600 text-white shadow-xs"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                  }`}
+                >
+                  Detailed (Google)
+                </button>
+              </div>
+
+              {/* Drop Pin Toggle */}
+              <button
+                type="button"
+                onClick={() => setIsPinModeActive((prev) => !prev)}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition-all cursor-pointer shadow-2xs border ${
+                  isPinModeActive
+                    ? "bg-rose-600 text-white border-rose-500 animate-pulse"
+                    : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700"
+                }`}
+              >
+                <Crosshair className="h-3.5 w-3.5" />
+                <span>{isPinModeActive ? "Click Map to Drop Pin" : "Drop Pin"}</span>
+              </button>
+
+              {/* Reset View */}
+              <button
+                type="button"
+                onClick={() => fullScreenMapRef.current?.resetView()}
+                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer shadow-2xs"
+                title="Reset View"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Reset</span>
+              </button>
+
+              {/* Close Button */}
+              <button
+                type="button"
+                onClick={() => setIsMapExpanded(false)}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-slate-800 hover:bg-slate-900 dark:bg-slate-800 dark:hover:bg-slate-700 text-white px-3.5 py-1.5 text-xs font-bold transition-colors cursor-pointer shadow-xs"
+              >
+                <X className="h-4 w-4" />
+                <span>Close (Esc)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Modal Main Body */}
+          <div className="flex-1 flex flex-col lg:flex-row gap-3 min-h-0 overflow-hidden">
+            {/* Map Canvas */}
+            <div className="flex-1 h-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 relative bg-[#0a1128] shadow-sm">
+              {isPinModeActive && (
+                <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] bg-rose-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg animate-bounce">
+                  📍 Click anywhere inside Assam to drop location pin &amp; recalculate
+                </div>
+              )}
+              <MapWrapper
+                ref={fullScreenMapRef}
+                theme="light"
+                isLargeView={true}
+                facilities={modalDrawerFacilities}
+                filters={{
+                  mapLayer,
+                  district: selectedDistrictFilter !== "all" ? selectedDistrictFilter : (effectiveLoc?.district || "all"),
+                  searchQuery: searchPincode || "",
+                  radius: 0,
+                }}
+                targetLocation={effectiveTargetLocation}
+                isPinModeActive={isPinModeActive}
+                onPinDropped={handlePinDropped}
+                onDistrictSelect={handleDistrictSelect}
+                selectedFacility={selectedFacilityForMap}
+              />
+            </div>
+
+            {/* Right Side Facility Drawer (in full-screen mode) */}
+            <div className="hidden lg:flex w-80 sm:w-96 xl:w-[410px] flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 text-slate-800 dark:text-slate-100 overflow-hidden shadow-sm shrink-0">
+              {/* Drawer Header & Count */}
+              <div className="border-b border-slate-200 dark:border-slate-800 pb-3 mb-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-blue-600" />
+                    <span>Healthcare Facilities</span>
+                  </h4>
+                  <span className="text-[11px] font-mono text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/80 px-2 py-0.5 rounded-full border border-blue-200 dark:border-blue-800 font-bold">
+                    {Math.min(drawerVisibleCount, modalDrawerFacilities.length)} of {modalDrawerFacilities.length} shown
+                  </span>
+                </div>
+              </div>
+
+              {/* Scrollable Facility Cards in Drawer */}
+              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+                {modalDrawerFacilities.length === 0 ? (
+                  <div className="p-4 text-center text-slate-400 text-xs">
+                    No facilities found matching your criteria.
+                  </div>
+                ) : (
+                  <>
+                    {modalDrawerFacilities.slice(0, drawerVisibleCount).map((f, i) => {
+                      const cleanDisplayAddress = f.address
+                        ? f.address
+                            .replace(/[\uFFFD\u00BF\u00EF\u00BF\u00BD]+/g, " - ")
+                            .replace(/\b(pin|pincode)?\s*[-:,]?\s*78\d{4}\b/gi, "")
+                            .replace(/\s*-\s*-\s*/g, " - ")
+                            .replace(/,\s*,/g, ",")
+                            .replace(/\s*,\s*$/g, "")
+                            .trim()
+                        : "";
+
+                      const isSelectedOnMap = selectedFacilityForMap?.id === f.id || selectedFacilityForMap?.name === f.name;
+
+                      return (
+                        <div
+                          key={f.id || f.name + i}
+                          onClick={() => focusFacilityOnMap(f)}
+                          className={`rounded-xl border p-3.5 transition-all duration-200 cursor-pointer shadow-2xs space-y-2 ${
+                            isSelectedOnMap
+                              ? "border-blue-500 bg-blue-50/70 dark:bg-blue-950/40 ring-2 ring-blue-500/30"
+                              : "border-slate-200/90 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/50 hover:bg-white dark:hover:bg-slate-800 hover:border-blue-400/60 hover:shadow-xs"
+                          }`}
+                        >
+                          {/* Badges row matching homepage */}
+                          <div className="flex flex-wrap items-center justify-between gap-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className={`rounded-md border px-2 py-0.5 text-[10.5px] ${f.category_style || "bg-secondary/80 border-border/70 text-foreground/90 font-bold"}`}>
+                                {f.facility_tag}
+                              </span>
+
+                              {(f.is_dispensary || isDispensary(f)) && isWeekend && (
+                                <span className="rounded-full bg-rose-500/15 border border-rose-500/30 px-2 py-0.5 text-[10px] font-bold text-rose-800 dark:text-rose-300">
+                                  Closed ({dispensaryStatus.reason})
+                                </span>
+                              )}
+                              {(f.is_dispensary || isDispensary(f)) && !isWeekend && (
+                                <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:text-emerald-300">
+                                  OPD: Mon–Fri 10AM–4PM
+                                </span>
+                              )}
+                              {(f.is_hospital || isHospital(f) || f.is_tie_up || isTieUp(f)) && (
+                                <span className="rounded-full bg-blue-500/10 border border-blue-500/25 px-2 py-0.5 text-[10px] font-semibold text-blue-800 dark:text-blue-300">
+                                  Open · 24x7 Casualty
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Facility Name */}
+                          <p
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              focusFacilityOnMap(f);
+                            }}
+                            className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                          >
+                            <Building2 className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                            <span className="leading-snug">{f.name}</span>
+                          </p>
+
+                          {/* Clean Address */}
+                          {cleanDisplayAddress && (
+                            <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400 line-clamp-2">
+                              {cleanDisplayAddress}
+                            </p>
+                          )}
+
+                          {/* Footer row: District, Pincode, and Phone */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/80 dark:border-slate-700/60 text-[10.5px]">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {f.district && !/^(NA|N\/A|0|null|undefined|-+)$/i.test(String(f.district).trim()) && (
+                                <span className="rounded border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 text-slate-600 dark:text-slate-400 font-medium">
+                                  {f.district}
+                                </span>
+                              )}
+                              {getFacilityPincode(f) && !/^(NA|N\/A|0|null|undefined|-+)$/i.test(String(getFacilityPincode(f)).trim()) && (
+                                <span className="rounded border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 text-slate-600 dark:text-slate-400 font-mono font-medium">
+                                  {getFacilityPincode(f)}
+                                </span>
+                              )}
+                              {f.distance_km != null && Number(f.distance_km) > 0 && (
+                                <span className="inline-flex items-center rounded border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 text-slate-700 dark:text-slate-300 font-bold">
+                                  Approx {formatApproxKm(f.distance_km)} KM
+                                </span>
+                              )}
+                            </div>
+
+                            {f.phone && !/^(NA|N\/A|0|null|undefined|-+)$/i.test(String(f.phone).trim()) && (
+                              <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">{f.phone}</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {drawerVisibleCount < modalDrawerFacilities.length && (
+                      <div className="pt-2 pb-1 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={() => setDrawerVisibleCount((prev) => prev + 6)}
+                          className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-blue-500/40 bg-blue-500/10 hover:bg-blue-500/20 text-blue-700 dark:text-blue-300 py-2.5 text-xs font-bold transition-all duration-150 cursor-pointer active:scale-95 shadow-2xs"
+                        >
+                          <span>Load More</span>
+                          <span className="text-[10px] opacity-75 font-mono">
+                            ({modalDrawerFacilities.length - drawerVisibleCount} remaining)
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+};

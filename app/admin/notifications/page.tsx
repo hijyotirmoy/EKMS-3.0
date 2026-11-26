@@ -18,7 +18,7 @@ import { AppNotification, NotificationType, NotificationTargetRole } from "@/lib
 import { parseMarkdownLinks } from "@/lib/utils";
 import { formatNotificationMessage } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
-import { createNotification, formatNotificationTime } from "@/lib/notificationService";
+import { createNotification, formatNotificationTime, isStaleBirthdayNotification, NOTIFICATIONS_PAUSED } from "@/lib/notificationService";
 import {
   Megaphone,
   Plus,
@@ -82,8 +82,18 @@ export default function AdminAnnouncementsPage() {
 
     const syncAll = () => {
       const map = new Map<string, AppNotification>();
-      notifsFromDb.forEach((n) => map.set(n.id, n));
+      notifsFromDb.forEach((n) => {
+        if (!isStaleBirthdayNotification(n)) {
+          map.set(n.id, n);
+        } else {
+          try { deleteDoc(doc(logsDb, "notifications", n.id)); } catch (e) {}
+        }
+      });
       annFromDb.forEach((a) => {
+        if (isStaleBirthdayNotification(a)) {
+          try { deleteDoc(doc(logsDb, "announcements", a.id)); } catch (e) {}
+          return;
+        }
         if (!map.has(a.id)) {
           map.set(a.id, a);
         } else {
@@ -194,6 +204,11 @@ export default function AdminAnnouncementsPage() {
   const filteredItems = useMemo(() => {
     let list = items;
 
+    if (NOTIFICATIONS_PAUSED) {
+      // User policy: Stop all action notifications from showing
+      list = list.filter((i) => i.type === "announcement");
+    }
+
     if (filterTab === "broadcast") {
       list = list.filter(
         (i) => (!i.targetEmail || i.targetEmail === "all") && (!i.targetRole || i.targetRole === "all")
@@ -205,7 +220,7 @@ export default function AdminAnnouncementsPage() {
     } else if (filterTab === "agent") {
       list = list.filter((i) => i.targetRole === "agent");
     } else if (filterTab === "birthday") {
-      list = list.filter((i) => i.type === "birthday");
+      list = list.filter((i) => i.type === "birthday" && !isStaleBirthdayNotification(i));
     }
 
     if (searchQuery.trim()) {
@@ -329,6 +344,11 @@ export default function AdminAnnouncementsPage() {
   // 7. Create New Broadcast / Notification
   const handleCreateNotification = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (NOTIFICATIONS_PAUSED) {
+      toast.info("Notification system is currently paused. No data was sent to Firebase.");
+      setCreateModalOpen(false);
+      return;
+    }
     if (!message.trim()) return;
 
     setSaving(true);
@@ -446,9 +466,16 @@ export default function AdminAnnouncementsPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-            Manage Notifications
-          </h1>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+              Manage Notifications
+            </h1>
+            {NOTIFICATIONS_PAUSED && (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300">
+                System Paused
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -464,14 +491,47 @@ export default function AdminAnnouncementsPage() {
           </div>
 
           <button
-            onClick={() => setCreateModalOpen(true)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors shrink-0"
+            onClick={() => {
+              if (NOTIFICATIONS_PAUSED) {
+                toast.info("Notifications are paused per system policy. No data will be written to Firebase.");
+                return;
+              }
+              setCreateModalOpen(true);
+            }}
+            className={`flex items-center gap-1.5 px-4 py-2 font-semibold text-xs rounded-xl shadow-xs transition-colors shrink-0 ${
+              NOTIFICATIONS_PAUSED
+                ? "bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300"
+                : "bg-blue-600 hover:bg-blue-700 text-white"
+            }`}
+            title={NOTIFICATIONS_PAUSED ? "Notification system is paused" : "Create Broadcast"}
           >
             <Plus className="w-4 h-4" />
-            <span>Create Broadcast</span>
+            <span>{NOTIFICATIONS_PAUSED ? "Create Broadcast (Paused)" : "Create Broadcast"}</span>
           </button>
         </div>
       </div>
+
+      {/* Paused Notification System Policy Banner */}
+      {NOTIFICATIONS_PAUSED && (
+        <div className="bg-amber-50/90 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-100 border border-amber-200 flex items-center justify-center shrink-0 text-amber-700">
+              <Bell className="w-5 h-5 text-amber-600" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-amber-900 tracking-tight">All Action Notifications Paused</span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-200 text-amber-900">
+                  Firebase Writes Halted
+                </span>
+              </div>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Notifications for all actions and automated events have been paused. No data is sent or written to Firebase. All functions and schemas remain completely intact for future use.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 4 Interactive KPI Stat Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 select-none">
