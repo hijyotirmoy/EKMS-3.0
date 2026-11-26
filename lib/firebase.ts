@@ -14,13 +14,15 @@ import { getStorage } from "firebase/storage";
 // Core Services: Authentication, User Profiles, Knowledge Q&A, Facilities,
 // Doubts Community Forum, Files & Documents Library, Training & Quizzes
 // ==============================================================================
+const BUILD_SAFE_API_KEY = "AIzaSyBuildSafePlaceholderKey000000000";
+
 export const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "ekms-app.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "ekms-app",
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "ekms-app.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "",
 };
 
@@ -30,12 +32,12 @@ export const firebaseConfig = {
 // Doctor Duty Rosters, Verification Appointment Schedules
 // ==============================================================================
 export const bookingFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_API_KEY || "",
+  apiKey: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_AUTH_DOMAIN || "ekmsbooking.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_PROJECT_ID || "ekmsbooking",
   storageBucket: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_STORAGE_BUCKET || "ekmsbooking.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_APP_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
+  appId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
   measurementId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MEASUREMENT_ID || "",
 };
 
@@ -45,12 +47,12 @@ export const bookingFirebaseConfig = {
 // User Activity Tracking, Security Logs
 // ==============================================================================
 export const logsFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_LOGS_FIREBASE_API_KEY || "",
+  apiKey: process.env.NEXT_PUBLIC_LOGS_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_LOGS_FIREBASE_AUTH_DOMAIN || "ekms-logs.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_PROJECT_ID || "ekms-logs",
   storageBucket: process.env.NEXT_PUBLIC_LOGS_FIREBASE_STORAGE_BUCKET || "ekms-logs.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_APP_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
+  appId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
   measurementId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MEASUREMENT_ID || "",
 };
 
@@ -60,12 +62,12 @@ export const logsFirebaseConfig = {
 // Dhwani CRM Live Intake Sync, Telemetry, Audit Records, 7-Day Holding Vault
 // ==============================================================================
 export const casesSettingsFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_API_KEY || "",
+  apiKey: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_AUTH_DOMAIN || "triage-cases-settings.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_PROJECT_ID || "triage-cases-settings",
   storageBucket: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_STORAGE_BUCKET || "triage-cases-settings.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_APP_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
+  appId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
   measurementId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MEASUREMENT_ID || "",
 };
 
@@ -74,12 +76,12 @@ export const casesSettingsFirebaseConfig = {
 // Services: Triage Active Sessions, Dispatches & Secondary Backup Store
 // ==============================================================================
 export const triageMainFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_API_KEY || "",
+  apiKey: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_AUTH_DOMAIN || "ekms-triage-main.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_PROJECT_ID || "ekms-triage-main",
   storageBucket: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_STORAGE_BUCKET || "ekms-triage-main.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_APP_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
+  appId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
   measurementId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_MEASUREMENT_ID || "",
 };
 
@@ -111,7 +113,13 @@ const createOptimizedFirestoreCache = () => {
 export const app =
   getApps().find((a) => a.name === "[DEFAULT]") ||
   (getApps().length > 0 ? getApp() : initializeApp(firebaseConfig));
-export const auth = getAuth(app);
+export const auth = (() => {
+  try {
+    return getAuth(app);
+  } catch (e) {
+    return null as any;
+  }
+})();
 export const db = (() => {
   try {
     return initializeFirestore(app, {
@@ -181,10 +189,14 @@ export const triageMainDb = (() => {
 
 // Secondary auth for non-destructive user account creations
 export const getSecondaryAuth = () => {
-  const secondaryApp =
-    getApps().find((a) => a.name === "SecondaryApp") ||
-    initializeApp(firebaseConfig, "SecondaryApp");
-  return getAuth(secondaryApp);
+  try {
+    const secondaryApp =
+      getApps().find((a) => a.name === "SecondaryApp") ||
+      initializeApp(firebaseConfig, "SecondaryApp");
+    return getAuth(secondaryApp);
+  } catch (e) {
+    return null as any;
+  }
 };
 
 // ------------------------------------------------------------------------------

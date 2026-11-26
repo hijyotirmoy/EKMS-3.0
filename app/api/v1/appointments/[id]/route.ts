@@ -5,6 +5,8 @@ import { validateApiKey, corsHeaders } from "@/lib/apiKeyAuth";
 import { extractIpNumber } from "@/lib/appointmentTypes";
 import { getTriageBaseUrl } from "@/lib/triageSync";
 
+export const dynamic = "force-dynamic";
+
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 204,

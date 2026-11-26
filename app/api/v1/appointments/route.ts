@@ -6,6 +6,8 @@ import { validateApiKey, corsHeaders } from "@/lib/apiKeyAuth";
 import { createDispensaryNotification } from "@/lib/notificationService";
 import { extractIpNumber } from "@/lib/appointmentTypes";
 
+export const dynamic = "force-dynamic";
+
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 204,

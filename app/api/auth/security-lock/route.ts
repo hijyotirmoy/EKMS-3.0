@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
+export const dynamic = "force-dynamic";
+
 async function verifyIdToken(idToken: string) {
   try {
     const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "";

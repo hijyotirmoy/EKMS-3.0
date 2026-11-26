@@ -3,6 +3,8 @@ import { collection, query, where, getDocs, updateDoc, limit } from "firebase/fi
 import { bookingDb } from "@/lib/firebase";
 import { corsHeaders } from "@/lib/apiKeyAuth";
 
+export const dynamic = "force-dynamic";
+
 let latestTriageIpState: {
   ip: string;
   name?: string;
