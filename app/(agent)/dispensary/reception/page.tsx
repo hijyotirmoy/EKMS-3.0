@@ -164,7 +164,20 @@ export default function ReceptionDeskPage() {
   const queuePatients = useMemo(() => {
     return scopedList.filter((a) => {
       const stage = getEffectiveAppointmentStage(a);
-      return stage === "scheduled";
+      const isAlreadyCheckedInOrDone = Boolean(
+        stage !== "scheduled" ||
+        a.receptionCheckedInAt ||
+        a.receptionCheckedInBy ||
+        a.visitedAt ||
+        a.visitedBy ||
+        a.status === "completed" ||
+        a.status === "dispensed" ||
+        a.status === "with_doctor" ||
+        a.status === "with_pharmacist" ||
+        a.status === "visited" ||
+        a.status === "pharmacy_queue"
+      );
+      return stage === "scheduled" && !isAlreadyCheckedInOrDone;
     });
   }, [scopedList]);
 
