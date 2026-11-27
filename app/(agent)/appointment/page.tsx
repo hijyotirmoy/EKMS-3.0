@@ -3179,7 +3179,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                       )}
 
                       {/* Reception Line - Only displayed when reception check-in has actually been completed */}
-                      {(app.receptionCheckedInBy || app.visitedBy || isDispensed || isVisited || isWithPharmacist || isWithDoctor) ? (
+                      {(app.receptionCheckedInBy || app.visitedBy || isPharmacistDispensed || isWithPharmacist || isWithDoctor) ? (
                         <div className="flex flex-wrap items-center gap-1 text-slate-700">
                           <UserCheck className="w-3.5 h-3.5 text-blue-600 inline shrink-0" />
                           <span className="font-semibold text-slate-800">
@@ -3222,7 +3222,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                       )}
 
                       {/* Dispensed Line (Pharmacy) - Clinical only: STRICT SEQUENTIAL Progression (Doctor must prescribe before pharmacy dispenses) */}
-                      {!isNonClin && hasDoctorConsulted && (app.doctorName || app.prescribedBy || app.doctor || app.doctorConsultedAt) && (app.dispensedBy || app.dispensationNotes || isDispensed) && (
+                      {!isNonClin && hasDoctorConsulted && (app.doctorName || app.prescribedBy || app.doctor || app.doctorConsultedAt) && (app.dispensedBy || app.dispensationNotes || isPharmacistDispensed) && (
                         <div className="flex flex-wrap items-center gap-1 text-slate-700">
                           <Pill className="w-3.5 h-3.5 text-emerald-600 inline shrink-0" />
                           <span className="font-semibold text-slate-800">
