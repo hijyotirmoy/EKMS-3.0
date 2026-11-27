@@ -317,7 +317,7 @@ export default function ReceptionDeskPage() {
       const docRef = doc(bookingDb, "dispensary_appointments", activePatient.id);
       await updateDoc(docRef, updates);
 
-      // Synchronize across duplicate entries or tokens in bookingDb
+      // Synchronize across duplicate entries in bookingDb for the same patient only
       const tIdentifier = activePatient.tokenNo || activePatient.referenceNo;
       if (tIdentifier) {
         try {
@@ -325,7 +325,15 @@ export default function ReceptionDeskPage() {
           const snapB = await getDocs(qB);
           snapB.forEach(async (d) => {
             if (d.id !== activePatient.id) {
-              await updateDoc(d.ref, updates).catch(() => {});
+              const dData = d.data();
+              const isSamePatient = (
+                (dData.phone && dData.phone === (activePatient.phone || (activePatient as any).patientPhone)) ||
+                (dData.ipNumber && dData.ipNumber === (activePatient.ipNumber || (activePatient as any).ipNo)) ||
+                (dData.patientName && dData.patientName.toLowerCase().trim() === (activePatient.patientName || activePatient.ipName || "").toLowerCase().trim())
+              );
+              if (isSamePatient) {
+                await updateDoc(d.ref, updates).catch(() => {});
+              }
             }
           });
         } catch (e) {}
@@ -551,10 +559,11 @@ export default function ReceptionDeskPage() {
       ) : (
         <div className="space-y-2.5">
           {displayList.map((app) => {
-            const isCompleted = app.status === "completed";
-            const isInPharmacy = app.status === "pharmacy_queue";
-            const isWithDoctor = app.status === "with_doctor" || app.status === "visited";
-            const isCancelled = app.status === "cancelled";
+            const stage = getEffectiveAppointmentStage(app);
+            const isCompleted = stage === "completed";
+            const isInPharmacy = stage === "with_pharmacist";
+            const isWithDoctor = stage === "with_doctor";
+            const isCancelled = stage === "cancelled";
             const tNo = app.tokenNo || app.referenceNo || "N/A";
 
             return (
@@ -580,7 +589,7 @@ export default function ReceptionDeskPage() {
                       className="px-2.5 py-1 bg-teal-50/70 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-lg text-xs font-mono font-extrabold flex items-center gap-1.5 cursor-pointer transition-colors"
                       title="Click to copy token"
                     >
-                      <span>Token: {tNo}</span>
+                      <span>{tNo}</span>
                       {copiedId === app.id ? (
                         <Check className="w-3 h-3 text-emerald-600" />
                       ) : (

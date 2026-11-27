@@ -324,7 +324,7 @@ export function SlotAvailabilityModal({
               <div className="flex items-center gap-2">
                 <Clock className="h-4 w-4 text-blue-600 shrink-0" />
                 <span>
-                  <strong>{stats.satInfo.saturdayNumber === 1 ? "1st" : stats.satInfo.saturdayNumber === 3 ? "3rd" : "5th"} Saturday:</strong> Dispensary operates from 10:00 AM to 04:00 PM today.
+                  <strong>Saturday:</strong> Dispensary operates from 10:00 AM to 04:00 PM today.
                 </span>
               </div>
             </div>
@@ -332,7 +332,7 @@ export function SlotAvailabilityModal({
             <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center justify-between gap-3 shadow-2xs">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
-                <span>Dispensaries are closed on 2nd &amp; 4th Saturday and Sunday. Working days: 10:00 AM – 04:00 PM.</span>
+                <span>Dispensaries are closed on Sunday. Working days (Mon–Sat): 10:00 AM – 04:00 PM.</span>
               </div>
               <button
                 type="button"
@@ -367,7 +367,7 @@ export function SlotAvailabilityModal({
           {/* Slot Schedule Grid Header */}
           <div className="flex items-center justify-between pt-1">
             <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-              Day Schedule ({ALL_OPD_TIME_SLOTS.length} Slots · 5-Min Intervals)
+              Day Schedule ({ALL_OPD_TIME_SLOTS.length} Slots · 3-Min Intervals)
             </span>
             <span className="text-[10.5px] text-slate-500">
               Click any booked slot to inspect patient and token details
@@ -375,7 +375,7 @@ export function SlotAvailabilityModal({
           </div>
 
           {/* All Slots Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 border border-slate-200 rounded-2xl p-2.5 bg-slate-50/50">
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5 border border-slate-200 rounded-2xl p-2.5 bg-slate-50/50 max-h-[380px] overflow-y-auto">
             {ALL_OPD_TIME_SLOTS.map((slot) => {
               const isWeekend = stats.isWeekend;
               const booking = findSlotBooking(slot, slotDate, selectedFacility, appointments);
@@ -394,7 +394,7 @@ export function SlotAvailabilityModal({
                       setSelectedSlotDetail(isDetailActive ? null : booking);
                     }
                   }}
-                  className={`rounded-xl p-2 text-center border flex flex-col items-center justify-center gap-1 transition ${
+                  className={`rounded-lg p-1.5 text-center border flex flex-col items-center justify-center gap-0.5 transition shadow-2xs ${
                     isReserved
                       ? `bg-rose-50 border-rose-300 text-rose-800 cursor-pointer hover:bg-rose-100 shadow-2xs ${
                           isDetailActive ? "ring-2 ring-rose-500 border-rose-500 scale-[1.02]" : ""

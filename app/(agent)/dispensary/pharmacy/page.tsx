@@ -15,7 +15,7 @@ import {
 import { db, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { AppointmentRecord, isDispensaryMatch, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
+import { AppointmentRecord, isDispensaryMatch, isNonClinicalAppointment, formatStaffTimestamp, getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
 import { logUserActivity } from "@/lib/activityLogger";
 import { syncAppointmentUpdateToSheet } from "@/lib/googleSheetsSync";
 import {
@@ -270,7 +270,7 @@ export default function PharmacyDeskPage() {
         updatedAt: now,
       });
 
-      // Synchronize to main db and any duplicate token entries across all databases
+      // Synchronize to main db and any duplicate token entries across all databases for the same patient only
       const tIdentifier = activePatient.tokenNo || activePatient.referenceNo;
       if (tIdentifier) {
         try {
@@ -278,14 +278,22 @@ export default function PharmacyDeskPage() {
           const snapB = await getDocs(qB);
           snapB.forEach(async (d) => {
             if (d.id !== activePatient.id) {
-              await updateDoc(d.ref, {
-                status: "completed",
-                prescriptions: updatedPrescriptions,
-                dispensedAt: now,
-                dispensedBy: pharmacistName,
-                dispensationNotes: dispensationNotes.trim(),
-                updatedAt: now,
-              }).catch(() => {});
+              const dData = d.data();
+              const isSamePatient = (
+                (dData.phone && dData.phone === (activePatient.phone || (activePatient as any).patientPhone)) ||
+                (dData.ipNumber && dData.ipNumber === (activePatient.ipNumber || (activePatient as any).ipNo)) ||
+                (dData.patientName && dData.patientName.toLowerCase().trim() === (activePatient.patientName || activePatient.ipName || "").toLowerCase().trim())
+              );
+              if (isSamePatient) {
+                await updateDoc(d.ref, {
+                  status: "completed",
+                  prescriptions: updatedPrescriptions,
+                  dispensedAt: now,
+                  dispensedBy: pharmacistName,
+                  dispensationNotes: dispensationNotes.trim(),
+                  updatedAt: now,
+                }).catch(() => {});
+              }
             }
           });
         } catch (e) {}
@@ -511,8 +519,9 @@ export default function PharmacyDeskPage() {
       ) : (
         <div className="space-y-3">
           {filteredList.map((apt) => {
-            const isCompleted = apt.status === "completed";
-            const isInPharmacy = apt.status === "pharmacy_queue";
+            const stage = getEffectiveAppointmentStage(apt);
+            const isCompleted = stage === "completed";
+            const isInPharmacy = stage === "with_pharmacist";
             const tNo = apt.tokenNo || apt.token || "N/A";
 
             return (
@@ -534,7 +543,7 @@ export default function PharmacyDeskPage() {
                       className="px-2.5 py-1 bg-teal-50/70 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-lg text-xs font-mono font-extrabold flex items-center gap-1.5 cursor-pointer transition-colors"
                       title="Click to copy token"
                     >
-                      <span>Token: {tNo}</span>
+                      <span>{tNo}</span>
                       {copiedId === apt.id ? (
                         <Check className="w-3 h-3 text-emerald-600" />
                       ) : (

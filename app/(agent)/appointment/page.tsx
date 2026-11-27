@@ -52,7 +52,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { logSystemActivity } from "@/lib/activityLogger";
-import { getBookingDb, getFirestoreDb, getSecondaryBookingDb, setBookingFailoverActive } from "@/lib/firebase";
+import { getBookingDb, getOldBookingDb, getFirestoreDb, getSecondaryBookingDb, setBookingFailoverActive } from "@/lib/firebase";
 import { collection, onSnapshot, query, orderBy, limit, doc, setDoc, deleteDoc, getDoc, runTransaction } from "firebase/firestore";
 import {
   isSlotInPast,
@@ -382,7 +382,7 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
   // Authoritative live snapshot items:
   liveList.forEach((item) => {
     if (!item) return;
-    const key = String(item.tokenNo || item.referenceNo || item.id || "").trim();
+    const key = String(item.id || item.tokenNo || item.referenceNo || "").trim();
     const idKey = String(item.id || "").trim();
     const tokKey = String(item.tokenNo || "").trim();
     if (
@@ -421,7 +421,7 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
   // Reconcile status and notes from existing state without reviving deleted appointments:
   currentList.forEach((prev) => {
     if (!prev) return;
-    const key = String(prev.tokenNo || prev.referenceNo || prev.id || "").trim();
+    const key = String(prev.id || prev.tokenNo || prev.referenceNo || "").trim();
     const idKey = String(prev.id || "").trim();
     const tokKey = String(prev.tokenNo || "").trim();
     if (
@@ -786,7 +786,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
   const [statusFilter, setStatusFilter] = useState("all"); // 'all' | 'scheduled' | 'visited' | 'cancelled'
   const [dispensaryFilter, setDispensaryFilter] = useState("All Dispensaries");
   const [agentFilter, setAgentFilter] = useState("all"); // 'all' | agent name
-  const [dateFilter, setDateFilter] = useState("all"); // 'all' (default) | 'today' | 'tomorrow' | 'custom'
+  const [dateFilter, setDateFilter] = useState("today"); // 'today' (default present date) | 'all' | 'tomorrow' | 'custom'
   const [customDate, setCustomDate] = useState("");
 
   // Pagination (20 items per page)
@@ -1476,7 +1476,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       return;
     }
     if (isWeekendOrHoliday(rescheduleModal.newDate)) {
-      toast.error("ESIS Dispensaries are closed on Saturday and Sunday. Please select a weekday (Monday to Friday).");
+      toast.error("ESIS Dispensaries are closed on Sunday. Please select Monday to Saturday.");
       return;
     }
     if (isLunchSlot(rescheduleModal.newSlot)) {
@@ -2100,7 +2100,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       return;
     }
     if (isWeekendOrHoliday(targetDate)) {
-      toast.error("ESIS Dispensaries are closed on Saturday and Sunday. Please select a weekday (Monday to Friday).");
+      toast.error("ESIS Dispensaries are closed on Sunday. Please select Monday to Saturday.");
       return;
     }
     if (isLunchSlot(targetSlot)) {
@@ -2118,6 +2118,28 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
     setActionLoading(true);
     try {
+      const bDb = getBookingDb();
+      if (bDb) {
+        try {
+          const slotCheckSnap = await getDocs(
+            query(collection(bDb, "dispensary_appointments"), where("date", "==", targetDate))
+          );
+          const liveConflict = slotCheckSnap.docs.find((d) => {
+            const data = d.data();
+            if (data.status === "cancelled") return false;
+            const fac = data.dispensaryName || data.facilityName || "";
+            return areFacilitiesMatching(fac, manualBookingModal.dispensaryName) && areSlotsMatching(data.timeSlot, targetSlot);
+          });
+          if (liveConflict) {
+            setActionLoading(false);
+            toast.error(`Slot ${targetSlot} was just booked and locked for ${manualBookingModal.dispensaryName}. Please select another slot.`);
+            return;
+          }
+        } catch (e) {
+          console.warn("Live slot check error:", (e as any)?.message);
+        }
+      }
+
       const cleanAgent = String(
         currentAgent?.displayName ||
         currentAgent?.name ||
@@ -2131,25 +2153,24 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       let unifiedToken = "";
       let appointmentDocId = "";
 
-      const bDb = getBookingDb();
       if (bDb) {
         try {
           const counterDocRef = doc(bDb, "counters", "bookingSequence");
           const txRes = await runTransaction(bDb, async (transaction) => {
             const counterSnap = await transaction.get(counterDocRef);
-            let nextSeq = 153;
+            let nextSeq = 1;
             if (counterSnap.exists()) {
               const currentLast = counterSnap.data().lastSeq;
-              nextSeq = (typeof currentLast === "number" && !isNaN(currentLast) && currentLast > 0) ? currentLast + 1 : 153;
+              nextSeq = (typeof currentLast === "number" && !isNaN(currentLast) && currentLast > 0) ? currentLast + 1 : 1;
             }
             const suffix = (manualBookingModal.dispensaryName || "").toLowerCase().includes("hospital") ? "HOSP" : "DISP";
-            let tokenCand = `ESIC-${String(nextSeq).padStart(5, "0")}-${suffix}`;
+            let tokenCand = `ESI-${String(nextSeq).padStart(6, "0")}-${suffix}`;
             let docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
             let targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
             let targetSnap = await transaction.get(targetDocRef);
             while (targetSnap.exists()) {
               nextSeq += 1;
-              tokenCand = `ESIC-${String(nextSeq).padStart(5, "0")}-${suffix}`;
+              tokenCand = `ESI-${String(nextSeq).padStart(6, "0")}-${suffix}`;
               docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
               targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
               targetSnap = await transaction.get(targetDocRef);
@@ -2171,8 +2192,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       }
 
       if (!unifiedToken) {
-        const randomSeq = String(Math.floor(10000 + Math.random() * 90000));
-        unifiedToken = `ESIC-${randomSeq}-DISP`;
+        const randomSeq = String(Math.floor(1000 + Math.random() * 9000));
+        unifiedToken = `ESI-${String(randomSeq).padStart(6, "0")}-DISP`;
         appointmentDocId = unifiedToken.replace(/[^a-zA-Z0-9_-]/g, "_");
       }
 
@@ -2266,8 +2287,12 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         console.warn("Direct bookingDb save notice:", bErr);
       }
 
-      // 2. Direct write to Secondary Booking database & Primary Triage database (Dual-Database redundancy)
+      // 2. Direct write to Safety Backup ekmsbooking & Secondary DB & Primary Triage database
       try {
+        const oldDb = getOldBookingDb();
+        if (oldDb) {
+          await setDoc(doc(oldDb, "dispensary_appointments", appointmentDocId), payload, { merge: true });
+        }
         const sDb = getSecondaryBookingDb();
         if (sDb) {
           await setDoc(doc(sDb, "dispensary_appointments", appointmentDocId), payload, { merge: true });
@@ -2793,7 +2818,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
       {/* Metric Cards - Interactive Clickable Status Filters (Matching EKMS border style) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {/* Card 1: Total Agent Bookings -> Filter Status: all */}
+        {/* Card 1: Total Bookings -> Filter Status: all */}
         <button
           type="button"
           onClick={() => setStatusFilter("all")}
@@ -2805,11 +2830,11 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
           title="Filter: All Statuses"
         >
           <div className="flex items-center justify-between text-xs font-semibold">
-            <span className="text-slate-500">Total Agent Bookings</span>
+            <span className="text-slate-500">Total Bookings</span>
             <Calendar className="w-4 h-4 text-blue-500" />
           </div>
           <div className="text-2xl font-black mt-2 text-slate-900">{counts.total}</div>
-          <div className="text-[11px] mt-0.5 text-slate-400">All appointments in EKMS</div>
+          <div className="text-[11px] mt-0.5 text-slate-400">Total appointments booked</div>
         </button>
 
         {/* Card 2: Scheduled / Upcoming -> Filter Status: scheduled */}
@@ -3090,7 +3115,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
                       {/* Token Chip */}
                       <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 text-slate-700 text-xs font-mono font-medium border border-slate-200 shadow-2xs">
-                        <span>Token: {app.tokenNo || app.referenceNo || `#APT-${app.id?.slice(0, 6)}`}</span>
+                        <span>{app.tokenNo || app.referenceNo || `#APT-${app.id?.slice(0, 6)}`}</span>
                         <button
                           type="button"
                           onClick={(e) => {
@@ -3555,7 +3580,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                   </div>
                 ) : isWeekendOrHoliday(rescheduleModal.newDate) ? (
                   <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center justify-between gap-1">
-                    <span>Dispensaries are closed on Saturday & Sunday.</span>
+                    <span>Dispensaries are closed on Sunday. Mon–Sat: 10:00 AM – 04:00 PM.</span>
                     <button
                       type="button"
                       onClick={() => setRescheduleModal((prev) => ({ ...prev, newDate: getNextWorkingDateString(prev.newDate) }))}
@@ -3888,7 +3913,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                   </div>
                 ) : isWeekendOrHoliday(manualBookingModal.date || todayStr) ? (
                   <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center justify-between gap-1">
-                    <span>Dispensaries are closed on Saturday and Sunday.</span>
+                    <span>Dispensaries are closed on Sunday. Mon–Sat: 10:00 AM – 04:00 PM.</span>
                     <button
                       type="button"
                       onClick={() => setManualBookingModal((prev) => ({ ...prev, date: getNextWorkingDateString(prev.date || todayStr) }))}
@@ -3898,8 +3923,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     </button>
                   </div>
                 ) : null}
-                {/* Responsive grid without internal scroll function */}
-                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-1 border border-slate-200 rounded-xl p-2 bg-slate-50/50">
+                {/* Compact & Responsive 3-Minute Slot Grid */}
+                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5 border border-slate-200 rounded-xl p-2.5 bg-slate-50/50 max-h-[290px] overflow-y-auto">
                   {TIME_SLOTS.map((slot) => {
                     const targetDate = manualBookingModal.date || todayStr;
                     const isLunch = isLunchSlot(slot);
@@ -3916,7 +3941,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                         type="button"
                         disabled={isDisabled}
                         onClick={() => !isDisabled && setManualBookingModal((p) => ({ ...p, timeSlot: slot }))}
-                        className={`px-1 py-1 rounded-lg border text-[10px] font-semibold transition text-center flex flex-col items-center justify-center gap-0.5 ${
+                        className={`px-1 py-1 rounded-lg border text-[9px] font-semibold transition text-center flex flex-col items-center justify-center gap-0.5 shadow-2xs ${
                           isLunch
                             ? "bg-amber-50 border-amber-300 text-amber-900 cursor-not-allowed opacity-85 select-none"
                             : isWeekend
@@ -3928,14 +3953,14 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                             : isPast
                             ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-50 select-none"
                             : isSelected
-                            ? "bg-blue-600 text-white border-blue-600 shadow-2xs font-bold cursor-pointer"
+                            ? "bg-blue-600 text-white border-blue-600 shadow-2xs font-bold cursor-pointer scale-[1.02]"
                             : "bg-white hover:bg-slate-100 border-slate-200 text-slate-700 cursor-pointer"
                         }`}
                         title={
                           isLunch
                             ? "Lunch Break (01:00 PM – 02:00 PM)"
                             : isWeekend
-                            ? "Closed on Saturday & Sunday"
+                            ? "Closed on Sunday"
                             : isNoDoc
                             ? "Booking unavailable: All doctors on leave for this date"
                             : isReserved
@@ -5180,7 +5205,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                   <div className="flex items-center gap-2">
                     <Clock className="h-4 w-4 text-blue-600 shrink-0" />
                     <span>
-                      <strong>{slotModalStats.satInfo.saturdayNumber === 1 ? "1st" : slotModalStats.satInfo.saturdayNumber === 3 ? "3rd" : "5th"} Saturday:</strong> Dispensary operates from 10:00 AM to 04:00 PM today.
+                      <strong>Saturday:</strong> Dispensary operates from 10:00 AM to 04:00 PM today.
                     </span>
                   </div>
                 </div>
@@ -5188,7 +5213,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                 <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200 text-xs flex items-center justify-between gap-3 shadow-2xs">
                   <div className="flex items-center gap-2">
                     <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
-                    <span>Dispensaries are closed on 2nd &amp; 4th Saturday and Sunday. Mon–Fri &amp; 1st, 3rd, 5th Sat: 10:00 AM – 04:00 PM.</span>
+                    <span>Dispensaries are closed on Sunday. Mon–Sat: 10:00 AM – 04:00 PM.</span>
                   </div>
                   <button
                     type="button"

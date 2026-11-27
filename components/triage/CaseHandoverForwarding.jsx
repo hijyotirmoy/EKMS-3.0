@@ -40,7 +40,7 @@ import {
   BadgeCheck,
 } from "lucide-react";
 import { toast } from "sonner";
-import { getFirestoreDb, getBookingDb, auth } from "@/lib/firebase";
+import { getFirestoreDb, getBookingDb, getOldBookingDb, auth } from "@/lib/firebase";
 import { doc, setDoc, getDoc, collection, onSnapshot, query, runTransaction } from "firebase/firestore";
 import {
   isSlotInPast,
@@ -1466,14 +1466,14 @@ ${historySection}`;
       return { prefix: "TIUP", suffix: "HOSP" };
     }
 
-    // 4. ESIS Dispensary -> ESIC-00001-DISP
+    // 4. ESIS Dispensary -> ESI-000001-DISP
     if (
       teamId === "ESIS_DISPENSARY" ||
       isDispensary(facility) ||
       rawName.includes("dispensary") ||
       rawName.includes("esis")
     ) {
-      return { prefix: "ESIC", suffix: "DISP" };
+      return { prefix: "ESI", suffix: "DISP" };
     }
 
     // 5. ESIC Hospital -> ESIC-00001-HOSP
@@ -2401,7 +2401,7 @@ ${historySection}`;
       return;
     }
     if (isWeekendOrHoliday(apptDate)) {
-      toast.error("ESIS Dispensaries are closed on this date (Sunday or 2nd/4th Saturday). Please select an open working day.");
+      toast.error("ESIS Dispensaries are closed on Sunday. Please select Monday to Saturday (10:00 AM – 04:00 PM).");
       return;
     }
     if (isLunchSlot(apptTimeSlot)) {
@@ -2427,6 +2427,30 @@ ${historySection}`;
     setIsBookingSubmitting(true);
     try {
       const resolvedFacilityName = selectedFacility?.name || facilityDisplayName;
+
+      // Real-time double booking check before writing
+      const bDbCheck = getBookingDb();
+      if (bDbCheck) {
+        try {
+          const liveCheckSnap = await getDocs(
+            query(collection(bDbCheck, "dispensary_appointments"), where("date", "==", apptDate))
+          );
+          const liveConflict = liveCheckSnap.docs.find((d) => {
+            const data = d.data();
+            if (data.status === "cancelled") return false;
+            if (curDocIdForCheck && (data.id === curDocIdForCheck || data.tokenNo === curDocIdForCheck || data.referenceNo === curDocIdForCheck)) return false;
+            const fac = data.dispensaryName || data.facilityName || "";
+            return areFacilitiesMatching(fac, targetFacForCheck) && areSlotsMatching(data.timeSlot, apptTimeSlot);
+          });
+          if (liveConflict) {
+            setIsBookingSubmitting(false);
+            toast.error(`Slot ${apptTimeSlot} was just booked and locked for ${targetFacForCheck}. Please choose another slot.`);
+            return;
+          }
+        } catch (e) {
+          console.warn("Live slot check warning:", e?.message);
+        }
+      }
       let unifiedReferenceNo = getUnifiedReferenceCode(selectedTeam.id, selectedFacility, resolvedFacilityName);
       const tokenNo = unifiedReferenceNo;
       const resolvedChiefComplaint =
@@ -2725,16 +2749,16 @@ ${historySection}`;
         collisionAttempts < 20
       ) {
         collisionAttempts++;
-        let maxExisting = 162;
+        let maxExisting = 1;
         existingAppointments.forEach((a) => {
-          const m = String(a.tokenNo || a.referenceNo || a.id || "").match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i);
+          const m = String(a.tokenNo || a.referenceNo || a.id || "").match(/^[A-Z]{3,4}-(\d{4,6})-[A-Z0-9]{4,5}$/i);
           if (m) {
             const v = parseInt(m[1], 10);
-            if (v > maxExisting && v < 2000) maxExisting = v;
+            if (v > maxExisting && v < 200000) maxExisting = v;
           }
         });
         const bumped = maxExisting + collisionAttempts;
-        finalUnifiedRef = `${prefix}-${String(bumped).padStart(5, "0")}-${suffix}`;
+        finalUnifiedRef = `${prefix}-${String(bumped).padStart(6, "0")}-${suffix}`;
         appointmentDocId = finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
       }
 
@@ -2975,6 +2999,15 @@ ${historySection}`;
           syncTasks.push(
             setDoc(doc(bDb, "dispensary_appointments", appointmentDocId), appointmentRecord, { merge: true })
               .catch((e) => console.warn("bDb setDoc notice:", e?.message))
+          );
+        }
+      } catch (e) {}
+      try {
+        const oldDb = getOldBookingDb();
+        if (oldDb) {
+          syncTasks.push(
+            setDoc(doc(oldDb, "dispensary_appointments", appointmentDocId), appointmentRecord, { merge: true })
+              .catch((e) => console.warn("oldDb safety backup setDoc notice:", e?.message))
           );
         }
       } catch (e) {}
@@ -4895,14 +4928,14 @@ ${historySection}`;
                         <div className="mb-2 p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-800 text-blue-900 dark:text-blue-200 text-xs flex items-center justify-between gap-2 shadow-2xs">
                           <div className="flex items-center gap-2">
                             <Clock className="h-4 w-4 text-blue-600 shrink-0" />
-                            <span><strong>{getSaturdayInfo(apptDate).saturdayNumber === 1 ? "1st" : getSaturdayInfo(apptDate).saturdayNumber === 3 ? "3rd" : "5th"} Saturday:</strong> OPD operates 10:00 AM – 04:00 PM.</span>
+                            <span><strong>Saturday:</strong> OPD operates 10:00 AM – 04:00 PM.</span>
                           </div>
                         </div>
                       ) : isWeekendOrHoliday(apptDate) ? (
                         <div className="mb-2 p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200 text-xs flex items-center justify-between gap-2 shadow-2xs">
                           <div className="flex items-center gap-2">
                             <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
-                            <span>Dispensaries are closed on 2nd &amp; 4th Saturday and Sunday. Mon–Fri &amp; 1st, 3rd, 5th Sat: 10:00 AM – 04:00 PM.</span>
+                            <span>Dispensaries are closed on Sunday. Mon–Sat: 10:00 AM – 04:00 PM.</span>
                           </div>
                           <button
                             type="button"
@@ -4940,8 +4973,8 @@ ${historySection}`;
                         </div>
                       ) : null}
 
-                      {/* NO INNER SCROLLBAR: Responsive Grid without scroll function inside slots */}
-                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-1 border border-border/40 rounded-xl p-2 bg-background/50">
+                      {/* Compact & Responsive 3-Minute Slot Grid */}
+                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5 border border-border/40 rounded-xl p-2.5 bg-background/50 max-h-[290px] overflow-y-auto">
                         {ALL_OPD_TIME_SLOTS.map((slot) => {
                           const isLunch = isLunchSlot(slot);
                           const isWeekend = isWeekendOrHoliday(apptDate);
@@ -4959,7 +4992,7 @@ ${historySection}`;
                               type="button"
                               disabled={isDisabled}
                               onClick={() => !isDisabled && setApptTimeSlot(slot)}
-                              className={`rounded-lg py-1 px-1 text-[10px] font-bold transition text-center border flex flex-col items-center justify-center gap-0.5 ${
+                              className={`rounded-lg py-1 px-1 text-[9px] font-semibold transition text-center border flex flex-col items-center justify-center gap-0.5 shadow-2xs ${
                                 isLunch
                                   ? "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 cursor-not-allowed select-none opacity-85"
                                   : isWeekend
@@ -4971,14 +5004,14 @@ ${historySection}`;
                                   : isPast
                                   ? "bg-slate-100 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed select-none opacity-50"
                                   : isSelected
-                                  ? "bg-orange-600 text-white border-orange-600 shadow-sm shadow-orange-600/30 ring-2 ring-orange-500/40 cursor-pointer"
-                                  : "bg-card hover:bg-orange-50 hover:border-orange-300 dark:hover:bg-orange-950/30 border-border/80 text-foreground cursor-pointer"
+                                  ? "bg-teal-600 text-white border-teal-600 shadow-sm shadow-teal-600/30 ring-2 ring-teal-500/40 cursor-pointer font-bold scale-[1.02]"
+                                  : "bg-card hover:bg-teal-50 hover:border-teal-300 dark:hover:bg-teal-950/30 border-border/80 text-foreground cursor-pointer"
                               }`}
                               title={
                                 isLunch
                                   ? "Lunch Break (01:00 PM – 02:00 PM)"
                                   : isWeekend
-                                  ? "Closed on 2nd/4th Saturday & Sunday"
+                                  ? "Closed on Sunday"
                                   : isNoDoctor
                                   ? "Booking unavailable: All doctors on leave for this date"
                                   : isReserved

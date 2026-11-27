@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { doc, deleteDoc, getDocs, query, collection, where } from "firebase/firestore";
-import { getFirestoreDb, getBookingDb, getCrmFirestoreDb, getEkmsFirestoreDb } from "@/lib/firebase";
+import { getFirestoreDb, getBookingDb, getOldBookingDb, getCrmFirestoreDb } from "@/lib/firebase";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -56,17 +56,17 @@ async function handleDelete(request) {
     // Collect all database instances
     const databases = [];
     try {
-      const tDb = getFirestoreDb();
-      if (tDb) databases.push({ name: "triageDb", db: tDb });
-    } catch (e) {
-      console.warn("tDb init notice:", e.message);
-    }
-
-    try {
       const bDb = getBookingDb();
       if (bDb) databases.push({ name: "bookingDb", db: bDb });
     } catch (e) {
       console.warn("bDb init notice:", e.message);
+    }
+
+    try {
+      const oldBDb = getOldBookingDb();
+      if (oldBDb) databases.push({ name: "oldBookingDb", db: oldBDb });
+    } catch (e) {
+      console.warn("oldBDb init notice:", e.message);
     }
 
     try {
@@ -77,10 +77,10 @@ async function handleDelete(request) {
     }
 
     try {
-      const ekmsDb = getEkmsFirestoreDb();
-      if (ekmsDb) databases.push({ name: "ekmsDb", db: ekmsDb });
+      const coreDb = getFirestoreDb();
+      if (coreDb) databases.push({ name: "coreDb", db: coreDb });
     } catch (e) {
-      console.warn("ekmsDb init notice:", e.message);
+      console.warn("coreDb init notice:", e.message);
     }
 
     const targetCollections = ["dispensary_appointments", "appointments"];

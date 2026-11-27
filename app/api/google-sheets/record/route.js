@@ -7,7 +7,7 @@ import { doc, setDoc } from "firebase/firestore";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const RECORDS_FILE_PATH = path.join(process.cwd(), "src", "data", "google_sheets_records.json");
+const RECORDS_FILE_PATH = path.join(process.cwd(), "data", "google_sheets_records.json");
 const GOOGLE_SHEET_ID = "1be-yMMFGcXJToYbQI3KJnadURgjWeGncGmxGbJzFLso";
 const GOOGLE_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1be-yMMFGcXJToYbQI3KJnadURgjWeGncGmxGbJzFLso/edit?usp=sharing";
@@ -29,28 +29,26 @@ function appendLocalRecord(record) {
   try {
     const list = readLocalRecords();
     const caseId = (record.case_id || (record.reference_id?.startsWith("CA") ? record.reference_id : "")).trim();
-    const bookingRefId = (record.booking_ref_id || (record.reference_id?.startsWith("ESIC-") ? record.reference_id : "")).trim();
+    const bookingRefId = (record.booking_ref_id || (record.reference_id?.startsWith("ESI") ? record.reference_id : "")).trim();
     const cleanIp = String(record.ip_no || "").replace(/[^\d]/g, "").trim();
     const cleanPhone = String(record.phone_no || "").replace(/\D/g, "").trim();
 
-    // STRICT APPEND-ONLY GUARANTEE:
-    // Every new booking submission ALWAYS appends a brand new row in the Google Sheet.
+    // STRICT APPEND-AT-TOP GUARANTEE:
+    // Every new booking submission ALWAYS prepends a brand new row at the top of the Google Sheet.
     // An existing row is ONLY updated when an explicit update/status-change flag is passed
-    // (e.g. from Reception check-in, Doctor consultation, Pharmacy dispensation, or Follow-up closure).
+    // (e.g. from Reception check-in, Doctor consultation, Pharmacy dispensation) matching THAT EXACT TOKEN.
+    // Bookings for the same patient or phone number NEVER overwrite older bookings.
     const isExplicitUpdate = Boolean(
       record.is_status_update ||
       record._isStatusUpdate ||
-      record.is_update
+      record.is_update ||
+      record.action === "update"
     );
 
     let existingIndex = -1;
     if (isExplicitUpdate && bookingRefId) {
       existingIndex = list.findIndex((r) => {
-        const rPhone = String(r.phone_no || "").replace(/\D/g, "").trim();
-        if (cleanPhone && rPhone && cleanPhone.length >= 10 && rPhone.length >= 10 && cleanPhone !== rPhone) {
-          return false;
-        }
-        const rBookingId = String(r.booking_ref_id || (r.reference_id?.startsWith("ESIC-") ? r.reference_id : "")).trim();
+        const rBookingId = String(r.booking_ref_id || (r.reference_id?.startsWith("ESI") ? r.reference_id : "")).trim();
         return rBookingId && rBookingId.toLowerCase() === bookingRefId.toLowerCase();
       });
     } else if (isExplicitUpdate && caseId && record.record_type === "Call Only") {
@@ -63,15 +61,9 @@ function appendLocalRecord(record) {
     let finalRecord = record;
 
     if (existingIndex >= 0) {
-      // Update the single row in-place, preserving existing IP if new one is N/A
+      // Update ONLY status and dispensary milestone fields in-place for this specific token
       const prev = list[existingIndex];
       const mergedIp = (cleanIp && cleanIp.length >= 6) ? cleanIp : ((record.ip_no && record.ip_no !== "N/A") ? record.ip_no : (prev.ip_no || "N/A"));
-      const isNowBooking = Boolean(
-        record.record_type === "Booking Done" ||
-        bookingRefId ||
-        prev.record_type === "Booking Done" ||
-        prev.booking_ref_id
-      );
 
       const pickNonEmpty = (newVal, oldVal, fallback = "—") => {
         if (newVal && newVal !== "—" && newVal !== "â€”" && newVal !== "None reported" && newVal !== "None" && newVal !== "N/A") return newVal;
@@ -82,16 +74,16 @@ function appendLocalRecord(record) {
         ...prev,
         ...record,
         timestamp: prev.timestamp || record.timestamp,
-        record_type: isNowBooking ? "Booking Done" : (prev.record_type || record.record_type || "Call Only"),
-        case_id: caseId || prev.case_id || "",
-        booking_ref_id: isNowBooking ? (bookingRefId || prev.booking_ref_id || "") : "",
-        reference_id: isNowBooking ? (bookingRefId || record.reference_id || prev.booking_ref_id || prev.reference_id || "") : (caseId || prev.case_id || ""),
+        record_type: prev.record_type || record.record_type || "Booking Done",
+        case_id: prev.case_id || caseId || "",
+        booking_ref_id: prev.booking_ref_id || bookingRefId || "",
+        reference_id: prev.reference_id || bookingRefId || record.reference_id || "",
         ip_no: mergedIp,
-        date_time: isNowBooking ? (record.date_time || prev.date_time || "") : "",
+        date_time: prev.date_time || record.date_time || "",
         dispensary_name: record.dispensary_name || prev.dispensary_name || "ESIS Dispensary",
-        agent_name: pickNonEmpty(record.agent_name, prev.agent_name, "Agent"),
-        chief_complaint: pickNonEmpty(record.chief_complaint, prev.chief_complaint, ""),
-        status: isNowBooking ? (record.status && record.status !== "Call Only" ? record.status : (prev.status && prev.status !== "Call Only" ? prev.status : "Booking Confirmed")) : "Call Only",
+        agent_name: prev.agent_name || record.agent_name || "Agent",
+        chief_complaint: prev.chief_complaint || record.chief_complaint || "",
+        status: record.status || prev.status || "Booking Confirmed",
         clinical_red_flags: pickNonEmpty(record.clinical_red_flags, prev.clinical_red_flags, "None reported"),
         hpi_duration: pickNonEmpty(record.hpi_duration, prev.hpi_duration, "Reported today"),
         associated_symptoms: pickNonEmpty(record.associated_symptoms, prev.associated_symptoms, "None reported"),
@@ -127,7 +119,8 @@ function appendLocalRecord(record) {
         follow_up_details: record.follow_up_details || "—",
         created_at: new Date().toISOString(),
       };
-      list.push(finalRecord);
+      // Always place new bookings at the very top of the list
+      list.unshift(finalRecord);
     }
 
     const dir = path.dirname(RECORDS_FILE_PATH);
@@ -229,10 +222,10 @@ export async function POST(request) {
   try {
     const body = await request.json();
     let caseId = (body.case_id || (body.reference_id?.startsWith("CA") ? body.reference_id : "")).trim();
-    if (caseId.startsWith("ESIC-") || caseId.startsWith("DISP-")) {
+    if (caseId.startsWith("ESI-") || caseId.startsWith("ESIC-") || caseId.startsWith("DISP-")) {
       caseId = "";
     }
-    const bookingRefId = (body.booking_ref_id || (body.reference_id?.startsWith("ESIC-") ? body.reference_id : "")).trim();
+    const bookingRefId = (body.booking_ref_id || (body.reference_id?.startsWith("ESI") ? body.reference_id : "")).trim();
 
     if (!caseId && !bookingRefId && !body?.reference_id) {
       return NextResponse.json(

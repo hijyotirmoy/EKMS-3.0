@@ -223,19 +223,8 @@ export function getEffectiveAppointmentStage(app: any): EffectiveAppointmentStag
   const rawStatus = String(app.status || "").toLowerCase().trim();
   if (rawStatus === "cancelled") return "cancelled";
 
-  // Explicit completion / dispensation
-  if (
-    rawStatus === "completed" ||
-    rawStatus === "dispensed" ||
-    Boolean(app.isCompleted) ||
-    Boolean(app.completedAt)
-  ) {
-    return "completed";
-  }
-
   const isNonClin = isNonClinicalAppointment(app);
 
-  // 1. Pharmacist Dispensation / Completed Visit (Enforce Rule 2.2: Doctor must consult before clinical completion)
   const hasDoctorConsulted = Boolean(
     app.doctorName ||
     app.prescribedBy ||
@@ -246,15 +235,32 @@ export function getEffectiveAppointmentStage(app: any): EffectiveAppointmentStag
   );
 
   const hasDispensed = Boolean(
-    (isNonClin || hasDoctorConsulted) && (
-      app.dispensedAt ||
-      app.dispensedBy ||
-      (isNonClin && (app.receptionCheckedInAt || app.receptionCheckedInBy || app.visitedAt || app.visitedBy))
-    )
+    app.dispensedAt ||
+    app.dispensedBy
   );
-  if (hasDispensed) return "completed";
 
-  // 2. Doctor Consultation done -> Waiting for Pharmacy
+  // 1. Non-clinical appointments are handled and finalized at Reception upon check-in
+  if (isNonClin) {
+    const hasReception = Boolean(
+      rawStatus === "completed" ||
+      rawStatus === "visited" ||
+      Boolean(app.isCompleted) ||
+      Boolean(app.completedAt) ||
+      app.receptionCheckedInAt ||
+      app.receptionCheckedInBy ||
+      app.visitedAt ||
+      app.visitedBy
+    );
+    return hasReception ? "completed" : "scheduled";
+  }
+
+  // 2. Clinical visits: Strictly enforce clinical workflow integrity.
+  // A clinical visit CANNOT be completed without Doctor consultation AND Pharmacist dispensation.
+  if (hasDoctorConsulted && (hasDispensed || rawStatus === "dispensed" || (rawStatus === "completed" && (app.dispensedAt || app.dispensedBy)))) {
+    return "completed";
+  }
+
+  // 3. Clinical visits: Doctor consultation done -> awaiting Pharmacy dispensation
   const hasDoctor = Boolean(
     rawStatus === "pharmacy_queue" ||
     rawStatus === "with_pharmacist" ||
@@ -263,9 +269,11 @@ export function getEffectiveAppointmentStage(app: any): EffectiveAppointmentStag
     app.doctorConsultedAt ||
     hasDoctorConsulted
   );
-  if (hasDoctor && !isNonClin) return "with_pharmacist";
+  if (hasDoctor) {
+    return "with_pharmacist";
+  }
 
-  // 3. Reception Check-in done -> Waiting for Doctor
+  // 4. Clinical visits: Reception check-in done -> awaiting Doctor consultation
   const hasReception = Boolean(
     rawStatus === "with_doctor" ||
     rawStatus === "visited" ||
@@ -275,7 +283,9 @@ export function getEffectiveAppointmentStage(app: any): EffectiveAppointmentStag
     app.visitedAt ||
     app.visitedBy
   );
-  if (hasReception) return "with_doctor";
+  if (hasReception) {
+    return "with_doctor";
+  }
 
   return "scheduled";
 }

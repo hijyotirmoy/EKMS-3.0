@@ -22,6 +22,7 @@ import {
   isNonClinicalAppointment,
   formatStaffTimestamp,
   CONSULTATION_TYPES,
+  getEffectiveAppointmentStage,
 } from "@/lib/appointmentTypes";
 import { syncConsultationToTriageApi } from "@/lib/triageSync";
 import { logUserActivity } from "@/lib/activityLogger";
@@ -193,13 +194,19 @@ export default function DoctorDeskPage() {
     });
   }, [appointments, isDispensaryStaff, staffDispensary, userProfile?.dispensaryId, selectedDate]);
 
-  // Split into Waiting for Doctor vs Already Consulted
+  // Split into Waiting for Doctor vs Already Consulted (strictly driven by effective clinical stage)
   const waitingPatients = useMemo(() => {
-    return scopedList.filter((a) => a.status === "with_doctor" || a.status === "visited");
+    return scopedList.filter((a) => {
+      const stage = getEffectiveAppointmentStage(a);
+      return stage === "with_doctor";
+    });
   }, [scopedList]);
 
   const consultedPatients = useMemo(() => {
-    return scopedList.filter((a) => a.status === "pharmacy_queue" || a.status === "completed");
+    return scopedList.filter((a) => {
+      const stage = getEffectiveAppointmentStage(a);
+      return stage === "with_pharmacist" || stage === "completed";
+    });
   }, [scopedList]);
 
   const currentList = activeTab === "pending_consultation" ? waitingPatients : consultedPatients;
@@ -353,7 +360,7 @@ export default function DoctorDeskPage() {
       const docRef = doc(bookingDb, "dispensary_appointments", activePatient.id);
       await updateDoc(docRef, updatePayload);
 
-      // Synchronize across matching tokens in bookingDb
+      // Synchronize across matching tokens in bookingDb for the same patient only
       const tIdentifier = activePatient.tokenNo || activePatient.referenceNo;
       if (tIdentifier) {
         try {
@@ -361,7 +368,15 @@ export default function DoctorDeskPage() {
           const snapB = await getDocs(qB);
           snapB.forEach(async (d) => {
             if (d.id !== activePatient.id) {
-              await updateDoc(d.ref, updatePayload).catch(() => {});
+              const dData = d.data();
+              const isSamePatient = (
+                (dData.phone && dData.phone === (activePatient.phone || (activePatient as any).patientPhone)) ||
+                (dData.ipNumber && dData.ipNumber === (activePatient.ipNumber || (activePatient as any).ipNo)) ||
+                (dData.patientName && dData.patientName.toLowerCase().trim() === (activePatient.patientName || activePatient.ipName || "").toLowerCase().trim())
+              );
+              if (isSamePatient) {
+                await updateDoc(d.ref, updatePayload).catch(() => {});
+              }
             }
           });
         } catch (e) {}
@@ -597,10 +612,11 @@ export default function DoctorDeskPage() {
       ) : (
         <div className="space-y-3">
           {displayList.map((app) => {
-            const isCompleted = app.status === "completed";
-            const isInPharmacy = app.status === "pharmacy_queue";
-            const isWithDoctor = app.status === "with_doctor" || app.status === "visited";
-            const isCancelled = app.status === "cancelled";
+            const stage = getEffectiveAppointmentStage(app);
+            const isCompleted = stage === "completed";
+            const isInPharmacy = stage === "with_pharmacist";
+            const isWithDoctor = stage === "with_doctor";
+            const isCancelled = stage === "cancelled";
             const tNo = app.tokenNo || app.referenceNo || "N/A";
 
             return (
@@ -626,7 +642,7 @@ export default function DoctorDeskPage() {
                       className="px-2.5 py-1 bg-teal-50/70 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-lg text-xs font-mono font-extrabold flex items-center gap-1.5 cursor-pointer transition-colors"
                       title="Click to copy token"
                     >
-                      <span>Token: {tNo}</span>
+                      <span>{tNo}</span>
                       {copiedId === app.id ? (
                         <Check className="w-3 h-3 text-emerald-600" />
                       ) : (

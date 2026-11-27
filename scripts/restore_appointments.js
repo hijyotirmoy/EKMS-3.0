@@ -325,7 +325,7 @@ const restoredAppointments = [
     bookedByName: "kaushik.das",
     facilityName: "ESIS Dispensary, Amingaon",
     dispensaryName: "ESIS Dispensary, Amingaon",
-    status: "completed",
+    status: "scheduled",
   },
   {
     tokenNo: "ESIC-00152-DISP",
@@ -345,7 +345,7 @@ const restoredAppointments = [
     bookedByName: "mohsin.ansari",
     facilityName: "ESIS Dispensary, Amingaon",
     dispensaryName: "ESIS Dispensary, Amingaon",
-    status: "completed",
+    status: "scheduled",
   },
   {
     tokenNo: "ESIC-00153-DISP",

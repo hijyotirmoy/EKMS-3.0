@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { getActiveBookingDb, getCasesSettingsDb } from "@/lib/firebase";
+import { getActiveBookingDb, getOldBookingDb, getCasesSettingsDb } from "@/lib/firebase";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const SEQUENCE_FILE = path.join(process.cwd(), "src", "data", "booking_sequence.json");
-const RECORDS_FILE = path.join(process.cwd(), "src", "data", "google_sheets_records.json");
+const SEQUENCE_FILE = path.join(process.cwd(), "data", "booking_sequence.json");
+const RECORDS_FILE = path.join(process.cwd(), "data", "google_sheets_records.json");
 
 function corsHeaders() {
   return {
@@ -31,10 +31,10 @@ function getMaxSeqFromLocalRecords(): number {
         let max = 0;
         for (const item of list) {
           const t = String(item.booking_ref_id || item.reference_id || item.tokenNo || "");
-          const m = t.match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i);
+          const m = t.match(/^[A-Z]{3,4}-(\d{4,6})-[A-Z0-9]{4,5}$/i);
           if (m) {
             const num = parseInt(m[1], 10);
-            if (num > max && num < 2000) max = num;
+            if (num > max && num < 200000) max = num;
           }
         }
         return max;
@@ -48,7 +48,7 @@ function getStoredFileSeq(): number {
   try {
     if (fs.existsSync(SEQUENCE_FILE)) {
       const data = JSON.parse(fs.readFileSync(SEQUENCE_FILE, "utf8"));
-      if (typeof data.lastSeq === "number" && !isNaN(data.lastSeq) && data.lastSeq < 2000) {
+      if (typeof data.lastSeq === "number" && !isNaN(data.lastSeq) && data.lastSeq < 200000) {
         return data.lastSeq;
       }
     }
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleGenerateToken(request: NextRequest) {
-  let prefix = "ESIC";
+  let prefix = "ESI";
   let suffix = "DISP";
 
   try {
@@ -100,18 +100,18 @@ async function handleGenerateToken(request: NextRequest) {
   // 1. Gather highest known sequence from all available sources
   const fileSeq = getStoredFileSeq();
   const recordsMaxSeq = getMaxSeqFromLocalRecords();
-  const safeFloor = 162; // Above all historical morning appointments
+  const safeFloor = 1; // Start from ESI-000001-DISP
 
-  let currentHighest = Math.max(fileSeq, recordsMaxSeq, safeFloor);
+  let currentHighest = Math.max(fileSeq, recordsMaxSeq, safeFloor - 1);
 
-  // 2. Try to read Firestore counter doc if quota allows
+  // 2. Try to read Firestore counter doc from active triage-booking db
   try {
     const db = getActiveBookingDb() || getCasesSettingsDb();
     if (db) {
       const snap = await getDoc(doc(db, "counters", "bookingSequence"));
       if (snap.exists()) {
         const val = snap.data()?.lastSeq;
-        if (typeof val === "number" && val > currentHighest && val < 2000) {
+        if (typeof val === "number" && val > currentHighest && val < 200000) {
           currentHighest = val;
         }
       }
@@ -120,23 +120,24 @@ async function handleGenerateToken(request: NextRequest) {
     // Quota exhausted or offline - safely use local persistent highest
   }
 
-  // 3. Atomically advance to next unique sequence
+  // 3. Atomically advance to next unique sequence (6-digit ESI format)
   const nextSeq = currentHighest + 1;
-  const tokenNo = `${prefix}-${String(nextSeq).padStart(5, "0")}-${suffix}`;
+  const tokenNo = `${prefix}-${String(nextSeq).padStart(6, "0")}-${suffix}`;
   const docId = tokenNo.replace(/[^a-zA-Z0-9_-]/g, "_");
 
   // 4. Save to persistent server file store immediately
   saveStoredFileSeq(nextSeq, tokenNo);
 
-  // 5. Best-effort async update to Firestore counter doc
+  // 5. Dual-write to primary triage-booking db and safety backup ekmsbooking db
   try {
-    const db = getActiveBookingDb() || getCasesSettingsDb();
-    if (db) {
-      setDoc(
-        doc(db, "counters", "bookingSequence"),
-        { lastSeq: nextSeq, lastAssignedToken: tokenNo, updatedAt: Date.now() },
-        { merge: true }
-      ).catch(() => {});
+    const primaryDb = getActiveBookingDb();
+    const backupDb = getOldBookingDb();
+    const counterDoc = { lastSeq: nextSeq, lastAssignedToken: tokenNo, updatedAt: Date.now() };
+    if (primaryDb) {
+      setDoc(doc(primaryDb, "counters", "bookingSequence"), counterDoc, { merge: true }).catch(() => {});
+    }
+    if (backupDb) {
+      setDoc(doc(backupDb, "counters", "bookingSequence"), counterDoc, { merge: true }).catch(() => {});
     }
   } catch (_) {}
 

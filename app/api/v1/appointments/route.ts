@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
-import { collection, doc, getDoc, getDocs, setDoc, query, orderBy, limit as firestoreLimit } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, setDoc, query, orderBy, limit as firestoreLimit, updateDoc, deleteDoc, deleteField, where } from "firebase/firestore";
 import { bookingDb } from "@/lib/firebase";
 import { validateApiKey, corsHeaders } from "@/lib/apiKeyAuth";
 import { createDispensaryNotification } from "@/lib/notificationService";
 import { extractIpNumber } from "@/lib/appointmentTypes";
+import { areFacilitiesMatching, areSlotsMatching } from "@/lib/slotTiming";
 
 export const dynamic = "force-dynamic";
 
@@ -168,6 +169,33 @@ export async function POST(request: NextRequest) {
 
     const ipNumber = extractIpNumber(body);
 
+    // Double-booking check: prevent duplicate bookings for the same facility, date, and slot
+    if (!body._skipSlotCheck && bookingDb) {
+      try {
+        const slotCheckSnap = await getDocs(
+          query(collection(bookingDb, "dispensary_appointments"), where("date", "==", appointmentDate))
+        );
+        const slotConflict = slotCheckSnap.docs.find((d) => {
+          const data = d.data();
+          if (data.status === "cancelled") return false;
+          if (data.id === docId || data.tokenNo === tokenNo || data.referenceNo === referenceNo) return false;
+          const fac = data.dispensaryName || data.facilityName || "";
+          return areFacilitiesMatching(fac, dispensaryName) && areSlotsMatching(data.timeSlot, body.timeSlot || "10:00 AM - 11:00 AM");
+        });
+        if (slotConflict) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: `Slot ${body.timeSlot || "10:00 AM - 11:00 AM"} is already booked and locked for ${dispensaryName} on ${appointmentDate}.`,
+            },
+            { status: 409, headers: corsHeaders() }
+          );
+        }
+      } catch (e) {
+        console.warn("Slot conflict check error:", (e as any)?.message);
+      }
+    }
+
     const appointmentPayload = {
       id: docId,
       tokenNo,
@@ -320,6 +348,99 @@ export async function POST(request: NextRequest) {
     console.error("POST /api/v1/appointments error:", err);
     return NextResponse.json(
       { success: false, error: "Internal server error: " + err.message },
+      { status: 500, headers: corsHeaders() }
+    );
+  }
+}
+
+/**
+ * PATCH /api/v1/appointments
+ * Updates specific appointment fields in Firestore bookingDb
+ */
+export async function PATCH(request: NextRequest) {
+  const authRes = await validateApiKey(request, "appointments:create");
+  if (!authRes.valid) {
+    return NextResponse.json(
+      { success: false, error: authRes.error },
+      { status: authRes.status || 401, headers: corsHeaders() }
+    );
+  }
+
+  try {
+    const body = await request.json().catch(() => null);
+    if (!body || (!body.id && !body.tokenNo)) {
+      return NextResponse.json(
+        { success: false, error: "Missing required identifier: 'id' or 'tokenNo'" },
+        { status: 400, headers: corsHeaders() }
+      );
+    }
+
+    const docId = body.id || body.tokenNo.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const targetRef = doc(bookingDb, "dispensary_appointments", docId);
+    const existingSnap = await getDoc(targetRef);
+
+    if (!existingSnap.exists()) {
+      return NextResponse.json(
+        { success: false, error: `Document ${docId} not found` },
+        { status: 404, headers: corsHeaders() }
+      );
+    }
+
+    const updates = { ...(body.updates || {}) };
+    if (body.removeFields && Array.isArray(body.removeFields)) {
+      for (const field of body.removeFields) {
+        updates[field] = deleteField();
+      }
+    }
+
+    await updateDoc(targetRef, updates);
+
+    return NextResponse.json(
+      { success: true, message: `Document ${docId} updated successfully`, docId },
+      { status: 200, headers: corsHeaders() }
+    );
+  } catch (err: any) {
+    console.error("PATCH /api/v1/appointments error:", err);
+    return NextResponse.json(
+      { success: false, error: "Failed to update appointment: " + err.message },
+      { status: 500, headers: corsHeaders() }
+    );
+  }
+}
+
+/**
+ * DELETE /api/v1/appointments
+ * Removes an appointment by ID from Firestore bookingDb
+ */
+export async function DELETE(request: NextRequest) {
+  const authRes = await validateApiKey(request, "appointments:create");
+  if (!authRes.valid) {
+    return NextResponse.json(
+      { success: false, error: authRes.error },
+      { status: authRes.status || 401, headers: corsHeaders() }
+    );
+  }
+
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get("id");
+    if (!id) {
+      return NextResponse.json(
+        { success: false, error: "Missing required parameter: 'id'" },
+        { status: 400, headers: corsHeaders() }
+      );
+    }
+
+    const targetRef = doc(bookingDb, "dispensary_appointments", id);
+    await deleteDoc(targetRef);
+
+    return NextResponse.json(
+      { success: true, message: `Document ${id} deleted successfully` },
+      { status: 200, headers: corsHeaders() }
+    );
+  } catch (err: any) {
+    return NextResponse.json(
+      { success: false, error: err.message },
       { status: 500, headers: corsHeaders() }
     );
   }

@@ -265,7 +265,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
         let recCount = 0;
         let docCount = 0;
         let pharmCount = 0;
-        let totalPendingAllDates = 0;
+        let todayBookingsCount = 0;
 
         snap.forEach((docSnap) => {
           const data = docSnap.data();
@@ -276,19 +276,11 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
             }
           }
 
-          const status = (data.status || "").toLowerCase().trim();
-          const isPending = status !== "completed" && status !== "cancelled";
-
-          // 1. Total pending appointments: ALWAYS counts all pending appointments across ALL dates.
-          // Never filtered by date and never affected by date filters from other desk pages.
-          if (isPending) {
-            totalPendingAllDates++;
-          }
-
-          // 2. Desk queue counts (Receptionist, Doctor, Pharmacist):
-          // Reflects the pending appointments of the present / selected date using authoritative lifecycle stage.
+          // Desk queues & today's total appointments:
+          // Strictly reflects today's / selected date's total bookings to match the Dispensary Appointments page.
           const appDate = (data.date || "").trim();
           if (appDate === deskDate) {
+            todayBookingsCount++;
             const stage = getEffectiveAppointmentStage(data);
             if (stage === "scheduled") {
               recCount++;
@@ -303,7 +295,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
         setReceptionQueueCount(recCount);
         setDoctorQueueCount(docCount);
         setPharmacyQueueCount(pharmCount);
-        setActiveAppointmentsQueueCount(totalPendingAllDates);
+        setActiveAppointmentsQueueCount(todayBookingsCount);
       },
       (err) => console.warn("Dispensary queue sync error:", err)
     );

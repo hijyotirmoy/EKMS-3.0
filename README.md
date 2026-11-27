@@ -25,19 +25,20 @@ EKMS is a mission-critical healthcare consultation, dispensary workflow, and cli
                          |      Enterprise Multi-Database Layer          |
                          +-----------------------+-----------------------+
                                                  |
-         +-------------------+-------------------+-------------------+-------------------+
-         |                   |                   |                   |                   |
-+--------v--------+ +--------v--------+ +--------v--------+ +--------v--------+ +--------v--------+
-| 1. Core EKMS DB | | 2. Booking DB   | | 3. System Logs  | | 4. Cases DB     | | 5. Auxiliary DB |
-| Knowledge/Users | | Appointments    | | Audit Trail     | | Clinical Triage | | Main Meta Sync  |
-+-----------------+ +-----------------+ +-----------------+ +-----------------+ +-----------------+
-                                                 |
-                               +-----------------+-----------------+
-                               |                                   |
-                     +---------v---------+               +---------v---------+
-                     | 7-Day Vault Disk  |               | Realtime Google   |
-                     | Recently Deleted  |               | Sheets Master DB  |
-                     +-------------------+               +-------------------+
+         +-------------------+-------------------+-------------------+
+         |                   |                   |                   |
++--------v--------+ +--------v--------+ +--------v--------+ +--------v--------+
+| 1. Core EKMS DB | | 2. Booking DB   | | 3. System Logs  | | 4. Cases DB     |
+| Knowledge/Users | | Appointments    | | Audit Trail     | | Clinical Triage |
+| (ekms-app)      | | (triage-booking)| | (ekms-logs)     | | (triage-cases)  |
++-----------------+ +-----------------+ +-----------------+ +-----------------+
+                                       |
+                     +-----------------+-----------------+
+                     |                                   |
+           +---------v---------+               +---------v---------+
+           | 7-Day Vault Disk  |               | Realtime Google   |
+           | Recently Deleted  |               | Sheets Master DB  |
+           +-------------------+               +-------------------+
 ```
 
 ---
@@ -161,3 +162,9 @@ npm run dev -- -p 3000
 # Build production bundle
 npm run build
 ```
+
+---
+
+## 📜 Master System Prompt & Operational Directives
+
+For full system rules, operational constraints, 4-stage appointment lifecycle logic, error handling standards, and AI instructions, refer to [MASTER_PROMPT.md](file:///c:/Users/chjyo/OneDrive/Desktop/Piramal%20web/EKMS%203.0/MASTER_PROMPT.md).

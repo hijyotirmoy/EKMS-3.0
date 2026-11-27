@@ -27,18 +27,29 @@ export const firebaseConfig = {
 };
 
 // ==============================================================================
-// 2. DEDICATED APPOINTMENT & BOOKINGS FIREBASE PROJECT (ekmsbooking)
+// 2. PRIMARY DEDICATED DISPENSARY APPOINTMENTS DATABASE (triage-booking)
 // Services: Insured Person (IP) Verification, Dispensary Slot Quotas,
 // Doctor Duty Rosters, Verification Appointment Schedules
 // ==============================================================================
 export const bookingFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_AUTH_DOMAIN || "ekmsbooking.firebaseapp.com",
-  projectId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_PROJECT_ID || "ekmsbooking",
-  storageBucket: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_STORAGE_BUCKET || "ekmsbooking.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
-  appId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
-  measurementId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MEASUREMENT_ID || "",
+  apiKey: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_API_KEY || "AIzaSyBw1UzeX5Qk6tt1fE6Sy80GcHbqMeKES8g",
+  authDomain: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_AUTH_DOMAIN || "triage-booking.firebaseapp.com",
+  projectId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_PROJECT_ID || "triage-booking",
+  storageBucket: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_STORAGE_BUCKET || "triage-booking.firebasestorage.app",
+  messagingSenderId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MESSAGING_SENDER_ID || "954975483977",
+  appId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_APP_ID || "1:954975483977:web:f6bb8578606e778d26a798",
+  measurementId: process.env.NEXT_PUBLIC_BOOKING_FIREBASE_MEASUREMENT_ID || "G-H0CKZLGTDX",
+};
+
+// 2B. SAFETY BACKUP APPOINTMENTS DATABASE (ekmsbooking - Secondary Safety Copy)
+export const oldBookingFirebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_OLD_BOOKING_FIREBASE_API_KEY || "AIzaSyAog_qZmJzft8gM-UqoNsnlSlleFB6v33g",
+  authDomain: process.env.NEXT_PUBLIC_OLD_BOOKING_FIREBASE_AUTH_DOMAIN || "ekmsbooking.firebaseapp.com",
+  projectId: process.env.NEXT_PUBLIC_OLD_BOOKING_FIREBASE_PROJECT_ID || "ekmsbooking",
+  storageBucket: process.env.NEXT_PUBLIC_OLD_BOOKING_FIREBASE_STORAGE_BUCKET || "ekmsbooking.firebasestorage.app",
+  messagingSenderId: process.env.NEXT_PUBLIC_OLD_BOOKING_FIREBASE_MESSAGING_SENDER_ID || "510397595704",
+  appId: process.env.NEXT_PUBLIC_OLD_BOOKING_FIREBASE_APP_ID || "1:510397595704:web:86d85e96f1ef799779a6cd",
+  measurementId: process.env.NEXT_PUBLIC_OLD_BOOKING_FIREBASE_MEASUREMENT_ID || "G-S4K53XNQ92",
 };
 
 // ==============================================================================
@@ -69,20 +80,6 @@ export const casesSettingsFirebaseConfig = {
   messagingSenderId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
   appId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
   measurementId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MEASUREMENT_ID || "",
-};
-
-// ==============================================================================
-// 5. AUXILIARY TRIAGE SESSIONS FIREBASE PROJECT (ekms-triage-main)
-// Services: Triage Active Sessions, Dispatches & Secondary Backup Store
-// ==============================================================================
-export const triageMainFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_AUTH_DOMAIN || "ekms-triage-main.firebaseapp.com",
-  projectId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_PROJECT_ID || "ekms-triage-main",
-  storageBucket: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_STORAGE_BUCKET || "ekms-triage-main.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
-  appId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
-  measurementId: process.env.NEXT_PUBLIC_TRIAGE_MAIN_FIREBASE_MEASUREMENT_ID || "",
 };
 
 // ------------------------------------------------------------------------------
@@ -121,7 +118,7 @@ export const db = (() => {
 })();
 export const storage = getStorage(app);
 
-// 2. Primary Dedicated Booking App (ekmsbooking)
+// 2. Primary Dedicated Dispensary Booking App (triage-booking)
 export const bookingApp =
   getApps().find((a) => a.name === "BookingApp") ||
   initializeApp(bookingFirebaseConfig, "BookingApp");
@@ -132,6 +129,20 @@ export const bookingDb = (() => {
     });
   } catch (e) {
     return getFirestore(bookingApp);
+  }
+})();
+
+// 2B. Safety Backup Booking App (ekmsbooking - Secondary Copy)
+export const oldBookingApp =
+  getApps().find((a) => a.name === "OldBookingApp") ||
+  initializeApp(oldBookingFirebaseConfig, "OldBookingApp");
+export const oldBookingDb = (() => {
+  try {
+    return initializeFirestore(oldBookingApp, {
+      localCache: createOptimizedFirestoreCache(),
+    });
+  } catch (e) {
+    return getFirestore(oldBookingApp);
   }
 })();
 
@@ -160,20 +171,6 @@ export const casesSettingsDb = (() => {
     });
   } catch (e) {
     return getFirestore(casesSettingsApp);
-  }
-})();
-
-// 5. Auxiliary Triage Main App (ekms-triage-main)
-export const triageMainApp =
-  getApps().find((a) => a.name === "TriageMainApp") ||
-  initializeApp(triageMainFirebaseConfig, "TriageMainApp");
-export const triageMainDb = (() => {
-  try {
-    return initializeFirestore(triageMainApp, {
-      localCache: createOptimizedFirestoreCache(),
-    });
-  } catch (e) {
-    return getFirestore(triageMainApp);
   }
 })();
 
@@ -237,11 +234,12 @@ export const getActiveBookingDb = () => {
 
 // Secondary booking database reference (Dedicated fallback)
 export const getSecondaryBookingDb = () => casesSettingsDb;
+export const getOldBookingDb = () => oldBookingDb;
+export const getSafetyBackupDb = () => oldBookingDb;
 
 // Unified Getters
 export const getFirestoreDb = () => db;
 export const getBookingDb = () => getActiveBookingDb();
 export const getCasesSettingsDb = () => casesSettingsDb;
 export const getCrmFirestoreDb = () => casesSettingsDb;
-export const getTriageMainDb = () => triageMainDb;
 export const getEkmsFirestoreDb = () => db;

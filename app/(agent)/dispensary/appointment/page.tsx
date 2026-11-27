@@ -212,7 +212,13 @@ export default function AppointmentPage() {
   const [statusFilter, setStatusFilter] = useState<
     "all" | "reception" | "doctor" | "pharmacy" | "completed" | "cancelled"
   >("all");
-  const [dateFilter, setDateFilter] = useState(""); // Show all bookings by default
+  const [dateFilter, setDateFilter] = useState(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }); // Present date (today) by default
   const [currentPage, setCurrentPage] = useState(1);
 
   // Sync date filter with mini-bar icons
@@ -886,7 +892,7 @@ export default function AppointmentPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     {/* Clean Plain Text Token (No grey button box, no copy icon, no copy function) */}
                     <span className="font-mono font-extrabold text-xs text-slate-800 select-all">
-                      Token: {app.tokenNo}
+                      {app.tokenNo}
                     </span>
 
                     {/* Beautiful Dispensary Name Badge */}

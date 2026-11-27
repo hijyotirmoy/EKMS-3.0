@@ -51,12 +51,15 @@ import {
   FileSpreadsheet,
   ExternalLink,
   Download,
+  UploadCloud,
+  FileDown,
 } from "lucide-react";
-import { AppointmentRecord } from "@/app/(agent)/appointment/page";
+import { AppointmentRecord } from "@/app/(agent)/dispensary/appointment/page";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
 import { CancelAppointmentModal } from "@/components/appointments/CancelAppointmentModal";
 import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";
 import { SlotAvailabilityModal } from "@/components/appointments/SlotAvailabilityModal";
+import BulkUploadModal, { downloadBulkUploadTemplate } from "@/components/appointments/BulkUploadModal";
 import { GOOGLE_SHEET_URL } from "@/lib/googleSheetsSync";
 import { useStaffDirectory } from "@/lib/useStaffDirectory";
 import { extractIpNumber, isNonClinicalAppointment, formatStaffTimestamp, getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
@@ -155,10 +158,11 @@ export default function AdminManageAppointmentPage() {
   const [statusFilter, setStatusFilter] = useState<
     "all" | "reception" | "doctor" | "pharmacy" | "completed" | "cancelled"
   >("all");
-  const [dateFilter, setDateFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState("today");
   const [dispensaryFilter, setDispensaryFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState("all");
   const [slotAvailabilityOpen, setSlotAvailabilityOpen] = useState(false);
+  const [bulkUploadOpen, setBulkUploadOpen] = useState(false);
 
   // Sync date filter with mini-bar icons
   useEffect(() => {
@@ -453,16 +457,61 @@ export default function AdminManageAppointmentPage() {
     setCurrentPage(1);
   }, [searchTerm, statusFilter, dateFilter, dispensaryFilter, staffFilter, agentFilter]);
 
-  // Metrics: Derived using actual lifecycle stage
+  // Metrics: Derived using actual lifecycle stage, dynamically filtered by selected date and scope
   const metrics = useMemo(() => {
-    const total = appointments.length;
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    const scopedForMetrics = appointments.filter((app) => {
+      // Date filter
+      if (dateFilter === "today") {
+        if (app.date !== todayStr) return false;
+      } else if (dateFilter && app.date !== dateFilter) {
+        return false;
+      }
+
+      // Dispensary filter
+      if (dispensaryFilter !== "all") {
+        if (!isDispensaryMatch(app.dispensaryName, dispensaryFilter, app.dispensaryId)) {
+          return false;
+        }
+      }
+
+      // Agent filter
+      if (agentFilter !== "all") {
+        const bName = (app.bookedByName || "").toLowerCase().trim();
+        const bEmail = (app.bookedByEmail || "").toLowerCase().trim();
+        const target = agentFilter.toLowerCase().trim();
+        if (bName !== target && bEmail !== target) {
+          return false;
+        }
+      }
+
+      // Staff filter
+      if (staffFilter !== "all") {
+        const staffObj = dispensaryStaffUsers.find(
+          (s) => s.email.toLowerCase() === staffFilter.toLowerCase() || (s.dispensaryName && s.dispensaryName.toLowerCase() === staffFilter.toLowerCase())
+        );
+        const staffDisp = (staffObj?.dispensaryName || staffFilter).trim();
+        const staffEmail = (staffObj?.email || staffFilter).toLowerCase().trim();
+        const staffDispId = (staffObj?.dispensaryId || "").trim();
+        const matchDisp = staffDisp && isDispensaryMatch(app.dispensaryName, staffDisp, app.dispensaryId, staffDispId);
+        const matchStaff = (app.visitedBy || "").toLowerCase().includes(staffEmail) || (app.bookedByEmail || "").toLowerCase() === staffEmail;
+        if (!matchDisp && !matchStaff) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    const total = scopedForMetrics.length;
     let pendingReception = 0;
     let pendingDoctor = 0;
     let pendingPharmacy = 0;
     let completed = 0;
     let cancelled = 0;
 
-    appointments.forEach((a) => {
+    scopedForMetrics.forEach((a) => {
       const stage = getEffectiveAppointmentStage(a);
       if (stage === "scheduled") pendingReception++;
       else if (stage === "with_doctor") pendingDoctor++;
@@ -479,7 +528,7 @@ export default function AdminManageAppointmentPage() {
       completed,
       cancelled,
     };
-  }, [appointments]);
+  }, [appointments, dateFilter, dispensaryFilter, staffFilter, agentFilter, dispensaryStaffUsers]);
 
   // Pagination calculation
   const totalPages = Math.ceil(filteredAppointments.length / ITEMS_PER_PAGE) || 1;
@@ -729,13 +778,14 @@ export default function AdminManageAppointmentPage() {
 
       const rows = listToExport.map((app) => {
         const cleanPhone = String(app.phone || "").replace(/\D/g, "");
-        const callerId = (app.caller_id && !app.caller_id.startsWith("CAL-")) ? app.caller_id : ((app.callerId && !app.callerId.startsWith("CAL-")) ? app.callerId : (cleanPhone ? getCallerIdForPhone(cleanPhone) : ""));
-        const bookedByAccount = app.bookedByName || app.bookedBy || app.agentName || (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : "Staff");
+        const rawApp = app as any;
+        const callerId = (rawApp.caller_id && !rawApp.caller_id.startsWith("CAL-")) ? rawApp.caller_id : ((rawApp.callerId && !rawApp.callerId.startsWith("CAL-")) ? rawApp.callerId : (cleanPhone ? getCallerIdForPhone(cleanPhone) : ""));
+        const bookedByAccount = app.bookedByName || rawApp.bookedBy || rawApp.agentName || (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : "Staff");
 
         return {
           "Token / Ref": app.tokenNo || app.referenceNo || app.id || "",
           "Caller ID": callerId,
-          "Patient / IP Name": app.patientName || app.ipName || "Anonymous",
+          "Patient / IP Name": rawApp.patientName || app.ipName || "Anonymous",
           "Phone Number": app.phone || "",
           "IP Number": app.ipNumber || "N/A",
           "Age": app.age || "",
@@ -845,6 +895,28 @@ export default function AdminManageAppointmentPage() {
           >
             <Download className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
             <span>{isExportingExcel ? "Extracting..." : "Extract Excel"}</span>
+          </button>
+
+          {/* Download Bulk Upload Template Button */}
+          <button
+            type="button"
+            onClick={() => downloadBulkUploadTemplate()}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 hover:text-slate-900 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer active:scale-95 group"
+            title="Download Excel bulk upload template with pre-filled examples"
+          >
+            <FileDown className="w-3.5 h-3.5 text-indigo-600 group-hover:scale-110 transition-transform" />
+            <span>Template</span>
+          </button>
+
+          {/* Bulk Upload Appointments Button */}
+          <button
+            type="button"
+            onClick={() => setBulkUploadOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-95 group"
+            title="Bulk upload appointments from Excel (.xlsx, .csv) with full status progression"
+          >
+            <UploadCloud className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+            <span>Bulk Upload</span>
           </button>
 
           {/* Google Sheets Synced Register */}
@@ -1195,7 +1267,7 @@ export default function AdminManageAppointmentPage() {
                         </div>
                         <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
                           <span className="text-slate-400">Booked by:</span>
-                          <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={app.bookedByName || app.bookedBy || app.agentName || app.bookedByEmail || "Staff"}>
+                          <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={app.bookedByName || (app as any).bookedBy || (app as any).agentName || app.bookedByEmail || "Staff"}>
                             {app.bookedByName && app.bookedByName.toLowerCase() !== "agent" ? app.bookedByName : (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : "Ekmsoffice")}
                           </span>
                         </div>
@@ -1449,6 +1521,13 @@ export default function AdminManageAppointmentPage() {
         onClose={() => setSlotAvailabilityOpen(false)}
         appointments={appointments}
         facilities={dispensaries}
+      />
+
+      {/* Bulk Upload Appointments Modal */}
+      <BulkUploadModal
+        isOpen={bulkUploadOpen}
+        onClose={() => setBulkUploadOpen(false)}
+        currentUser={user}
       />
     </div>
   );
