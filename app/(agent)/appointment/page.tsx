@@ -429,7 +429,7 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
     const key = String(prev.id || prev.tokenNo || prev.referenceNo || "").trim();
     const idKey = String(prev.id || "").trim();
     const tokKey = String(prev.tokenNo || "").trim();
-    const pName = String(item.patientName || item.ipName || "").trim().toLowerCase();
+    const pName = String(prev.patientName || prev.ipName || "").trim().toLowerCase();
     if (
       !key ||
       key.startsWith("ESIC-") ||
@@ -1078,6 +1078,12 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     } catch (e) {
       console.warn("Failed to listen to ekmsbooking:", e);
     }
+
+    loadAppointments();
+
+    const pollInterval = setInterval(() => {
+      loadAppointments(false);
+    }, 30000);
 
     return () => {
       unsubBooking?.();
