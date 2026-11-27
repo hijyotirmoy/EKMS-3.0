@@ -322,7 +322,11 @@ export async function POST(request) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: AbortSignal.timeout(6000),
-          body: JSON.stringify(finalRecord),
+          body: JSON.stringify({
+            ...finalRecord,
+            action: finalRecord.is_status_update ? "update" : "append",
+            is_new_booking: !finalRecord.is_status_update,
+          }),
         });
         webhookStatus = res.ok ? "delivered" : `error_${res.status}`;
         try {

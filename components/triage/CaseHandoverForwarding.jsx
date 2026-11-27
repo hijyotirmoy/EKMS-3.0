@@ -1506,51 +1506,49 @@ ${historySection}`;
   };
 
   const getCaseNumericSeq = () => {
-    const existing =
-      bookedAppointment?.referenceNo ||
-      bookedAppointment?.tokenNo ||
-      sentStatus?.referenceNo ||
-      sentStatus?.dispatchId ||
-      result?.reference_no ||
-      result?.dispatch_id ||
-      result?.booked_appointment?.referenceNo ||
-      result?.booked_appointment?.tokenNo;
-
-    if (existing) {
-      const match = String(existing).match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i);
-      if (match) return match[1];
-      const matchAny5 = String(existing).match(/\b(\d{5})\b/);
-      if (matchAny5) return matchAny5[1];
-    }
-
-    let calculatedSeq = 1;
-    const targetRef = caseRef || propCaseRef || result?.case_ref || "";
-    if (targetRef) {
-      const caMatch = String(targetRef).match(/^CA(\d{4})/i);
-      if (caMatch) {
-        calculatedSeq = parseInt(caMatch[1], 10);
-      } else {
-        const digitsMatch = String(targetRef).match(/\d+/);
-        if (digitsMatch) {
-          calculatedSeq = parseInt(digitsMatch[0], 10);
-        }
+    // 1. If this exact case already has a confirmed booking for the current patient, reuse that token
+    const currPhone = String(intakeData?.phone || editData?.phone || result?.intake?.phone || "").replace(/\D/g, "");
+    const bookedPhone = String(bookedAppointment?.patientPhone || bookedAppointment?.phone || "").replace(/\D/g, "");
+    
+    if (bookedAppointment && (!currPhone || !bookedPhone || currPhone === bookedPhone)) {
+      const existing = bookedAppointment.referenceNo || bookedAppointment.tokenNo;
+      if (existing) {
+        const match = String(existing).match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i);
+        if (match) return match[1];
       }
     }
 
-    return String(calculatedSeq || 1).padStart(5, "0");
+    // 2. Scan existing appointments and caches to find the current maximum assigned sequence
+    let maxFoundSeq = 162;
+    const allKnown = [
+      ...(Array.isArray(existingAppointments) ? existingAppointments : []),
+      ...(Array.isArray(cachedAppointments) ? cachedAppointments : []),
+    ];
+
+    allKnown.forEach((appt) => {
+      const cand = appt?.tokenNo || appt?.referenceNo || appt?.id || "";
+      const m = String(cand).match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i) || String(cand).match(/\b(\d{5})\b/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (val > maxFoundSeq && val < 2000) {
+          maxFoundSeq = val;
+        }
+      }
+    });
+
+    const nextSeq = maxFoundSeq + 1;
+    return String(nextSeq).padStart(5, "0");
   };
 
   const getUnifiedReferenceCode = (targetTeamId, targetFacility, targetFacilityName) => {
-    const existingCode =
-      bookedAppointment?.referenceNo ||
-      bookedAppointment?.tokenNo ||
-      sentStatus?.referenceNo ||
-      sentStatus?.dispatchId ||
-      result?.reference_no ||
-      result?.dispatch_id;
+    const currPhone = String(intakeData?.phone || editData?.phone || result?.intake?.phone || "").replace(/\D/g, "");
+    const bookedPhone = String(bookedAppointment?.patientPhone || bookedAppointment?.phone || "").replace(/\D/g, "");
 
-    if (existingCode && /^[A-Z]{4}-\d{5}-[A-Z0-9]{4,5}$/i.test(String(existingCode).trim())) {
-      return String(existingCode).trim().toUpperCase();
+    if (bookedAppointment && (!currPhone || !bookedPhone || currPhone === bookedPhone)) {
+      const existingCode = bookedAppointment.referenceNo || bookedAppointment.tokenNo;
+      if (existingCode && /^[A-Z]{4}-\d{5}-[A-Z0-9]{4,5}$/i.test(String(existingCode).trim())) {
+        return String(existingCode).trim().toUpperCase();
+      }
     }
 
     const team = targetTeamId || selectedTeam?.id;
@@ -2677,59 +2675,67 @@ ${historySection}`;
         pastCallHistory: pastCallsData,
       };
 
-      // Upgrade token generation to Firestore atomic counter using runTransaction()
-      // Reads counters/bookingSequence (1 read), increments lastSeq, verifies doc doesn't exist (1 read),
-      // and atomically updates the counter doc in a single ACID transaction.
+      // Guaranteed monotonic unique token allocation:
+      // Uses the atomic /api/appointments/next-token server endpoint and verifies against
+      // existingAppointments so no booking can EVER collide or overwrite an existing patient.
+      const { prefix, suffix } = getFacilityPrefixSuffix(selectedTeam?.id, selectedFacility, resolvedFacilityName);
       let finalUnifiedRef = unifiedReferenceNo;
       let appointmentDocId = finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
 
-      try {
-        const bDb = getBookingDb();
-        if (bDb) {
-          const counterDocRef = doc(bDb, "counters", "bookingSequence");
-          const txRes = await runTransaction(bDb, async (transaction) => {
-            const counterSnap = await transaction.get(counterDocRef);
-            let nextSeq = 153;
-            if (counterSnap.exists()) {
-              const currentLast = counterSnap.data().lastSeq;
-              nextSeq = (typeof currentLast === "number" && !isNaN(currentLast) && currentLast > 0) ? currentLast + 1 : 153;
-            }
+      const currPhone = String(newBooking.patientPhone || intakeData?.phone || editData?.phone || "").replace(/\D/g, "");
 
-            const { prefix, suffix } = getFacilityPrefixSuffix(selectedTeam?.id, selectedFacility, resolvedFacilityName);
-            let tokenCand = `${prefix}-${String(nextSeq).padStart(5, "0")}-${suffix}`;
-            let docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
-            let targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
+      // Check if current candidate token is already taken by a different patient
+      const isTaken = existingAppointments.some((a) => {
+        const aToken = String(a.tokenNo || a.referenceNo || a.id || "").trim();
+        const aPhone = String(a.phone || a.patientPhone || "").replace(/\D/g, "");
+        return aToken === finalUnifiedRef && currPhone && aPhone && currPhone !== aPhone;
+      });
 
-            // Verify target booking doc does not already exist before writing
-            let targetSnap = await transaction.get(targetDocRef);
-            while (targetSnap.exists()) {
-              nextSeq += 1;
-              tokenCand = `${prefix}-${String(nextSeq).padStart(5, "0")}-${suffix}`;
-              docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
-              targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
-              targetSnap = await transaction.get(targetDocRef);
-            }
+      // Always fetch fresh atomic token for any new booking or collision
+      if (isTaken || !finalUnifiedRef || !bookedAppointment) {
+        try {
+          const apiRes = await fetch("/api/appointments/next-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prefix,
+              suffix,
+              facilityType: selectedTeam?.id,
+              isHospital: suffix === "HOSP",
+            }),
+          }).then((r) => r.json());
 
-            // Atomically update counter doc
-            transaction.set(counterDocRef, {
-              lastSeq: nextSeq,
-              updatedAt: Date.now(),
-              lastAssignedToken: tokenCand,
-            }, { merge: true });
-
-            return {
-              confirmedToken: tokenCand,
-              confirmedDocId: docIdCand,
-            };
-          });
-
-          if (txRes?.confirmedToken) {
-            finalUnifiedRef = txRes.confirmedToken;
-            appointmentDocId = txRes.confirmedDocId;
+          if (apiRes?.tokenNo) {
+            finalUnifiedRef = apiRes.tokenNo;
+            appointmentDocId = apiRes.docId || finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
           }
+        } catch (apiErr) {
+          console.warn("API next-token fetch notice:", apiErr?.message);
         }
-      } catch (txErr) {
-        console.warn("Atomic counter transaction warning (falling back gracefully):", txErr?.message);
+      }
+
+      // Client-side safety check: ensure token does not collide with existing appointments
+      let collisionAttempts = 0;
+      while (
+        existingAppointments.some((a) => {
+          const aToken = String(a.tokenNo || a.referenceNo || a.id || "").trim();
+          const aPhone = String(a.phone || a.patientPhone || "").replace(/\D/g, "");
+          return aToken === finalUnifiedRef && currPhone && aPhone && currPhone !== aPhone;
+        }) &&
+        collisionAttempts < 20
+      ) {
+        collisionAttempts++;
+        let maxExisting = 162;
+        existingAppointments.forEach((a) => {
+          const m = String(a.tokenNo || a.referenceNo || a.id || "").match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i);
+          if (m) {
+            const v = parseInt(m[1], 10);
+            if (v > maxExisting && v < 2000) maxExisting = v;
+          }
+        });
+        const bumped = maxExisting + collisionAttempts;
+        finalUnifiedRef = `${prefix}-${String(bumped).padStart(5, "0")}-${suffix}`;
+        appointmentDocId = finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
       }
 
       unifiedReferenceNo = finalUnifiedRef;

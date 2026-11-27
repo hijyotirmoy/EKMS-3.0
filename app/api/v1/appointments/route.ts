@@ -220,30 +220,51 @@ export async function POST(request: NextRequest) {
       caseId: body.caseId || body.case_ref || null,
     };
 
-    // Save in Firestore dispensary_appointments with status progression protection
-    const existingRef = doc(bookingDb, "dispensary_appointments", docId);
-    const existingSnap = await getDoc(existingRef);
-    if (existingSnap.exists()) {
-      const existingData = existingSnap.data();
-      // Protect existing clinical stage if current payload has no explicit updated status
-      if (existingData.status && existingData.status !== "scheduled" && (!body.status || body.status === "scheduled")) {
-        delete (appointmentPayload as any).status;
+    // Save in Firestore dispensary_appointments with collision and status progression protection
+    let targetDocId = docId;
+    let targetRef = doc(bookingDb, "dispensary_appointments", targetDocId);
+    try {
+      const existingSnap = await getDoc(targetRef);
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data();
+        const existingPhone = String(existingData.phone || existingData.patientPhone || "").replace(/\D/g, "");
+        const incomingPhone = String(phone).replace(/\D/g, "");
+        const isDifferentPatient = Boolean(
+          existingPhone && incomingPhone && existingPhone.length >= 10 && incomingPhone.length >= 10 && existingPhone !== incomingPhone
+        );
+
+        if (isDifferentPatient) {
+          // Collision: Do NOT overwrite the existing patient!
+          // Re-allocate to a new unique token
+          const fallbackSeq = Math.max(163, Math.floor(Date.now() % 100000));
+          const newToken = `ESIC-${String(fallbackSeq).padStart(5, "0")}-${suffix}`;
+          targetDocId = newToken.replace(/[^a-zA-Z0-9_-]/g, "_");
+          targetRef = doc(bookingDb, "dispensary_appointments", targetDocId);
+          appointmentPayload.id = targetDocId;
+          appointmentPayload.tokenNo = newToken;
+          appointmentPayload.referenceNo = newToken;
+        } else {
+          // Same patient: Protect existing clinical stage if current payload has no explicit updated status
+          if (existingData.status && existingData.status !== "scheduled" && (!body.status || body.status === "scheduled")) {
+            delete (appointmentPayload as any).status;
+          }
+          if (existingData.receptionCheckedInAt && !(appointmentPayload as any).receptionCheckedInAt) {
+            delete (appointmentPayload as any).receptionCheckedInAt;
+            delete (appointmentPayload as any).receptionCheckedInBy;
+          }
+          if (existingData.doctorName && !(appointmentPayload as any).doctorName) {
+            delete (appointmentPayload as any).doctorName;
+            delete (appointmentPayload as any).doctorConsultedAt;
+            delete (appointmentPayload as any).prescribedBy;
+          }
+          if (existingData.dispensedAt && !(appointmentPayload as any).dispensedAt) {
+            delete (appointmentPayload as any).dispensedAt;
+            delete (appointmentPayload as any).dispensedBy;
+          }
+        }
       }
-      if (existingData.receptionCheckedInAt && !(appointmentPayload as any).receptionCheckedInAt) {
-        delete (appointmentPayload as any).receptionCheckedInAt;
-        delete (appointmentPayload as any).receptionCheckedInBy;
-      }
-      if (existingData.doctorName && !(appointmentPayload as any).doctorName) {
-        delete (appointmentPayload as any).doctorName;
-        delete (appointmentPayload as any).doctorConsultedAt;
-        delete (appointmentPayload as any).prescribedBy;
-      }
-      if (existingData.dispensedAt && !(appointmentPayload as any).dispensedAt) {
-        delete (appointmentPayload as any).dispensedAt;
-        delete (appointmentPayload as any).dispensedBy;
-      }
-    }
-    await setDoc(existingRef, appointmentPayload, { merge: true });
+    } catch (_) {}
+    await setDoc(targetRef, appointmentPayload, { merge: true });
 
     // Real-time notification delivered to the Receptionist of that dispensary
     await createDispensaryNotification({
