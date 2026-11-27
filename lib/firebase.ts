@@ -14,16 +14,14 @@ import { getStorage } from "firebase/storage";
 // Core Services: Authentication, User Profiles, Knowledge Q&A, Facilities,
 // Doubts Community Forum, Files & Documents Library, Training & Quizzes
 // ==============================================================================
-const BUILD_SAFE_API_KEY = "AIzaSyBuildSafePlaceholderKey000000000";
-
 export const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyBv6Ph505FdF4rJytdkIG3KfNfs__ivuRI",
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "ekms-app.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "ekms-app",
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "ekms-app.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
-  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "324461962901",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:324461962901:web:0fa97038ff51a620bc1d9c",
+  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "G-HQQSYC3LC4",
 };
 
 // ==============================================================================
@@ -58,13 +56,13 @@ export const oldBookingFirebaseConfig = {
 // User Activity Tracking, Security Logs
 // ==============================================================================
 export const logsFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_LOGS_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
+  apiKey: process.env.NEXT_PUBLIC_LOGS_FIREBASE_API_KEY || "AIzaSyAVgwUI96k1zwFRqOeienKiORcNr4MvzXI",
   authDomain: process.env.NEXT_PUBLIC_LOGS_FIREBASE_AUTH_DOMAIN || "ekms-logs.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_PROJECT_ID || "ekms-logs",
   storageBucket: process.env.NEXT_PUBLIC_LOGS_FIREBASE_STORAGE_BUCKET || "ekms-logs.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
-  appId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
-  measurementId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MEASUREMENT_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MESSAGING_SENDER_ID || "329565552036",
+  appId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_APP_ID || "1:329565552036:web:15fd1b8e3a3a420580d531",
+  measurementId: process.env.NEXT_PUBLIC_LOGS_FIREBASE_MEASUREMENT_ID || "G-SW0HRQM9ZQ",
 };
 
 // ==============================================================================
@@ -73,13 +71,13 @@ export const logsFirebaseConfig = {
 // Dhwani CRM Live Intake Sync, Telemetry, Audit Records, 7-Day Holding Vault
 // ==============================================================================
 export const casesSettingsFirebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_API_KEY || BUILD_SAFE_API_KEY,
+  apiKey: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_API_KEY || "AIzaSyAqhlMdvcbCgUiiiPteDkUFDnotxrAtjYY",
   authDomain: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_AUTH_DOMAIN || "triage-cases-settings.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_PROJECT_ID || "triage-cases-settings",
   storageBucket: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_STORAGE_BUCKET || "triage-cases-settings.firebasestorage.app",
-  messagingSenderId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MESSAGING_SENDER_ID || "1234567890",
-  appId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_APP_ID || "1:1234567890:web:abcdef",
-  measurementId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MEASUREMENT_ID || "",
+  messagingSenderId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MESSAGING_SENDER_ID || "529434337941",
+  appId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_APP_ID || "1:529434337941:web:26ea05c1751bbfbea0719c",
+  measurementId: process.env.NEXT_PUBLIC_CASES_SETTINGS_FIREBASE_MEASUREMENT_ID || "G-Q032RRRGWJ",
 };
 
 // ------------------------------------------------------------------------------
