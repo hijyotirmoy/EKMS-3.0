@@ -140,7 +140,11 @@ export default function PharmacyDeskPage() {
       }
     );
 
-    return () => unsub();
+    return () => {
+      try {
+        if (typeof unsub === "function") unsub();
+      } catch (_) {}
+    };
   }, []);
 
   // Filter by dispensary and date

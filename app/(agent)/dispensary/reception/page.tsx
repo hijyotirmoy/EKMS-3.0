@@ -143,7 +143,11 @@ export default function ReceptionDeskPage() {
       }
     );
 
-    return () => unsub();
+    return () => {
+      try {
+        if (typeof unsub === "function") unsub();
+      } catch (_) {}
+    };
   }, []);
 
   // Scoped to staff's allotted dispensary

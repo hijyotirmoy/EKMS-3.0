@@ -96,16 +96,6 @@ export const triageMainFirebaseConfig = {
  * In server / SSR: Gracefully falls back to memoryLocalCache() to avoid Node.js runtime errors.
  */
 const createOptimizedFirestoreCache = () => {
-  if (typeof window !== "undefined") {
-    try {
-      return persistentLocalCache({
-        tabManager: persistentMultipleTabManager(),
-      });
-    } catch (e) {
-      console.warn("Persistent IndexedDB fallback to memory:", e);
-      return memoryLocalCache();
-    }
-  }
   return memoryLocalCache();
 };
 

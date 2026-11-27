@@ -308,7 +308,11 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
       (err) => console.warn("Dispensary queue sync error:", err)
     );
 
-    return () => unsub();
+    return () => {
+      try {
+        if (typeof unsub === "function") unsub();
+      } catch (_) {}
+    };
   }, [isLoggedIn, isDispensaryUser, isAdmin, userProfile?.dispensaryName, userProfile?.dispensaryId, activeDateFilter]);
 
   // Compute agent-specific pending courses

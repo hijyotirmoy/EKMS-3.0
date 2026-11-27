@@ -43,7 +43,11 @@ export default function AppUpdateBanner() {
       }
     );
 
-    return () => unsub();
+    return () => {
+      try {
+        if (typeof unsub === "function") unsub();
+      } catch (_) {}
+    };
   }, []);
 
   if (!updateAvailable || dismissed) return null;
