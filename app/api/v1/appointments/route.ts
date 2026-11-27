@@ -59,7 +59,12 @@ export async function GET(request: NextRequest) {
       const data = d.data();
       const app = { id: d.id, ...data };
 
-      // Filter in memory for maximum flexibility without Firestore composite index constraints
+      // Strictly ignore obsolete ESIC-* and Anonymous Beneficiary duplicates
+      const tok = String(data.tokenNo || d.id || "").trim();
+      const pName = String(data.patientName || data.ipName || "").trim().toLowerCase();
+      if (tok.startsWith("ESIC-") || pName.includes("anonymous")) {
+        return;
+      }
       if (dispensary) {
         const appDisp = (data.dispensaryName || data.facilityName || "").toLowerCase();
         if (!appDisp.includes(dispensary) && !dispensary.includes(appDisp)) {

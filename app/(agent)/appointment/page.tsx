@@ -385,8 +385,13 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
     const key = String(item.id || item.tokenNo || item.referenceNo || "").trim();
     const idKey = String(item.id || "").trim();
     const tokKey = String(item.tokenNo || "").trim();
+    const pName = String(item.patientName || item.ipName || "").trim().toLowerCase();
     if (
       !key ||
+      key.startsWith("ESIC-") ||
+      (idKey && idKey.startsWith("ESIC-")) ||
+      (tokKey && tokKey.startsWith("ESIC-")) ||
+      pName.includes("anonymous") ||
       deletedAppointmentKeys.has(key) ||
       (idKey && deletedAppointmentKeys.has(idKey)) ||
       (tokKey && deletedAppointmentKeys.has(tokKey))
@@ -424,8 +429,13 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
     const key = String(prev.id || prev.tokenNo || prev.referenceNo || "").trim();
     const idKey = String(prev.id || "").trim();
     const tokKey = String(prev.tokenNo || "").trim();
+    const pName = String(item.patientName || item.ipName || "").trim().toLowerCase();
     if (
       !key ||
+      key.startsWith("ESIC-") ||
+      (idKey && idKey.startsWith("ESIC-")) ||
+      (tokKey && tokKey.startsWith("ESIC-")) ||
+      pName.includes("anonymous") ||
       deletedAppointmentKeys.has(key) ||
       (idKey && deletedAppointmentKeys.has(idKey)) ||
       (tokKey && deletedAppointmentKeys.has(tokKey))
@@ -1005,7 +1015,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     } catch (_) {}
 
     let unsubBooking = null;
-    let unsubTriage = null;
 
     try {
       const bDb = getBookingDb();
@@ -1070,115 +1079,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       console.warn("Failed to listen to ekmsbooking:", e);
     }
 
-    try {
-      const tDb = getFirestoreDb();
-      if (tDb) {
-        const qTriage = query(collection(tDb, "dispensary_appointments"), orderBy("createdAt", "desc"));
-        unsubTriage = onSnapshot(
-          qTriage,
-          (snap) => {
-            snap.docChanges().forEach((change) => {
-              if (change.type === "removed") {
-                const data = change.doc.data() || {};
-                const keys = [change.doc.id, data.tokenNo, data.referenceNo].filter(Boolean);
-                markAppointmentDeleted(keys);
-                setAppointments((prev) => {
-                  const filtered = prev.filter((a) => {
-                    const k1 = String(a.tokenNo || "").trim();
-                    const k2 = String(a.referenceNo || "").trim();
-                    const k3 = String(a.id || "").trim();
-                    if (keys.includes(k1) || keys.includes(k2) || keys.includes(k3)) return false;
-                    if (deletedAppointmentKeys.has(k1) || deletedAppointmentKeys.has(k2) || deletedAppointmentKeys.has(k3)) return false;
-                    return true;
-                  });
-                  setCachedAppointments(filtered);
-                  return filtered;
-                });
-              } else if (change.type === "modified") {
-                const data = change.doc.data() || {};
-                if (
-                  data.status ||
-                  data.receptionCheckedInBy ||
-                  data.visitedBy ||
-                  data.doctorName ||
-                  data.prescribedBy ||
-                  data.dispensedBy
-                ) {
-                  recordAppointmentBookingToSheet({ id: change.doc.id, ...data }, currentAgent).catch(() => {});
-                }
-              }
-            });
-
-            const triageList = [];
-            snap.forEach((d) => {
-              const data = d.data();
-              const key = data.tokenNo || data.referenceNo || d.id;
-              if (
-                !deletedAppointmentKeys.has(String(key).trim()) &&
-                !deletedAppointmentKeys.has(String(d.id).trim())
-              ) {
-                triageList.push({ id: d.id, ...data });
-              }
-            });
-
-            if (triageList.length > 0) {
-              setAppointments((prev) => {
-                const reconciled = reconcileWithLiveSnapshot(prev, triageList, "triageDb");
-                setCachedAppointments(reconciled);
-                return reconciled;
-              });
-
-              // Self-healing: if any appointment is in tDb, mirror to bDb without regressing clinical progression
-              try {
-                const bDb = getBookingDb();
-                if (bDb) {
-                  triageList.forEach(async (appt) => {
-                    const docId = String(appt.id || appt.tokenNo || "").trim();
-                    if (!docId) return;
-                    try {
-                      const existingSnap = await getDoc(doc(bDb, "dispensary_appointments", docId));
-                      if (!existingSnap.exists()) {
-                        await setDoc(doc(bDb, "dispensary_appointments", docId), appt, { merge: true });
-                      } else {
-                        const exData = existingSnap.data();
-                        // If bDb already has reception/clinical progression, never overwrite status with scheduled
-                        const hasProgression = Boolean(
-                          exData.receptionCheckedInBy ||
-                          exData.visitedBy ||
-                          exData.doctorConsultedAt ||
-                          exData.dispensedAt ||
-                          exData.dispensedBy ||
-                          exData.status === "with_doctor" ||
-                          exData.status === "visited" ||
-                          exData.status === "pharmacy_queue" ||
-                          exData.status === "completed" ||
-                          exData.status === "dispensed"
-                        );
-                        if (!hasProgression) {
-                          await setDoc(doc(bDb, "dispensary_appointments", docId), appt, { merge: true });
-                        }
-                      }
-                    } catch (_) {}
-                  });
-                }
-              } catch (_) {}
-            }
-          },
-          () => {}
-        );
-      }
-    } catch (e) {}
-
-    loadAppointments();
-
-    // Gentle polling fallback (30s) to conserve Firestore reads and REST requests
-    const pollInterval = setInterval(() => {
-      loadAppointments(false);
-    }, 30000);
-
     return () => {
       unsubBooking?.();
-      unsubTriage?.();
       clearInterval(pollInterval);
     };
   }, [loadAppointments]);
