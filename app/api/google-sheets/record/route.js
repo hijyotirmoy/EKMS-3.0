@@ -33,27 +33,32 @@ function appendLocalRecord(record) {
     const cleanIp = String(record.ip_no || "").replace(/[^\d]/g, "").trim();
     const cleanPhone = String(record.phone_no || "").replace(/\D/g, "").trim();
 
-    // Find if record already exists by IP (if valid), case_id, or booking_ref_id to ensure single row per patient/case
-    const existingIndex = list.findIndex((r) => {
-      if (cleanIp && cleanIp.length >= 6 && cleanIp !== "N/A") {
-        const rIp = String(r.ip_no || "").replace(/[^\d]/g, "").trim();
-        if (rIp && rIp === cleanIp) return true;
-      }
-      if (caseId && r.case_id && r.case_id.toLowerCase() === caseId.toLowerCase()) return true;
-      if (bookingRefId && r.booking_ref_id && r.booking_ref_id.toLowerCase() === bookingRefId.toLowerCase()) return true;
-      if (caseId && r.reference_id && r.reference_id.toLowerCase() === caseId.toLowerCase()) return true;
-      if (bookingRefId && r.reference_id && r.reference_id.toLowerCase() === bookingRefId.toLowerCase()) return true;
-      // Also match by phone if same caller phone and has matching or empty booking/case
-      if (cleanPhone && cleanPhone.length >= 10) {
+    // STRICT APPEND-ONLY GUARANTEE:
+    // Every new booking submission ALWAYS appends a brand new row in the Google Sheet.
+    // An existing row is ONLY updated when an explicit update/status-change flag is passed
+    // (e.g. from Reception check-in, Doctor consultation, Pharmacy dispensation, or Follow-up closure).
+    const isExplicitUpdate = Boolean(
+      record.is_status_update ||
+      record._isStatusUpdate ||
+      record.is_update
+    );
+
+    let existingIndex = -1;
+    if (isExplicitUpdate && bookingRefId) {
+      existingIndex = list.findIndex((r) => {
         const rPhone = String(r.phone_no || "").replace(/\D/g, "").trim();
-        if (rPhone === cleanPhone) {
-          if (!r.case_id || !caseId || r.case_id.toLowerCase() === caseId.toLowerCase()) {
-            return true;
-          }
+        if (cleanPhone && rPhone && cleanPhone.length >= 10 && rPhone.length >= 10 && cleanPhone !== rPhone) {
+          return false;
         }
-      }
-      return false;
-    });
+        const rBookingId = String(r.booking_ref_id || (r.reference_id?.startsWith("ESIC-") ? r.reference_id : "")).trim();
+        return rBookingId && rBookingId.toLowerCase() === bookingRefId.toLowerCase();
+      });
+    } else if (isExplicitUpdate && caseId && record.record_type === "Call Only") {
+      existingIndex = list.findIndex((r) => {
+        const rCaseId = String(r.case_id || (r.reference_id?.startsWith("CA") ? r.reference_id : "")).trim();
+        return rCaseId && rCaseId.toLowerCase() === caseId.toLowerCase() && r.record_type === "Call Only";
+      });
+    }
 
     let finalRecord = record;
 
@@ -279,6 +284,7 @@ export async function POST(request) {
       dispensed_by: body.dispensed_by || body.dispensedBy || "—",
       follow_up_status: body.follow_up_status || body.followUpStatus || "None",
       follow_up_details: body.follow_up_details || body.followUpDetails || "—",
+      is_status_update: Boolean(body.is_status_update || body._isStatusUpdate || body.is_update || body.action === "update"),
       permanent_flag: "PERMANENT_NO_DELETE",
     };
 

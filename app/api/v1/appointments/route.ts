@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
-import { collection, doc, getDocs, setDoc, query, orderBy, limit as firestoreLimit } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, setDoc, query, orderBy, limit as firestoreLimit } from "firebase/firestore";
 import { bookingDb } from "@/lib/firebase";
 import { validateApiKey, corsHeaders } from "@/lib/apiKeyAuth";
 import { createDispensaryNotification } from "@/lib/notificationService";
@@ -220,8 +220,30 @@ export async function POST(request: NextRequest) {
       caseId: body.caseId || body.case_ref || null,
     };
 
-    // Save in Firestore dispensary_appointments
-    await setDoc(doc(bookingDb, "dispensary_appointments", docId), appointmentPayload, { merge: true });
+    // Save in Firestore dispensary_appointments with status progression protection
+    const existingRef = doc(bookingDb, "dispensary_appointments", docId);
+    const existingSnap = await getDoc(existingRef);
+    if (existingSnap.exists()) {
+      const existingData = existingSnap.data();
+      // Protect existing clinical stage if current payload has no explicit updated status
+      if (existingData.status && existingData.status !== "scheduled" && (!body.status || body.status === "scheduled")) {
+        delete (appointmentPayload as any).status;
+      }
+      if (existingData.receptionCheckedInAt && !(appointmentPayload as any).receptionCheckedInAt) {
+        delete (appointmentPayload as any).receptionCheckedInAt;
+        delete (appointmentPayload as any).receptionCheckedInBy;
+      }
+      if (existingData.doctorName && !(appointmentPayload as any).doctorName) {
+        delete (appointmentPayload as any).doctorName;
+        delete (appointmentPayload as any).doctorConsultedAt;
+        delete (appointmentPayload as any).prescribedBy;
+      }
+      if (existingData.dispensedAt && !(appointmentPayload as any).dispensedAt) {
+        delete (appointmentPayload as any).dispensedAt;
+        delete (appointmentPayload as any).dispensedBy;
+      }
+    }
+    await setDoc(existingRef, appointmentPayload, { merge: true });
 
     // Real-time notification delivered to the Receptionist of that dispensary
     await createDispensaryNotification({

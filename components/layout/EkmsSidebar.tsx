@@ -9,7 +9,7 @@ import { collection, query, where, getDocs, doc, onSnapshot, orderBy, limit } fr
 import { db, bookingDb } from "@/lib/firebase";
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { getOrFetchCollection } from "@/lib/cache";
-import { isDispensaryMatch, isNonClinicalAppointment } from "@/lib/appointmentTypes";
+import { isDispensaryMatch, isNonClinicalAppointment, getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
 import {
   Home,
   Folder,
@@ -286,15 +286,15 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
           }
 
           // 2. Desk queue counts (Receptionist, Doctor, Pharmacist):
-          // Reflects the pending appointments of the present / selected date.
+          // Reflects the pending appointments of the present / selected date using authoritative lifecycle stage.
           const appDate = (data.date || "").trim();
           if (appDate === deskDate) {
-            const nonClinical = isNonClinicalAppointment(data as any);
-            if (status === "scheduled") {
+            const stage = getEffectiveAppointmentStage(data);
+            if (stage === "scheduled") {
               recCount++;
-            } else if (!nonClinical && (status === "with_doctor" || status === "visited")) {
+            } else if (stage === "with_doctor") {
               docCount++;
-            } else if (!nonClinical && status === "pharmacy_queue") {
+            } else if (stage === "with_pharmacist") {
               pharmCount++;
             }
           }

@@ -53,7 +53,7 @@ import {
 import { toast } from "sonner";
 import { logSystemActivity } from "@/lib/activityLogger";
 import { getBookingDb, getFirestoreDb, getSecondaryBookingDb, setBookingFailoverActive } from "@/lib/firebase";
-import { collection, onSnapshot, query, orderBy, limit, doc, setDoc, deleteDoc, getDoc } from "firebase/firestore";
+import { collection, onSnapshot, query, orderBy, limit, doc, setDoc, deleteDoc, getDoc, runTransaction } from "firebase/firestore";
 import {
   isSlotInPast,
   getFirstAvailableSlot,
@@ -1884,7 +1884,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       const now = Date.now();
 
       await markEkmsAppointmentVisited(targetId, {
-        status: isNonClin ? "completed" : "visited",
+        status: isNonClin ? "completed" : "with_doctor",
         completedAt: isNonClin ? now : undefined,
         completedBy: isNonClin ? staffName : undefined,
         visitedNotes: visitModal.visitedNotes,
@@ -1902,7 +1902,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         const tDb = getFirestoreDb();
         const docId = String(targetId).replace(/[^a-zA-Z0-9_-]/g, "_");
         const updates = {
-          status: isNonClin ? "completed" : "visited",
+          status: isNonClin ? "completed" : "with_doctor",
           visitedAt: now,
           visitedBy: staffName,
           visitedNotes: visitModal.visitedNotes || "",
@@ -2128,9 +2128,53 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         .replace(/<.*?>/, "")
         .trim();
 
-      const randomSeq = String(Math.floor(10000 + Math.random() * 90000));
-      const unifiedToken = `ESIC-${randomSeq}-DISP`;
-      const appointmentDocId = unifiedToken.replace(/[^a-zA-Z0-9_-]/g, "_");
+      let unifiedToken = "";
+      let appointmentDocId = "";
+
+      const bDb = getBookingDb();
+      if (bDb) {
+        try {
+          const counterDocRef = doc(bDb, "counters", "bookingSequence");
+          const txRes = await runTransaction(bDb, async (transaction) => {
+            const counterSnap = await transaction.get(counterDocRef);
+            let nextSeq = 153;
+            if (counterSnap.exists()) {
+              const currentLast = counterSnap.data().lastSeq;
+              nextSeq = (typeof currentLast === "number" && !isNaN(currentLast) && currentLast > 0) ? currentLast + 1 : 153;
+            }
+            const suffix = (manualBookingModal.dispensaryName || "").toLowerCase().includes("hospital") ? "HOSP" : "DISP";
+            let tokenCand = `ESIC-${String(nextSeq).padStart(5, "0")}-${suffix}`;
+            let docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
+            let targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
+            let targetSnap = await transaction.get(targetDocRef);
+            while (targetSnap.exists()) {
+              nextSeq += 1;
+              tokenCand = `ESIC-${String(nextSeq).padStart(5, "0")}-${suffix}`;
+              docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
+              targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
+              targetSnap = await transaction.get(targetDocRef);
+            }
+            transaction.set(counterDocRef, {
+              lastSeq: nextSeq,
+              updatedAt: Date.now(),
+              lastAssignedToken: tokenCand,
+            }, { merge: true });
+            return { confirmedToken: tokenCand, confirmedDocId: docIdCand };
+          });
+          if (txRes?.confirmedToken) {
+            unifiedToken = txRes.confirmedToken;
+            appointmentDocId = txRes.confirmedDocId;
+          }
+        } catch (e) {
+          console.warn("Manual booking atomic transaction warning:", e);
+        }
+      }
+
+      if (!unifiedToken) {
+        const randomSeq = String(Math.floor(10000 + Math.random() * 90000));
+        unifiedToken = `ESIC-${randomSeq}-DISP`;
+        appointmentDocId = unifiedToken.replace(/[^a-zA-Z0-9_-]/g, "_");
+      }
 
       const payload = {
         id: appointmentDocId,
@@ -2346,32 +2390,29 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         }
       }
 
-      // Status
+      // Status Filter
       if (statusFilter !== "all") {
         const appStatus = (app.status || "scheduled").toLowerCase();
-        const isAttendedOrVisited = Boolean(
+        const isNonClin = isNonClinicalAppointment(app);
+        // An appointment is ONLY visited/attended after the Pharmacist dispenses/completes it
+        const isPharmacistDispensed = Boolean(
           app.dispensedAt ||
           app.dispensedBy ||
           app.pharmacistName ||
-          app.visitedAt ||
-          app.receptionCheckedInAt ||
           appStatus === "dispensed" ||
           appStatus === "completed" ||
-          appStatus === "visited" ||
-          appStatus === "checked_in" ||
-          appStatus === "with_doctor" ||
-          appStatus === "with_pharmacist" ||
-          Boolean(app.isCompleted)
+          Boolean(app.isCompleted) ||
+          (isNonClin && (appStatus === "visited" || app.completedAt))
         );
 
         if (statusFilter === "visited") {
-          // Show visited/attended consultations
-          if (!isAttendedOrVisited || appStatus === "cancelled") {
+          // Show visited/attended consultations (strictly after pharmacy dispensation)
+          if (!isPharmacistDispensed || appStatus === "cancelled") {
             return false;
           }
         } else if (statusFilter === "scheduled") {
-          // Scheduled only includes truly pending clinical visits where beneficiary has not arrived
-          if (isAttendedOrVisited || appStatus === "cancelled") {
+          // Scheduled only includes pending clinical visits (not yet dispensed by pharmacist)
+          if (isPharmacistDispensed || appStatus === "cancelled") {
             return false;
           }
         } else if (statusFilter === "cancelled") {
@@ -2490,25 +2531,21 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
       total++;
       const st = (app.status || "scheduled").toLowerCase();
-      // Count as visited if dispensed, completed, or patient checked in / visited
-      const isAttendedOrVisited = Boolean(
+      const isNonClin = isNonClinicalAppointment(app);
+      // Count as visited ONLY after the Pharmacist marks it dispensed or completed
+      const isPharmacistDispensed = Boolean(
         app.dispensedAt ||
         app.dispensedBy ||
         app.pharmacistName ||
-        app.visitedAt ||
-        app.receptionCheckedInAt ||
         st === "dispensed" ||
         st === "completed" ||
-        st === "visited" ||
-        st === "checked_in" ||
-        st === "with_doctor" ||
-        st === "with_pharmacist" ||
-        Boolean(app.isCompleted)
+        Boolean(app.isCompleted) ||
+        (isNonClin && (st === "visited" || app.completedAt))
       );
 
       if (st === "cancelled") {
         cancelled++;
-      } else if (isAttendedOrVisited) {
+      } else if (isPharmacistDispensed) {
         visited++;
       } else {
         scheduled++;
@@ -2983,17 +3020,34 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
               status === "completed"
             );
             // Strict sequential clinical progression: Receptionist -> Doctor -> Pharmacist
-            // Pharmacist Dispensation CANNOT happen before Doctor Consultation:
-            const isDispensed = !isCancelled && (
-              isNonClin
-                ? (status === "dispensed" || status === "completed" || Boolean(app.completedAt))
-                : (hasDoctorConsulted && (status === "dispensed" || status === "completed" || Boolean(app.dispensedBy || app.pharmacistName || app.dispensedAt)))
+            // Pharmacist Dispensation CANNOT happen before Doctor Consultation.
+            // Visited is ONLY shown AFTER Pharmacist dispenses/completes:
+            const isPharmacistDispensed = !isCancelled && Boolean(
+              app.dispensedAt ||
+              app.dispensedBy ||
+              app.pharmacistName ||
+              status === "dispensed" ||
+              status === "completed" ||
+              Boolean(app.isCompleted) ||
+              (isNonClin && (status === "visited" || Boolean(app.completedAt)))
             );
-            const isWithPharmacist = !isDispensed && !isCancelled && !isNonClin && hasDoctorConsulted && (status === "with_pharmacist" || status === "pharmacy_queue" || status === "prescribed" || status === "consulted");
-            const isWithDoctor = !isDispensed && !isWithPharmacist && !isCancelled && isCheckedIn && !hasDoctorConsulted;
-            const isVisited = !isDispensed && !isWithPharmacist && !isWithDoctor && !isCancelled && isCheckedIn;
-            const isVisitCompleted = isDispensed || status === "completed" || Boolean(app.isCompleted);
-            const isScheduled = !isCheckedIn && !isCancelled;
+            const isWithPharmacist = !isPharmacistDispensed && !isCancelled && !isNonClin && Boolean(
+              hasDoctorConsulted ||
+              status === "with_pharmacist" ||
+              status === "pharmacy_queue" ||
+              status === "prescribed" ||
+              status === "consulted"
+            );
+            const isWithDoctor = !isPharmacistDispensed && !isWithPharmacist && !isCancelled && Boolean(
+              isCheckedIn ||
+              status === "with_doctor" ||
+              status === "doctor_queue" ||
+              status === "visited" ||
+              app.receptionCheckedInBy ||
+              app.receptionCheckedInAt ||
+              app.visitedBy
+            );
+            const isScheduled = !isCheckedIn && !isWithDoctor && !isWithPharmacist && !isPharmacistDispensed && !isCancelled;
             const rawAgent = app.bookedByName || app.bookedBy || app.agentName || "Triage Agent";
             const agentName = String(rawAgent).split("(")[0].replace(/<.*?>/, "").trim();
             const itemKey = app.id || app.tokenNo || app.referenceNo;
@@ -3007,7 +3061,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     ? "border-blue-500 ring-2 ring-blue-100 bg-blue-50/20"
                     : isCancelled
                     ? "border-l-rose-500 opacity-90"
-                    : isDispensed
+                    : isPharmacistDispensed
                     ? "border-l-emerald-500"
                     : isNonClin
                     ? "border-l-orange-500"
@@ -3015,8 +3069,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     ? "border-l-purple-500"
                     : isWithDoctor
                     ? "border-l-blue-500"
-                    : isVisited
-                    ? "border-l-amber-500"
                     : "border-l-sky-500"
                 }`}
               >
@@ -3223,7 +3275,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                   <div className="flex flex-col items-start md:items-end gap-2 shrink-0">
                     {/* The Status Badge & Follow-up Button on Top */}
                     <div className="flex flex-wrap items-center gap-2">
-                      {isVisitCompleted || isDispensed || isVisited || status === "completed" || status === "visited" ? (
+                      {isPharmacistDispensed ? (
                         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold uppercase bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-2xs">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                           <span>VISITED</span>
@@ -3244,8 +3296,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                           <span>CANCELLED</span>
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold uppercase bg-amber-50 text-amber-900 border border-amber-300 shadow-2xs">
-                          <Clock className="w-3.5 h-3.5 text-amber-600" />
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold uppercase bg-sky-50 text-sky-800 border border-sky-300 shadow-2xs">
+                          <Clock className="w-3.5 h-3.5 text-sky-600" />
                           <span>SCHEDULED</span>
                         </span>
                       )}

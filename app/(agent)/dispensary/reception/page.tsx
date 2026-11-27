@@ -15,7 +15,7 @@ import {
 import { bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
-import { AppointmentRecord, isDispensaryMatch, AppointmentVitals, isNonClinicalAppointment, formatStaffTimestamp } from "@/lib/appointmentTypes";
+import { AppointmentRecord, isDispensaryMatch, AppointmentVitals, isNonClinicalAppointment, formatStaffTimestamp, getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
 import { logUserActivity } from "@/lib/activityLogger";
 import { createDispensaryNotification } from "@/lib/notificationService";
 import { syncAppointmentUpdateToSheet } from "@/lib/googleSheetsSync";
@@ -160,22 +160,21 @@ export default function ReceptionDeskPage() {
   }, [appointments, isDispensaryStaff, staffDispensary, userProfile?.dispensaryId, selectedDate]);
 
   // Filtered by search & queue tab
-  // For Admin account: put all appointments that are not completed (with recip, with doc, with pharma, or in any stage!)
+  // Arrival Queue: strictly appointments pending arrival & reception check-in
   const queuePatients = useMemo(() => {
-    if (isAdmin) {
-      return scopedList.filter((a) => a.status !== "completed" && a.status !== "cancelled");
-    }
-    return scopedList.filter((a) => a.status === "scheduled");
-  }, [scopedList, isAdmin]);
+    return scopedList.filter((a) => {
+      const stage = getEffectiveAppointmentStage(a);
+      return stage === "scheduled";
+    });
+  }, [scopedList]);
 
+  // Checked-In: appointments that have completed reception check-in and forwarded to doctor / pharmacist / completed
   const checkedInPatients = useMemo(() => {
-    if (isAdmin) {
-      return scopedList.filter((a) => a.status === "completed");
-    }
-    return scopedList.filter(
-      (a) => a.status === "with_doctor" || a.status === "visited" || a.status === "pharmacy_queue" || a.status === "completed"
-    );
-  }, [scopedList, isAdmin]);
+    return scopedList.filter((a) => {
+      const stage = getEffectiveAppointmentStage(a);
+      return stage === "with_doctor" || stage === "with_pharmacist" || stage === "completed";
+    });
+  }, [scopedList]);
 
   const currentList = activeTab === "queue" ? queuePatients : checkedInPatients;
 
@@ -376,11 +375,11 @@ export default function ReceptionDeskPage() {
         <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
           <div>
             <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-              {isAdmin ? "Active OPD Queue" : "Awaiting Check-In"}
+              Awaiting Check-In
             </div>
             <div className="text-2xl font-black text-amber-600 mt-0.5">{queuePatients.length}</div>
             <div className="text-[11px] text-slate-400 mt-1">
-              {isAdmin ? "Uncompleted in all desks" : "Pending arrival at reception"}
+              Pending arrival at reception
             </div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600 shrink-0">
@@ -391,11 +390,11 @@ export default function ReceptionDeskPage() {
         <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
           <div>
             <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-              {isAdmin ? "Completed Visits" : "Checked In / With Doctor"}
+              Checked In / With Doctor
             </div>
             <div className="text-2xl font-black text-blue-600 mt-0.5">{checkedInPatients.length}</div>
             <div className="text-[11px] text-slate-400 mt-1">
-              {isAdmin ? "Consultations & medicines dispensed" : "Vitals recorded & queued"}
+              Vitals recorded & queued
             </div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shrink-0">
@@ -434,7 +433,7 @@ export default function ReceptionDeskPage() {
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            {isAdmin ? `Active Queue (${queuePatients.length})` : `Arrival Queue (${queuePatients.length})`}
+            Arrival Queue ({queuePatients.length})
           </button>
           <button
             onClick={() => setActiveTab("checked_in")}
@@ -444,7 +443,7 @@ export default function ReceptionDeskPage() {
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            {isAdmin ? `Completed Visits (${checkedInPatients.length})` : `Checked-In (${checkedInPatients.length})`}
+            Checked-In ({checkedInPatients.length})
           </button>
         </div>
 

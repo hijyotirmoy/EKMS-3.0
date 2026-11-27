@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getFirestoreDb, getBookingDb, auth } from "@/lib/firebase";
-import { doc, setDoc, collection, onSnapshot, query } from "firebase/firestore";
+import { doc, setDoc, getDoc, collection, onSnapshot, query, runTransaction } from "firebase/firestore";
 import {
   isSlotInPast,
   getFirstAvailableSlot,
@@ -1523,21 +1523,21 @@ ${historySection}`;
       if (matchAny5) return matchAny5[1];
     }
 
+    let calculatedSeq = 1;
     const targetRef = caseRef || propCaseRef || result?.case_ref || "";
     if (targetRef) {
       const caMatch = String(targetRef).match(/^CA(\d{4})/i);
       if (caMatch) {
-        const n = parseInt(caMatch[1], 10);
-        return String(n).padStart(5, "0");
-      }
-      const digitsMatch = String(targetRef).match(/\d+/);
-      if (digitsMatch) {
-        const n = parseInt(digitsMatch[0], 10);
-        return String(n).padStart(5, "0");
+        calculatedSeq = parseInt(caMatch[1], 10);
+      } else {
+        const digitsMatch = String(targetRef).match(/\d+/);
+        if (digitsMatch) {
+          calculatedSeq = parseInt(digitsMatch[0], 10);
+        }
       }
     }
 
-    return "00001";
+    return String(calculatedSeq || 1).padStart(5, "0");
   };
 
   const getUnifiedReferenceCode = (targetTeamId, targetFacility, targetFacilityName) => {
@@ -2359,7 +2359,7 @@ ${historySection}`;
     setAppointmentModalOpen(true);
   };
 
-  const handleConfirmBooking = (e) => {
+  const handleConfirmBooking = async (e) => {
     e?.preventDefault();
     if (isForwardedToTeleOrAmbulance) {
       toast.error(
@@ -2429,7 +2429,7 @@ ${historySection}`;
     setIsBookingSubmitting(true);
     try {
       const resolvedFacilityName = selectedFacility?.name || facilityDisplayName;
-      const unifiedReferenceNo = getUnifiedReferenceCode(selectedTeam.id, selectedFacility, resolvedFacilityName);
+      let unifiedReferenceNo = getUnifiedReferenceCode(selectedTeam.id, selectedFacility, resolvedFacilityName);
       const tokenNo = unifiedReferenceNo;
       const resolvedChiefComplaint =
         extractedDetails.primaryComplaint ||
@@ -2677,7 +2677,65 @@ ${historySection}`;
         pastCallHistory: pastCallsData,
       };
 
-      const appointmentDocId = unifiedReferenceNo.replace(/[^a-zA-Z0-9_-]/g, "_");
+      // Upgrade token generation to Firestore atomic counter using runTransaction()
+      // Reads counters/bookingSequence (1 read), increments lastSeq, verifies doc doesn't exist (1 read),
+      // and atomically updates the counter doc in a single ACID transaction.
+      let finalUnifiedRef = unifiedReferenceNo;
+      let appointmentDocId = finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+      try {
+        const bDb = getBookingDb();
+        if (bDb) {
+          const counterDocRef = doc(bDb, "counters", "bookingSequence");
+          const txRes = await runTransaction(bDb, async (transaction) => {
+            const counterSnap = await transaction.get(counterDocRef);
+            let nextSeq = 153;
+            if (counterSnap.exists()) {
+              const currentLast = counterSnap.data().lastSeq;
+              nextSeq = (typeof currentLast === "number" && !isNaN(currentLast) && currentLast > 0) ? currentLast + 1 : 153;
+            }
+
+            const { prefix, suffix } = getFacilityPrefixSuffix(selectedTeam?.id, selectedFacility, resolvedFacilityName);
+            let tokenCand = `${prefix}-${String(nextSeq).padStart(5, "0")}-${suffix}`;
+            let docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
+            let targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
+
+            // Verify target booking doc does not already exist before writing
+            let targetSnap = await transaction.get(targetDocRef);
+            while (targetSnap.exists()) {
+              nextSeq += 1;
+              tokenCand = `${prefix}-${String(nextSeq).padStart(5, "0")}-${suffix}`;
+              docIdCand = tokenCand.replace(/[^a-zA-Z0-9_-]/g, "_");
+              targetDocRef = doc(bDb, "dispensary_appointments", docIdCand);
+              targetSnap = await transaction.get(targetDocRef);
+            }
+
+            // Atomically update counter doc
+            transaction.set(counterDocRef, {
+              lastSeq: nextSeq,
+              updatedAt: Date.now(),
+              lastAssignedToken: tokenCand,
+            }, { merge: true });
+
+            return {
+              confirmedToken: tokenCand,
+              confirmedDocId: docIdCand,
+            };
+          });
+
+          if (txRes?.confirmedToken) {
+            finalUnifiedRef = txRes.confirmedToken;
+            appointmentDocId = txRes.confirmedDocId;
+          }
+        }
+      } catch (txErr) {
+        console.warn("Atomic counter transaction warning (falling back gracefully):", txErr?.message);
+      }
+
+      unifiedReferenceNo = finalUnifiedRef;
+      newBooking.tokenNo = finalUnifiedRef;
+      newBooking.referenceNo = finalUnifiedRef;
+      newBooking.id = appointmentDocId;
       const appointmentRecord = {
         id: appointmentDocId,
         tokenNo: unifiedReferenceNo,
@@ -2713,12 +2771,18 @@ ${historySection}`;
         purpose: finalIsNonClinical ? `[${enquiryType}] ${chiefIssue}` : resolvedChiefComplaint,
         chiefComplaint: finalIsNonClinical ? `[${enquiryType}] ${chiefIssue}` : resolvedChiefComplaint,
         notes: newBooking.agentNotes || "",
-        status: "scheduled",
-        doctor: apptDoctor || null,
-        doctorName: null,
-        prescribedBy: null,
-        doctorConsultedAt: null,
-        doctorNotes: null,
+        status: (bookedAppointment?.status && bookedAppointment.status !== "scheduled") ? bookedAppointment.status : "scheduled",
+        doctor: apptDoctor || bookedAppointment?.doctor || null,
+        doctorName: bookedAppointment?.doctorName || null,
+        prescribedBy: bookedAppointment?.prescribedBy || null,
+        doctorConsultedAt: bookedAppointment?.doctorConsultedAt || null,
+        doctorNotes: bookedAppointment?.doctorNotes || null,
+        receptionCheckedInAt: bookedAppointment?.receptionCheckedInAt || null,
+        receptionCheckedInBy: bookedAppointment?.receptionCheckedInBy || null,
+        visitedAt: bookedAppointment?.visitedAt || null,
+        visitedBy: bookedAppointment?.visitedBy || null,
+        dispensedAt: bookedAppointment?.dispensedAt || null,
+        dispensedBy: bookedAppointment?.dispensedBy || null,
         bookedByEmail: candidateEmail,
         bookedByName: activeAgentName,
         bookedBy: activeAgentName,
