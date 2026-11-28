@@ -265,7 +265,8 @@ export default function AppointmentPage() {
 
     const q = query(
       collection(bookingDb, "dispensary_appointments"),
-      orderBy("createdAt", "desc")
+      orderBy("createdAt", "desc"),
+      limit(250)
     );
 
     const unsub = onSnapshot(

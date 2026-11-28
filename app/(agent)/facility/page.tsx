@@ -10,6 +10,7 @@ import { Facility } from "@/lib/types";
 import { calculateDistance } from "@/lib/utils";
 import { logUserActivity } from "@/lib/activityLogger";
 import { getCachedFacilities } from "@/lib/clientCache";
+import { isFacilityAccepting, getFacilityAvailabilityMap } from "@/lib/facilityAvailability";
 import {
   Building2,
   Search,
@@ -29,6 +30,7 @@ export default function FacilityPage() {
   const { user } = useAuth();
   const { toast } = usePopup();
   const [facilities, setFacilities] = useState<Facility[]>(() => (getCachedFacilities() as Facility[]) || []);
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, boolean>>(() => getFacilityAvailabilityMap());
   const [loading, setLoading] = useState(false);
 
   // Filters
@@ -52,6 +54,20 @@ export default function FacilityPage() {
 
   // 1. Fetch Facilities with session caching & offline fallback
   useEffect(() => {
+    fetch("/api/facilities/availability")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.availability) {
+          setAvailabilityMap(data.availability);
+        }
+      })
+      .catch(() => {});
+
+    const handleAvailChange = (e: any) => {
+      if (e.detail) setAvailabilityMap(e.detail);
+    };
+    window.addEventListener("facility_availability_change", handleAvailChange);
+
     let isMounted = true;
 
     const loadFacilities = async () => {
@@ -90,6 +106,7 @@ export default function FacilityPage() {
 
     return () => {
       isMounted = false;
+      window.removeEventListener("facility_availability_change", handleAvailChange);
     };
   }, []);
 
@@ -442,6 +459,15 @@ export default function FacilityPage() {
                     >
                       {fac.type || "General"}
                     </span>
+                    {isFacilityAccepting(fac, availabilityMap) ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold border border-emerald-200 bg-emerald-50 text-emerald-700 uppercase tracking-wider">
+                        Accepting
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold border border-rose-200 bg-rose-50 text-rose-700 uppercase tracking-wider">
+                        Suspended / Offline
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1">

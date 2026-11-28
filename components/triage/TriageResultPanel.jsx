@@ -2275,10 +2275,10 @@ export const TriageResultPanel = ({
             <AlertOctagon className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
             <div>
               <p className="font-extrabold text-xs">
-                Dispensary Schedule ({dispensaryStatus.reason || "Closed"}):
+                Dispensary Schedule ({dispensaryStatus.reason || "Closed Sunday"}):
               </p>
               <p className="text-[11.5px] text-amber-900 dark:text-amber-300 mt-0.5 leading-snug">
-                ESIS Dispensaries operate Mon–Fri &amp; 1st, 3rd, 5th Sat 10:00 AM – 4:00 PM (Closed 2nd &amp; 4th Sat, Sun). For emergency care, direct patient to 24x7 Casualty at the nearest Hospital.
+                ESIS Dispensaries operate Monday to Saturday 10:00 AM – 4:00 PM (Closed only on Sunday). For emergency care, direct patient to 24x7 Casualty at the nearest Hospital.
               </p>
             </div>
           </div>
@@ -2490,7 +2490,7 @@ export const TriageResultPanel = ({
                           )}
                           {(f.is_dispensary || isDispensary(f)) && !isWeekend && (
                             <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:text-emerald-300">
-                              OPD: Mon–Fri 10AM–4PM · Sat 10AM–12PM
+                              OPD: Mon–Sat 10AM–4PM (Closed Sunday)
                             </span>
                           )}
                           {(f.is_hospital || isHospital(f) || f.is_tie_up || isTieUp(f)) && (
@@ -2865,7 +2865,7 @@ export const TriageResultPanel = ({
                               )}
                               {(f.is_dispensary || isDispensary(f)) && !isWeekend && (
                                 <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:text-emerald-300">
-                                  OPD: Mon–Fri 10AM–4PM
+                                  OPD: Mon–Sat 10AM–4PM (Closed Sunday)
                                 </span>
                               )}
                               {(f.is_hospital || isHospital(f) || f.is_tie_up || isTieUp(f)) && (

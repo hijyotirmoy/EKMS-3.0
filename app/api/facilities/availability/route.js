@@ -49,7 +49,13 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const map = body?.availability || body || {};
-    serverAvailabilityMap = { ...serverAvailabilityMap, ...map };
+    const shouldReplace = Boolean(body?.replace);
+
+    if (shouldReplace) {
+      serverAvailabilityMap = { ...map };
+    } else {
+      serverAvailabilityMap = { ...serverAvailabilityMap, ...map };
+    }
     isLoadedFromDb = true;
 
     // Persist to Firestore
@@ -59,14 +65,14 @@ export async function POST(request) {
         if (ctx.type === "admin") {
           await ctx.db.collection("system_meta").doc("facility_availability").set(
             { availability: serverAvailabilityMap, updatedAt: Date.now() },
-            { merge: true }
+            { merge: !shouldReplace }
           );
         } else {
           const { doc, setDoc } = await import("firebase/firestore");
           await setDoc(
             doc(ctx.db, "system_meta", "facility_availability"),
             { availability: serverAvailabilityMap, updatedAt: Date.now() },
-            { merge: true }
+            { merge: !shouldReplace }
           );
         }
       }

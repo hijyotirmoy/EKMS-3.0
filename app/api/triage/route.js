@@ -293,7 +293,7 @@ export async function POST(request) {
       distance_km: nearestDispensary?.distance_km ?? null,
       role: "Primary Care Clinic",
       status: dispStatus.isOpen ? "Open Now" : "Closed",
-      hours: "Mon-Fri 10am-4pm, 1st, 3rd & 5th Sat 10am-12pm",
+      hours: "Mon-Sat 10am-4pm (Closed Sunday)",
     };
     const dir104 = {
       rank: 0,
@@ -457,7 +457,7 @@ export async function POST(request) {
       // MILD CASES:
       // Low-intensity, localized, or early-stage symptoms.
       // Little to no disruption of daily activities, normal functions, or vital signs.
-      // Dispensary open hours (Mon-Fri 10am-4pm, 1st & 3rd Sat 10am-12pm):
+      // Dispensary open hours (Mon-Sat 10am-4pm, Closed Sunday):
       //   1st Dispensary, 2nd 104, 3rd ESIC Hospital, 4th Govt Hospital, 5th Tie-Up, 6th 108
       // Dispensary closed hours:
       //   1st 104, 2nd Dispensary, 3rd ESIC Hospital, 4th Govt Hospital, 5th Tie-Up, 6th 108
@@ -474,8 +474,8 @@ export async function POST(request) {
           ? `${nearestDispensary.name} (ESIS Dispensary · Open Now)`
           : "ESIS Dispensary (Primary Care OPD)";
         triage.recommended_action = nearestDispensary
-          ? `Dispensary is open now. Advise patient to visit ${nearestDispensary.name} (${nearestDispensary.pincode ? `PIN: ${nearestDispensary.pincode}, ` : ""}${nearestDispensary.distance_km != null ? `${nearestDispensary.distance_km} km away` : "nearest"}) during OPD hours (Mon–Fri 10:00 AM – 4:00 PM, 1st, 3rd & 5th Sat 10:00 AM – 12:00 PM) for doctor consultation and medicines.`
-          : "Dispensary is open now. Advise patient to visit nearest ESIS Dispensary during regular OPD hours (Mon–Fri 10:00 AM – 4:00 PM, 1st, 3rd & 5th Sat 10:00 AM – 12:00 PM).";
+          ? `Dispensary is open now. Advise patient to visit ${nearestDispensary.name} (${nearestDispensary.pincode ? `PIN: ${nearestDispensary.pincode}, ` : ""}${nearestDispensary.distance_km != null ? `${nearestDispensary.distance_km} km away` : "nearest"}) during OPD hours (Mon–Sat 10:00 AM – 4:00 PM, Closed Sunday) for doctor consultation and medicines.`
+          : "Dispensary is open now. Advise patient to visit nearest ESIS Dispensary during regular OPD hours (Mon–Sat 10:00 AM – 4:00 PM, Closed Sunday).";
         triage.referral_destination = dispName;
         triage.call_referral_primary = dispName;
         triage.call_referral_primary_reason = nearestDispensary
@@ -501,12 +501,12 @@ export async function POST(request) {
       } else {
         forwardingHierarchy = [dir104, dirDispensary, dirEsic, dirGovt, dirTieUp, dir108];
         triage.recommended_facility_type = "104 Health Helpline (Doctor on Call)";
-        triage.recommended_action = "Dispensary is currently closed. Advise caller to connect with 104 Health Helpline for 24x7 doctor tele-consultation over the phone, or visit ESIS Dispensary during open hours (Mon–Fri 10:00 AM – 4:00 PM, 1st, 3rd & 5th Sat 10:00 AM – 12:00 PM).";
+        triage.recommended_action = "Dispensary is currently closed. Advise caller to connect with 104 Health Helpline for 24x7 doctor tele-consultation over the phone, or visit ESIS Dispensary during open hours (Mon–Sat 10:00 AM – 4:00 PM, Closed Sunday).";
         triage.referral_destination = "104 Health Helpline";
         triage.call_referral_primary = "104 Health Helpline";
         triage.call_referral_primary_reason = "Connect with 104 Health Helpline for 24x7 doctor tele-consultation over the phone.";
         triage.call_referral_secondary = dispName;
-        triage.call_referral_secondary_reason = `Visit nearest ESIS Dispensary (${dispName}) during operating hours (Mon–Fri 10:00 AM – 4:00 PM, 1st, 3rd & 5th Sat 10:00 AM – 12:00 PM) for in-person checkup.`;
+        triage.call_referral_secondary_reason = `Visit nearest ESIS Dispensary (${dispName}) during operating hours (Mon–Sat 10:00 AM – 4:00 PM, Closed Sunday) for in-person checkup.`;
       }
     }
 

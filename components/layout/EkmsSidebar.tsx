@@ -41,6 +41,7 @@ import {
   HeartPulse,
   History,
   Link2,
+  Type as TIcon,
 } from "lucide-react";
 import { isPageRestricted } from "@/lib/pageAccess";
 import { isDoctorUser } from "@/lib/doctorAvailability";
@@ -371,7 +372,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     { href: "/booking", label: "Booking", icon: CalendarCheck, color: "text-amber-500" },
     { href: "/appointment", label: "Appointments", icon: CalendarClock, color: "text-teal-600" },
     { href: "/data", label: "Data", icon: Database, color: "text-teal-600" },
-    { href: "/triage", label: "Triage", icon: HeartPulse, color: "text-rose-600", imageSrc: "/triage-logo.png" },
+    { href: "/triage", label: "Triage", icon: TIcon, color: "text-emerald-600" },
   ];
 
   const dispensaryLinks = [
@@ -423,28 +424,12 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
 
   const connectedSites = [
     {
-      href: "/triage",
-      label: "EKMS Triage",
-      domain: "ekms.in/triage",
-      icon: HeartPulse,
-      imageSrc: "/triage-logo.png",
-      color: "text-rose-600",
-    },
-    {
       href: "https://map.ekms.in/",
       label: "EKMS Map",
       domain: "map.ekms.in",
       icon: MapPin,
       imageSrc: "/map-logo.png",
       color: "text-emerald-600",
-    },
-    {
-      href: "https://ai.ekms.in/",
-      label: "EKMS AI",
-      domain: "ai.ekms.in",
-      icon: Sparkles,
-      imageSrc: "/ai-logo.png",
-      color: "text-purple-600",
     },
     {
       href: "https://data.ekms.in/",
@@ -472,7 +457,7 @@ export default function EkmsSidebar({ isOpen, onClose }: EkmsSidebarProps) {
     { href: "/dispensary/reception", label: "Reception", icon: UserCheck, color: "text-blue-600", isExternal: false, dispensaryStaffOnly: true, badge: receptionQueueCount },
     { href: "/dispensary/doctor", label: "Doctor", icon: Stethoscope, color: "text-teal-600", isExternal: false, dispensaryStaffOnly: true, badge: doctorQueueCount },
     { href: "/dispensary/pharmacy", label: "Pharmacy", icon: Pill, color: "text-amber-500", isExternal: false, dispensaryStaffOnly: true, badge: pharmacyQueueCount },
-    { href: "/triage", label: "Triage", icon: HeartPulse, color: "text-rose-600", isExternal: false, imageSrc: "/triage-logo.png" },
+    { href: "/triage", label: "Triage", icon: TIcon, color: "text-emerald-600", isExternal: false },
     { id: "crm-sync", href: "#crm-sync", label: "CRM", icon: Link2, color: "text-emerald-600", imageSrc: "/piramal-crm-logo.png", isAction: true, onClick: () => setShowCrmBridgeModal(true), tooltip: "Dhwani CRM Live Sync" },
   ];
 

@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { getFirestoreDb } from "@/lib/firebase";
 import { doc, setDoc } from "firebase/firestore";
+import { generateNextCaseRef } from "@/lib/caseId";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -70,6 +71,14 @@ function appendLocalRecord(record) {
         return oldVal || newVal || fallback;
       };
 
+      const pickDispensary = (newVal, oldVal) => {
+        const cleanNew = String(newVal || "").trim();
+        const cleanOld = String(oldVal || "").trim();
+        if (cleanNew && cleanNew !== "ESIS Dispensary" && cleanNew !== "—") return cleanNew;
+        if (cleanOld && cleanOld !== "ESIS Dispensary" && cleanOld !== "—") return cleanOld;
+        return cleanNew || cleanOld || "ESIS Dispensary";
+      };
+
       finalRecord = {
         ...prev,
         ...record,
@@ -80,7 +89,7 @@ function appendLocalRecord(record) {
         reference_id: prev.reference_id || bookingRefId || record.reference_id || "",
         ip_no: mergedIp,
         date_time: prev.date_time || record.date_time || "",
-        dispensary_name: record.dispensary_name || prev.dispensary_name || "ESIS Dispensary",
+        dispensary_name: pickDispensary(record.dispensary_name, prev.dispensary_name),
         agent_name: prev.agent_name || record.agent_name || "Agent",
         chief_complaint: prev.chief_complaint || record.chief_complaint || "",
         status: record.status || prev.status || "Booking Confirmed",
@@ -225,6 +234,13 @@ export async function POST(request) {
     if (caseId.startsWith("ESI-") || caseId.startsWith("ESIC-") || caseId.startsWith("DISP-")) {
       caseId = "";
     }
+    const isStatusUpdate = Boolean(body.is_status_update || body._isStatusUpdate || body.is_update || body.action === "update");
+
+    // Ensure new bookings/calls ALWAYS have a unique monotonic Case ID (floor >= CA0251AB01)
+    // Never allow empty case_id on new entries so Google Apps Script never collides with historical rows
+    if (!caseId && !isStatusUpdate) {
+      caseId = generateNextCaseRef();
+    }
     const bookingRefId = (body.booking_ref_id || (body.reference_id?.startsWith("ESI") ? body.reference_id : "")).trim();
 
     if (!caseId && !bookingRefId && !body?.reference_id) {
@@ -250,6 +266,23 @@ export async function POST(request) {
       ? cleanIpDigits
       : (cleanIpDigits || (String(rawIp).trim() && String(rawIp).trim() !== "N/A" ? String(rawIp).trim() : "N/A"));
 
+    const rawDispensary =
+      body.dispensary_name ||
+      body.facility_name ||
+      body.facilityName ||
+      body.dispensaryName ||
+      body.facility ||
+      body.target_facility ||
+      body.targetFacility ||
+      body.recommended_facility ||
+      "";
+    const cleanDispensary = typeof rawDispensary === "object"
+      ? (rawDispensary.name || rawDispensary.displayName || "")
+      : String(rawDispensary || "").trim();
+    const finalDispensaryName = (cleanDispensary && cleanDispensary !== "ESIS Dispensary")
+      ? cleanDispensary
+      : (cleanDispensary || "ESIS Dispensary");
+
     const record = {
       timestamp: body.timestamp || new Date().toISOString(),
       record_type: isBooking ? "Booking Done" : "Call Only",
@@ -258,13 +291,13 @@ export async function POST(request) {
       reference_id: isBooking ? (bookingRefId || caseId || "") : caseId,
       caller_id: callerId,
       callerId: callerId,
-      name: body.name || "Anonymous",
-      phone_no: body.phone_no || body.phone || "",
+      name: body.name || body.patientName || body.ipName || body.callerName || "Anonymous",
+      phone_no: body.phone_no || body.phone || body.patientPhone || "",
       ip_no: finalIpNo,
       date_time: isBooking ? (body.date_time || "") : "", // Empty if Call Only!
-      dispensary_name: body.dispensary_name || "ESIS Dispensary",
-      agent_name: body.agent_name || "Agent",
-      chief_complaint: body.chief_complaint || "",
+      dispensary_name: finalDispensaryName,
+      agent_name: body.agent_name || body.agentName || body.bookedByName || "Agent",
+      chief_complaint: body.chief_complaint || body.chiefComplaint || body.complaint || "",
       clinical_red_flags: body.clinical_red_flags || body.clinicalRedFlags || "None reported",
       hpi_duration: body.hpi_duration || body.hpiDuration || "Reported today",
       associated_symptoms: body.associated_symptoms || body.associatedSymptoms || "None reported",
@@ -297,7 +330,7 @@ export async function POST(request) {
       console.warn("Firestore sheets log warning:", fsErr.message);
     }
 
-    // 3. Forward to Google Apps Script Webhook if configured
+    // 3. Forward to Google Apps Script Webhook with timeout protection and retry
     const defaultWebhook =
       "https://script.google.com/macros/s/AKfycbzzk3DPzW9urW_i350_Kq5Sm1rPw9pcha6pEafuTowHH1Vcbl08vRxWX89qnlJgTjQP6w/exec";
     const webhookUrl =
@@ -310,23 +343,30 @@ export async function POST(request) {
     let webhookResponse = null;
 
     if (webhookUrl && webhookUrl.startsWith("http")) {
-      try {
-        const res = await fetch(webhookUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(6000),
-          body: JSON.stringify({
-            ...finalRecord,
-            action: finalRecord.is_status_update ? "update" : "append",
-            is_new_booking: !finalRecord.is_status_update,
-          }),
-        });
-        webhookStatus = res.ok ? "delivered" : `error_${res.status}`;
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          webhookResponse = await res.text();
-        } catch (_) {}
-      } catch (whErr) {
-        webhookStatus = `network_error: ${whErr.message}`;
+          const res = await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            redirect: "follow",
+            signal: AbortSignal.timeout(15000),
+            body: JSON.stringify({
+              ...finalRecord,
+              action: finalRecord.is_status_update ? "update" : "append",
+              is_new_booking: !finalRecord.is_status_update,
+            }),
+          });
+          webhookStatus = res.ok ? "delivered" : `error_${res.status}`;
+          try {
+            webhookResponse = await res.text();
+          } catch (_) {}
+          if (res.ok) break;
+        } catch (whErr) {
+          webhookStatus = `network_error: ${whErr.message}`;
+          if (attempt === 2) {
+            console.warn("Webhook delivery retry error:", whErr.message);
+          }
+        }
       }
     }
 

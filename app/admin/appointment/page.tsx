@@ -60,12 +60,13 @@ import { CancelAppointmentModal } from "@/components/appointments/CancelAppointm
 import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";
 import { SlotAvailabilityModal } from "@/components/appointments/SlotAvailabilityModal";
 import BulkUploadModal, { downloadBulkUploadTemplate } from "@/components/appointments/BulkUploadModal";
-import { GOOGLE_SHEET_URL } from "@/lib/googleSheetsSync";
+import { GOOGLE_SHEET_URL, recordAppointmentBookingToSheet } from "@/lib/googleSheetsSync";
 import { useStaffDirectory } from "@/lib/useStaffDirectory";
 import { extractIpNumber, isNonClinicalAppointment, formatStaffTimestamp, getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
 import { deleteAppointmentFromTriageApi } from "@/lib/triageSync";
 import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
 import { archiveToRecentlyDeleted } from "@/lib/recentlyDeleted";
+import { formatAgentFullName, formatAgentFirstName } from "@/lib/utils";
 
 function normalizeDispensaryName(str: string): string {
   if (!str) return "";
@@ -137,7 +138,7 @@ const ITEMS_PER_PAGE = 30;
 export default function AdminManageAppointmentPage() {
   const { user, userProfile } = useAuth();
   const { toast, showConfirm } = usePopup();
-  const { getStaffName, getDoctorName } = useStaffDirectory();
+  const { getStaffName, getDoctorName, staffMap } = useStaffDirectory();
   const isDispensaryStaff = isDispensaryStaffAccount(userProfile);
 
   useEffect(() => {
@@ -156,7 +157,7 @@ export default function AdminManageAppointmentPage() {
   // Filters & Search
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<
-    "all" | "reception" | "doctor" | "pharmacy" | "completed" | "cancelled"
+    "all" | "reception" | "doctor" | "pharmacy" | "completed" | "cancelled" | "scheduled" | "with_doctor" | "with_pharmacist" | "follow_up_done" | "need_follow_up" | "clinical" | "non_clinical"
   >("all");
   const [dateFilter, setDateFilter] = useState("today");
   const [dispensaryFilter, setDispensaryFilter] = useState("all");
@@ -174,21 +175,22 @@ export default function AdminManageAppointmentPage() {
   const [dispensaryStaffUsers, setDispensaryStaffUsers] = useState<UserProfile[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Extract unique agents for agent filter
+  // Extract unique agents for agent filter (clean Full Name as in profile)
   const uniqueAgents = useMemo(() => {
-    const map = new Map<string, { name: string; email: string }>();
+    const map = new Map<string, { name: string; key: string }>();
     appointments.forEach((a) => {
-      const name = (a.bookedByName || "").trim();
-      const email = (a.bookedByEmail || "").trim();
-      if (name || email) {
-        const key = email || name;
-        if (!map.has(key)) {
-          map.set(key, { name: name || email.split("@")[0], email });
-        }
+      const emailHint = a.bookedByEmail || a.agentEmail || "";
+      const raw = a.bookedByName || a.bookedBy || a.agentName || (a as any).agent_name || a.agentId || emailHint;
+      if (!raw && !emailHint) return;
+      const fullName = formatAgentFullName(raw, staffMap, emailHint);
+      if (!fullName || fullName === "Agent") return;
+      const key = fullName.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, { name: fullName, key: fullName });
       }
     });
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [appointments]);
+  }, [appointments, staffMap]);
 
   // Details Modal State
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
@@ -391,12 +393,12 @@ export default function AdminManageAppointmentPage() {
         }
       }
 
-      // Agent filter
+      // Agent filter (clean Full Name as in profile)
       if (agentFilter !== "all") {
-        const bName = (app.bookedByName || "").toLowerCase().trim();
-        const bEmail = (app.bookedByEmail || "").toLowerCase().trim();
-        const target = agentFilter.toLowerCase().trim();
-        if (bName !== target && bEmail !== target) {
+        const emailHint = app.bookedByEmail || app.agentEmail || "";
+        const raw = app.bookedByName || app.bookedBy || app.agentName || (app as any).agent_name || app.agentId || emailHint;
+        const appFullName = formatAgentFullName(raw, staffMap, emailHint);
+        if (appFullName.toLowerCase() !== agentFilter.toLowerCase().trim()) {
           return false;
         }
       }
@@ -418,16 +420,28 @@ export default function AdminManageAppointmentPage() {
 
       if (statusFilter !== "all") {
         const stage = getEffectiveAppointmentStage(app);
-        if (statusFilter === "reception") {
+        const isFollowUpClosed = app.followUpStatus === "closed";
+        const needsFollowUp = app.followUpStatus !== "closed" && stage !== "cancelled" && (app.status || "").toLowerCase() !== "cancelled";
+        const isNonClin = isNonClinicalAppointment(app);
+
+        if (statusFilter === "reception" || statusFilter === "scheduled") {
           if (stage !== "scheduled") return false;
-        } else if (statusFilter === "doctor") {
+        } else if (statusFilter === "doctor" || statusFilter === "with_doctor") {
           if (stage !== "with_doctor") return false;
-        } else if (statusFilter === "pharmacy") {
+        } else if (statusFilter === "pharmacy" || statusFilter === "with_pharmacist") {
           if (stage !== "with_pharmacist") return false;
+        } else if (statusFilter === "clinical") {
+          if (isNonClin) return false;
+        } else if (statusFilter === "non_clinical") {
+          if (!isNonClin) return false;
         } else if (statusFilter === "completed") {
           if (stage !== "completed") return false;
         } else if (statusFilter === "cancelled") {
           if (stage !== "cancelled") return false;
+        } else if (statusFilter === "follow_up_done") {
+          if (!isFollowUpClosed) return false;
+        } else if (statusFilter === "need_follow_up") {
+          if (!needsFollowUp) return false;
         }
       }
 
@@ -476,12 +490,12 @@ export default function AdminManageAppointmentPage() {
         }
       }
 
-      // Agent filter
+      // Agent filter (clean Full Name as in profile)
       if (agentFilter !== "all") {
-        const bName = (app.bookedByName || "").toLowerCase().trim();
-        const bEmail = (app.bookedByEmail || "").toLowerCase().trim();
-        const target = agentFilter.toLowerCase().trim();
-        if (bName !== target && bEmail !== target) {
+        const emailHint = app.bookedByEmail || app.agentEmail || "";
+        const raw = app.bookedByName || app.bookedBy || app.agentName || (app as any).agent_name || app.agentId || emailHint;
+        const appFullName = formatAgentFullName(raw, staffMap, emailHint);
+        if (appFullName.toLowerCase() !== agentFilter.toLowerCase().trim()) {
           return false;
         }
       }
@@ -556,6 +570,15 @@ export default function AdminManageAppointmentPage() {
           { merge: true }
         ),
       ]);
+      recordAppointmentBookingToSheet(
+        {
+          ...cancelModalApp,
+          status: "cancelled",
+          cancellationReason: finalReason,
+          is_status_update: true,
+        },
+        user?.displayName || user?.email || "Admin"
+      ).catch(() => {});
       toast.info(`Appointment ${cancelModalApp.tokenNo} cancelled.`);
       logUserActivity(user?.email, {
         desc: `Admin cancelled appointment ${cancelModalApp.tokenNo} for ${cancelModalApp.ipName}. Reason: ${finalReason}`,
@@ -1075,6 +1098,23 @@ export default function AdminManageAppointmentPage() {
             )}
           </div>
 
+          {/* Status Filter */}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            className="px-2.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer shadow-2xs max-w-[170px]"
+            title="Filter by status"
+          >
+            <option value="all">All Status</option>
+            <option value="scheduled">Scheduled</option>
+            <option value="with_doctor">With Doctor</option>
+            <option value="with_pharmacist">With Pharmacist</option>
+            <option value="clinical">Clinical Visit</option>
+            <option value="non_clinical">Non-Clinical Visit</option>
+            <option value="follow_up_done">Follow Up Done</option>
+            <option value="need_follow_up">Need Follow Up</option>
+          </select>
+
           {/* All Agents Filter */}
           <select
             value={agentFilter}
@@ -1083,7 +1123,7 @@ export default function AdminManageAppointmentPage() {
           >
             <option value="all">All Agents ({uniqueAgents.length})</option>
             {uniqueAgents.map((ag) => (
-              <option key={ag.email || ag.name} value={ag.name || ag.email}>
+              <option key={ag.key} value={ag.key}>
                 {ag.name}
               </option>
             ))}
@@ -1124,22 +1164,29 @@ export default function AdminManageAppointmentPage() {
           </select>
         </div>
 
-        {/* Bulk Selection Actions */}
-        {selectedIds.size > 0 && (
-          <div className="flex items-center gap-2 animate-in fade-in shrink-0 self-end lg:self-center">
-            <span className="text-xs font-bold text-teal-800 bg-teal-50 px-2.5 py-1.5 rounded-lg border border-teal-200">
-              {selectedIds.size} Selected
-            </span>
-            <button
-              onClick={handleBulkDelete}
-              disabled={bulkDeleting}
-              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>{bulkDeleting ? "Deleting..." : "Delete Selected"}</span>
-            </button>
+        {/* Right Side: Result Count & Actions */}
+        <div className="flex items-center gap-2 shrink-0 self-end lg:self-center">
+          <div className="text-xs font-bold text-slate-700 bg-slate-100 border border-slate-200/90 px-3 py-1.5 rounded-xl shadow-2xs whitespace-nowrap">
+            Showing <span className="text-teal-700 font-extrabold">{filteredAppointments.length}</span> {filteredAppointments.length === 1 ? "Appointment" : "Appointments"}
           </div>
-        )}
+
+          {/* Bulk Selection Actions */}
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-2 animate-in fade-in shrink-0">
+              <span className="text-xs font-bold text-teal-800 bg-teal-50 px-2.5 py-1.5 rounded-lg border border-teal-200">
+                {selectedIds.size} Selected
+              </span>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkDeleting}
+                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{bulkDeleting ? "Deleting..." : "Delete Selected"}</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 4. Table Records */}
@@ -1267,8 +1314,8 @@ export default function AdminManageAppointmentPage() {
                         </div>
                         <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
                           <span className="text-slate-400">Booked by:</span>
-                          <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={app.bookedByName || (app as any).bookedBy || (app as any).agentName || app.bookedByEmail || "Staff"}>
-                            {app.bookedByName && app.bookedByName.toLowerCase() !== "agent" ? app.bookedByName : (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : "Ekmsoffice")}
+                          <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={app.bookedByName || (app as any).bookedBy || (app as any).agentName || (app as any).agent_name || app.bookedByEmail || "Staff"}>
+                            {formatAgentFullName(app.bookedByName || (app as any).bookedBy || (app as any).agentName || (app as any).agent_name || app.bookedByEmail, staffMap, app.bookedByEmail || (app as any).agentEmail)}
                           </span>
                         </div>
                       </td>

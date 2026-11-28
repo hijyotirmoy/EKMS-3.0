@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, runTransaction } from "firebase/firestore";
 import { getActiveBookingDb, getOldBookingDb, getCasesSettingsDb } from "@/lib/firebase";
 
 export const dynamic = "force-dynamic";
@@ -30,8 +30,9 @@ function getMaxSeqFromLocalRecords(): number {
       if (Array.isArray(list)) {
         let max = 0;
         for (const item of list) {
-          const t = String(item.booking_ref_id || item.reference_id || item.tokenNo || "");
-          const m = t.match(/^[A-Z]{3,4}-(\d{4,6})-[A-Z0-9]{4,5}$/i);
+          const t = String(item.booking_ref_id || item.reference_id || item.tokenNo || "").trim();
+          // Strictly match production canonical ESI tokens (e.g. ESI-000098-DISP), ignore obsolete ESIC-*
+          const m = t.match(/^ESI-(\d{4,6})-(DISP|HOSP)$/i);
           if (m) {
             const num = parseInt(m[1], 10);
             if (num > max && num < 200000) max = num;
@@ -78,14 +79,20 @@ export async function POST(request: NextRequest) {
   return handleGenerateToken(request);
 }
 
+let inMemoryLastSeq = 0;
+
 async function handleGenerateToken(request: NextRequest) {
   let prefix = "ESI";
   let suffix = "DISP";
+  let isPreview = false;
 
   try {
     const url = new URL(request.url);
     const qPrefix = url.searchParams.get("prefix");
     const qSuffix = url.searchParams.get("suffix");
+    if (url.searchParams.get("preview") === "true" || url.searchParams.get("peek") === "true") {
+      isPreview = true;
+    }
     if (qPrefix) prefix = qPrefix.toUpperCase().trim();
     if (qSuffix) suffix = qSuffix.toUpperCase().trim();
 
@@ -94,52 +101,53 @@ async function handleGenerateToken(request: NextRequest) {
       if (body?.prefix) prefix = String(body.prefix).toUpperCase().trim();
       if (body?.suffix) suffix = String(body.suffix).toUpperCase().trim();
       if (body?.facilityType === "ESIC_HOSPITAL" || body?.isHospital) suffix = "HOSP";
+      if (body?.preview || body?.peek) isPreview = true;
     }
   } catch (_) {}
 
-  // 1. Gather highest known sequence from all available sources
+  // 1. Gather highest known sequence from all local stores and memory
   const fileSeq = getStoredFileSeq();
   const recordsMaxSeq = getMaxSeqFromLocalRecords();
-  const safeFloor = 1; // Start from ESI-000001-DISP
+  const safeFloor = 1;
 
-  let currentHighest = Math.max(fileSeq, recordsMaxSeq, safeFloor - 1);
-
-  // 2. Try to read Firestore counter doc from active triage-booking db
-  try {
-    const db = getActiveBookingDb() || getCasesSettingsDb();
-    if (db) {
-      const snap = await getDoc(doc(db, "counters", "bookingSequence"));
-      if (snap.exists()) {
-        const val = snap.data()?.lastSeq;
-        if (typeof val === "number" && val > currentHighest && val < 200000) {
-          currentHighest = val;
-        }
-      }
-    }
-  } catch (err: any) {
-    // Quota exhausted or offline - safely use local persistent highest
-  }
-
-  // 3. Atomically advance to next unique sequence (6-digit ESI format)
+  let currentHighest = Math.max(inMemoryLastSeq, fileSeq, recordsMaxSeq, safeFloor - 1);
   const nextSeq = currentHighest + 1;
+
   const tokenNo = `${prefix}-${String(nextSeq).padStart(6, "0")}-${suffix}`;
   const docId = tokenNo.replace(/[^a-zA-Z0-9_-]/g, "_");
 
-  // 4. Save to persistent server file store immediately
-  saveStoredFileSeq(nextSeq, tokenNo);
+  if (!isPreview) {
+    inMemoryLastSeq = nextSeq;
+    // 2. Persist to local sequence store immediately (synchronous < 1ms)
+    saveStoredFileSeq(nextSeq, tokenNo);
 
-  // 5. Dual-write to primary triage-booking db and safety backup ekmsbooking db
-  try {
-    const primaryDb = getActiveBookingDb();
-    const backupDb = getOldBookingDb();
-    const counterDoc = { lastSeq: nextSeq, lastAssignedToken: tokenNo, updatedAt: Date.now() };
-    if (primaryDb) {
-      setDoc(doc(primaryDb, "counters", "bookingSequence"), counterDoc, { merge: true }).catch(() => {});
-    }
-    if (backupDb) {
-      setDoc(doc(backupDb, "counters", "bookingSequence"), counterDoc, { merge: true }).catch(() => {});
-    }
-  } catch (_) {}
+    // 3. Fast non-blocking background synchronization to Firestore
+    (async () => {
+      try {
+        const primaryDb = getActiveBookingDb() || getCasesSettingsDb();
+        if (primaryDb) {
+          const counterRef = doc(primaryDb, "counters", "bookingSequence");
+          await setDoc(
+            counterRef,
+            {
+              lastSeq: nextSeq,
+              lastAssignedToken: tokenNo,
+              updatedAt: Date.now(),
+            },
+            { merge: true }
+          ).catch(() => {});
+        }
+        const backupDb = getOldBookingDb();
+        if (backupDb) {
+          await setDoc(
+            doc(backupDb, "counters", "bookingSequence"),
+            { lastSeq: nextSeq, lastAssignedToken: tokenNo, updatedAt: Date.now() },
+            { merge: true }
+          ).catch(() => {});
+        }
+      } catch (_) {}
+    })();
+  }
 
   return NextResponse.json(
     {

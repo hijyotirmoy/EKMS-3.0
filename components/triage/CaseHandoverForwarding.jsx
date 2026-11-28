@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getFirestoreDb, getBookingDb, getOldBookingDb, auth } from "@/lib/firebase";
-import { doc, setDoc, getDoc, collection, onSnapshot, query, runTransaction } from "firebase/firestore";
+import { doc, setDoc, getDoc, getDocs, where, collection, onSnapshot, query, runTransaction } from "firebase/firestore";
 import {
   isSlotInPast,
   getFirstAvailableSlot,
@@ -1519,25 +1519,26 @@ ${historySection}`;
     }
 
     // 2. Scan existing appointments and caches to find the current maximum assigned sequence
-    let maxFoundSeq = 162;
+    let maxFoundSeq = 100;
+    const cachedAppts = typeof getCachedAppointments === "function" ? getCachedAppointments() : [];
     const allKnown = [
       ...(Array.isArray(existingAppointments) ? existingAppointments : []),
-      ...(Array.isArray(cachedAppointments) ? cachedAppointments : []),
+      ...(Array.isArray(cachedAppts) ? cachedAppts : []),
     ];
 
     allKnown.forEach((appt) => {
       const cand = appt?.tokenNo || appt?.referenceNo || appt?.id || "";
-      const m = String(cand).match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i) || String(cand).match(/\b(\d{5})\b/);
+      const m = String(cand).match(/^ESI-(\d{4,6})-(DISP|HOSP)$/i);
       if (m) {
         const val = parseInt(m[1], 10);
-        if (val > maxFoundSeq && val < 2000) {
+        if (val > maxFoundSeq && val < 200000) {
           maxFoundSeq = val;
         }
       }
     });
 
     const nextSeq = maxFoundSeq + 1;
-    return String(nextSeq).padStart(5, "0");
+    return String(nextSeq).padStart(6, "0");
   };
 
   const getUnifiedReferenceCode = (targetTeamId, targetFacility, targetFacilityName) => {
@@ -2428,27 +2429,30 @@ ${historySection}`;
     try {
       const resolvedFacilityName = selectedFacility?.name || facilityDisplayName;
 
-      // Real-time double booking check before writing
+      // Fast non-blocking live double booking check with 300ms race fallback
       const bDbCheck = getBookingDb();
-      if (bDbCheck) {
+      if (bDbCheck && typeof getDocs === "function") {
         try {
-          const liveCheckSnap = await getDocs(
-            query(collection(bDbCheck, "dispensary_appointments"), where("date", "==", apptDate))
-          );
-          const liveConflict = liveCheckSnap.docs.find((d) => {
-            const data = d.data();
-            if (data.status === "cancelled") return false;
-            if (curDocIdForCheck && (data.id === curDocIdForCheck || data.tokenNo === curDocIdForCheck || data.referenceNo === curDocIdForCheck)) return false;
-            const fac = data.dispensaryName || data.facilityName || "";
-            return areFacilitiesMatching(fac, targetFacForCheck) && areSlotsMatching(data.timeSlot, apptTimeSlot);
-          });
-          if (liveConflict) {
-            setIsBookingSubmitting(false);
-            toast.error(`Slot ${apptTimeSlot} was just booked and locked for ${targetFacForCheck}. Please choose another slot.`);
-            return;
+          const liveCheckSnap = await Promise.race([
+            getDocs(query(collection(bDbCheck, "dispensary_appointments"), where("date", "==", apptDate))),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("fast_fallback")), 300))
+          ]);
+          if (liveCheckSnap?.docs) {
+            const liveConflict = liveCheckSnap.docs.find((d) => {
+              const data = d.data();
+              if (data.status === "cancelled") return false;
+              if (curDocIdForCheck && (data.id === curDocIdForCheck || data.tokenNo === curDocIdForCheck || data.referenceNo === curDocIdForCheck)) return false;
+              const fac = data.dispensaryName || data.facilityName || "";
+              return areFacilitiesMatching(fac, targetFacForCheck) && areSlotsMatching(data.timeSlot, apptTimeSlot);
+            });
+            if (liveConflict) {
+              setIsBookingSubmitting(false);
+              toast.error(`Slot ${apptTimeSlot} was just booked and locked for ${targetFacForCheck}. Please choose another slot.`);
+              return;
+            }
           }
         } catch (e) {
-          console.warn("Live slot check warning:", e?.message);
+          // Fast fallback to existingAppointments cache (<1ms)
         }
       }
       let unifiedReferenceNo = getUnifiedReferenceCode(selectedTeam.id, selectedFacility, resolvedFacilityName);
@@ -3044,8 +3048,8 @@ ${historySection}`;
             agentName: activeAgentName,
             bookedBy: activeAgentName,
             bookedByEmail: candidateEmail,
-            dispensaryName: targetFacilityName || newBooking.facilityName || newBooking.dispensaryName || "ESIS Dispensary",
-            facilityName: targetFacilityName || newBooking.facilityName || newBooking.dispensaryName || "ESIS Dispensary",
+            dispensaryName: (typeof targetFacilityName === "string" && targetFacilityName) ? targetFacilityName : (selectedFacility?.name || facilityDisplayName || newBooking.facilityName || newBooking.dispensaryName || "ESIS Dispensary"),
+            facilityName: (typeof targetFacilityName === "string" && targetFacilityName) ? targetFacilityName : (selectedFacility?.name || facilityDisplayName || newBooking.facilityName || newBooking.dispensaryName || "ESIS Dispensary"),
             date: apptDate || newBooking.date || "",
             timeSlot: apptTimeSlot || newBooking.timeSlot || "",
             chiefComplaint: resolvedChiefComplaint || newBooking.purpose || newBooking.chiefComplaint || "",
@@ -4754,12 +4758,10 @@ ${historySection}`;
                       <label className="block text-[11px] font-bold text-foreground uppercase tracking-wider mb-1.5">
                         Consultation Type
                       </label>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         {[
                           "Regular OPD Consultation",
                           "Non-Clinical Visit",
-                          "Follow-Up Review",
-                          "Medicine Refill / Lab",
                         ].map((type) => {
                           const isSelected = apptType === type;
                           return (

@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
 
     const isHospital = dispensaryName.toLowerCase().includes("hospital");
     const suffix = isHospital ? "HOSP" : "DISP";
-    const tokenNo = body.tokenNo || body.referenceNo || `ESIC-${String(Math.floor(100 + Math.random() * 900)).padStart(5, "0")}-${suffix}`;
+    const tokenNo = body.tokenNo || body.referenceNo || `ESI-${Date.now().toString().slice(-6)}${Math.floor(10 + Math.random() * 90)}-${suffix}`;
     const referenceNo = body.referenceNo || tokenNo;
     const docId = (body.id || referenceNo || tokenNo).replace(/[^a-zA-Z0-9_-]/g, "_");
 
@@ -322,7 +322,8 @@ export async function POST(request: NextRequest) {
         fetch(webhookUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(6000),
+          redirect: "follow",
+          signal: AbortSignal.timeout(15000),
           body: JSON.stringify({
             record_type: "Booking Done",
             case_id: body.case_ref || body.caseId || "",
@@ -336,6 +337,8 @@ export async function POST(request: NextRequest) {
             agent_name: appointmentPayload.bookedByName || "Triage Desk",
             chief_complaint: appointmentPayload.chiefComplaint || appointmentPayload.purpose || "",
             status: "Booking Confirmed",
+            action: "append",
+            is_new_booking: true,
           }),
         }).catch((e) => console.warn("Google Sheet webhook booking notice:", e.message));
       } catch (_) {}

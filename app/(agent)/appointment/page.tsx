@@ -53,7 +53,7 @@ import {
 import { toast } from "sonner";
 import { logSystemActivity } from "@/lib/activityLogger";
 import { getBookingDb, getOldBookingDb, getFirestoreDb, getSecondaryBookingDb, setBookingFailoverActive } from "@/lib/firebase";
-import { collection, onSnapshot, query, orderBy, limit, doc, setDoc, deleteDoc, getDoc, runTransaction } from "firebase/firestore";
+import { collection, onSnapshot, query, orderBy, limit, doc, setDoc, deleteDoc, getDoc, getDocs, runTransaction } from "firebase/firestore";
 import {
   isSlotInPast,
   getFirstAvailableSlot,
@@ -74,15 +74,6 @@ import {
   checkDispensaryDoctorAvailability,
   areFacilitiesMatching,
 } from "@/lib/slotTiming";
-import {
-  fetchEkmsAppointments,
-  createEkmsAppointment,
-  rescheduleEkmsAppointment,
-  cancelEkmsAppointment,
-  markEkmsAppointmentVisited,
-  getEkmsApiConfig,
-  fetchEkmsDoctorAvailability,
-} from "@/lib/ekmsApi";
 import { isFacilityAccepting, syncFacilityAvailability } from "@/lib/facilityAvailability";
 import { recordAppointmentBookingToSheet, GOOGLE_SHEET_URL } from "@/lib/googleSheetsSync";
 import { archiveToRecentlyDeleted } from "@/lib/recentlyDeleted";
@@ -108,6 +99,9 @@ import {
   formatBeneficiaryIp,
   isMaskIpInfoEnabled,
 } from "@/lib/maskUtils";
+import { formatAgentFullName, formatAgentFirstName } from "@/lib/utils";
+import { useStaffDirectory } from "@/lib/useStaffDirectory";
+import { getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
 
 const TIME_SLOTS = ALL_OPD_TIME_SLOTS;
 
@@ -732,6 +726,7 @@ export default function AppointmentsPage() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, userProfile, openLoginModal } = useAuth();
+  const { staffMap } = useStaffDirectory();
 
   useEffect(() => {
     if (pathname === "/appointments" || (pathname && pathname.startsWith("/appointments/"))) {
@@ -771,6 +766,7 @@ export default function AppointmentsPage() {
 }
 
 function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any; onOpenLogin?: any }) {
+  const { staffMap = {} } = useStaffDirectory();
   const isAdmin =
     String(currentAgent?.role || "").toLowerCase() === "admin" ||
     String(currentAgent?.role || "").toLowerCase() === "master admin" ||
@@ -788,8 +784,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
   const [appointments, setAppointments] = useState(() => getCachedAppointments());
   const [loading, setLoading] = useState(() => getCachedAppointments().length === 0);
   const [refreshing, setRefreshing] = useState(false);
-  const [apiError, setApiError] = useState(null);
-  const [apiConfig, setApiConfig] = useState({ url: "", apiKey: "" });
 
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -847,35 +841,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     let unsubAvail = null;
     let unsubDispDocs = null;
 
-    const loadDoctorAvail = () => {
-      fetchEkmsDoctorAvailability()
-        .then((data) => {
-          if (data?.records && Array.isArray(data.records) && data.records.length > 0) {
-            setDoctorAvailabilityRecords((prev) => {
-              const map = new Map();
-              prev.forEach((r) => map.set(r.id, r));
-              data.records.forEach((r) => map.set(r.id, r));
-              const merged = Array.from(map.values());
-              setCachedDoctorAvailability(merged);
-              return merged;
-            });
-          }
-          if (data?.doctors && Array.isArray(data.doctors) && data.doctors.length > 0) {
-            setPlatformDoctors((prev) => {
-              const map = new Map();
-              prev.forEach((p) => map.set((p.email || p.id).toLowerCase(), p));
-              data.doctors.forEach((d) => map.set((d.email || d.id).toLowerCase(), d));
-              const merged = Array.from(map.values());
-              setCachedDoctors(merged);
-              return merged;
-            });
-          }
-        })
-        .catch(() => {});
-    };
-
-    loadDoctorAvail();
-
     try {
       const bDb = getBookingDb() || getFirestoreDb();
       if (bDb) {
@@ -908,29 +873,39 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     };
   }, []);
 
-  // Load API config
   useEffect(() => {
     document.title = "Appointments";
-    const cfg = getEkmsApiConfig();
-    setApiConfig(cfg);
   }, []);
 
-  // Fetch appointments from EKMS 3.0 API (as resilient background sync)
+  // Fetch appointments directly from Firestore database (no HTTP API roundtrip)
   const loadAppointments = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
-    setApiError(null);
 
     try {
-      const data = await fetchEkmsAppointments();
-      if (Array.isArray(data) && data.length > 0) {
+      const bDb = getBookingDb();
+      if (bDb) {
+        const snap = await getDocs(
+          query(collection(bDb, "dispensary_appointments"), orderBy("createdAt", "desc"), limit(250))
+        );
+        const list: any[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          const key = data.tokenNo || data.referenceNo || d.id;
+          if (
+            !deletedAppointmentKeys.has(String(key).trim()) &&
+            !deletedAppointmentKeys.has(String(d.id).trim())
+          ) {
+            list.push({ id: d.id, ...data });
+          }
+        });
         setAppointments((prev) => {
-          const reconciled = mergeAppointmentMaps(prev, data);
+          const reconciled = reconcileWithLiveSnapshot(prev, list, "bookingDb");
           setCachedAppointments(reconciled);
           return reconciled;
         });
       }
     } catch (err) {
-      console.warn("EKMS REST API sync notice (Firebase Live listener active):", err);
+      console.warn("Direct Firestore load notice:", err);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -1019,7 +994,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     try {
       const bDb = getBookingDb();
       if (bDb) {
-        const q = query(collection(bDb, "dispensary_appointments"), orderBy("createdAt", "desc"));
+        const q = query(collection(bDb, "dispensary_appointments"), orderBy("createdAt", "desc"), limit(250));
         unsubBooking = onSnapshot(
           q,
           (snap) => {
@@ -1431,8 +1406,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         if (tDb) await setDoc(doc(tDb, "dispensary_appointments", docId), updates, { merge: true });
       } catch (e) {}
 
-      await rescheduleEkmsAppointment(targetId, updates).catch(() => {});
-
       updateAppointmentInCache(targetId, updates);
       broadcastEvent("APPOINTMENTS_UPDATED", {
         appointment: { ...rescheduleModal.app, ...updates },
@@ -1487,8 +1460,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         if (tDb) await setDoc(doc(tDb, "dispensary_appointments", docId), cancelData, { merge: true });
       } catch (e) {}
 
-      await cancelEkmsAppointment(targetId, cancelModal.reason).catch(() => {});
-
       // Keep associated triage case intact as call_only in Firestore & views
       const caseRefToRevert = cancelModal.app.caseRef || cancelModal.app.case_ref;
       if (caseRefToRevert) {
@@ -1514,6 +1485,15 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       broadcastEvent("APPOINTMENTS_UPDATED", {
         appointment: { ...cancelModal.app, ...cancelData },
       });
+      recordAppointmentBookingToSheet(
+        {
+          ...cancelModal.app,
+          ...cancelData,
+          status: "cancelled",
+          is_status_update: true,
+        },
+        currentAgent
+      ).catch(() => {});
 
       toast.success(`Appointment #${cancelModal.app.tokenNo || targetId} cancelled.`);
       setCancelModal({ open: false, app: null, reason: "" });
@@ -1594,12 +1574,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
           }
         }
 
-        // 3. Cancel / purge in EKMS Developer API
-        try {
-          await cancelEkmsAppointment(targetId, "Bulk deleted by Administrator");
-        } catch (e) {}
-
-        // 4. Keep associated triage case intact as call_only in Firestore & views
+        // 3. Keep associated triage case intact as call_only in Firestore & views
         const caseRefToRevert = app.caseRef || app.case_ref;
         if (caseRefToRevert) {
           try {
@@ -1722,9 +1697,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
           } catch (e) {}
         }
       }
-      try {
-        await cancelEkmsAppointment(targetId, "Deleted permanently by Administrator");
-      } catch (e) {}
 
       // Keep associated triage case intact as call_only in Firestore & views
       const caseRefToRevert = app.caseRef || app.case_ref;
@@ -1790,37 +1762,24 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       const targetId = visitModal.app.id || visitModal.app.tokenNo || visitModal.app.referenceNo;
       const staffName = visitModal.visitedBy || currentAgent?.name || "Dispensary Staff";
       const now = Date.now();
+      const docId = String(targetId).replace(/[^a-zA-Z0-9_-]/g, "_");
 
-      await markEkmsAppointmentVisited(targetId, {
+      const updates = {
         status: isNonClin ? "completed" : "with_doctor",
-        completedAt: isNonClin ? now : undefined,
-        completedBy: isNonClin ? staffName : undefined,
-        visitedNotes: visitModal.visitedNotes,
-        vitals: {
-          bp: visitModal.bp,
-          pulse: visitModal.pulse,
-          temp: visitModal.temp,
-        },
+        visitedAt: now,
         visitedBy: staffName,
-      });
+        visitedNotes: visitModal.visitedNotes || "",
+        receptionCheckedInAt: now,
+        receptionCheckedInBy: staffName,
+        ...(isNonClin ? { completedAt: now, completedBy: staffName } : {}),
+        ...(visitModal.bp || visitModal.pulse || visitModal.temp
+          ? { vitals: { bp: visitModal.bp, pulse: visitModal.pulse, temp: visitModal.temp } }
+          : {}),
+      };
 
-      // Also update directly in local Firestore databases if initialized
       try {
         const bDb = getBookingDb();
         const tDb = getFirestoreDb();
-        const docId = String(targetId).replace(/[^a-zA-Z0-9_-]/g, "_");
-        const updates = {
-          status: isNonClin ? "completed" : "with_doctor",
-          visitedAt: now,
-          visitedBy: staffName,
-          visitedNotes: visitModal.visitedNotes || "",
-          receptionCheckedInAt: now,
-          receptionCheckedInBy: staffName,
-          ...(isNonClin ? { completedAt: now, completedBy: staffName } : {}),
-          ...(visitModal.bp || visitModal.pulse || visitModal.temp
-            ? { vitals: { bp: visitModal.bp, pulse: visitModal.pulse, temp: visitModal.temp } }
-            : {}),
-        };
         if (bDb) await setDoc(doc(bDb, "dispensary_appointments", docId), updates, { merge: true });
         if (tDb) await setDoc(doc(tDb, "dispensary_appointments", docId), updates, { merge: true });
       } catch (dbErr) {
@@ -2048,15 +2007,13 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         }
       }
 
-      const cleanAgent = String(
+      const cleanAgent = formatAgentFullName(
         currentAgent?.displayName ||
         currentAgent?.name ||
         (currentAgent?.email ? currentAgent.email.split("@")[0] : "") ||
-        "Triage Agent"
-      )
-        .split("(")[0]
-        .replace(/<.*?>/, "")
-        .trim();
+        "Triage Agent",
+        staffMap
+      );
 
       let unifiedToken = "";
       let appointmentDocId = "";
@@ -2100,8 +2057,9 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       }
 
       if (!unifiedToken) {
-        const randomSeq = String(Math.floor(1000 + Math.random() * 9000));
-        unifiedToken = `ESI-${String(randomSeq).padStart(6, "0")}-DISP`;
+        const tsSeq = String(Date.now()).slice(-6);
+        const rand = String(Math.floor(10 + Math.random() * 90));
+        unifiedToken = `ESI-${tsSeq}${rand}-DISP`;
         appointmentDocId = unifiedToken.replace(/[^a-zA-Z0-9_-]/g, "_");
       }
 
@@ -2213,13 +2171,6 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         console.warn("Secondary database dual-write notice:", tErr);
       }
 
-      // 3. API synchronization backup
-      try {
-        await createEkmsAppointment(payload);
-      } catch (apiErr) {
-        console.warn("API booking sync notice:", apiErr);
-      }
-
       logSystemActivity({
         user: currentAgent,
         type: "BOOKING",
@@ -2260,51 +2211,29 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     }
   };
 
-  // Compute list of unique agents who booked appointments tracked primarily by email
+  // Compute list of unique agents by Full Name (as in profile, eliminates duplicate entries like "mohsin.ansari" and "Mohsin Ansari")
   const uniqueAgents = useMemo(() => {
-    const map = new Map();
+    const map = new Map<string, { name: string; key: string; count: number }>();
     appointments.forEach((a) => {
-      const email = (a.bookedByEmail || a.agentEmail || "").trim().toLowerCase();
-      const rawName = a.bookedByName || a.bookedBy || a.agentName || a.agentId;
-      const cleanName = rawName ? String(rawName).split("(")[0].replace(/<.*?>/, "").trim() : "";
-
-      if (email) {
-        if (!map.has(email)) {
-          map.set(email, {
-            email: email,
-            name: cleanName || email.split("@")[0],
-            key: email,
-            count: 1,
-            aliases: new Set(cleanName ? [cleanName.toLowerCase()] : []),
-          });
-        } else {
-          const entry = map.get(email);
-          entry.count += 1;
-          if (cleanName) {
-            entry.aliases.add(cleanName.toLowerCase());
-            if (!entry.name || entry.name.toLowerCase() === email.split("@")[0].toLowerCase()) {
-              entry.name = cleanName;
-            }
-          }
-        }
-      } else if (cleanName) {
-        const fallbackKey = `name_${cleanName.toLowerCase()}`;
-        if (!map.has(fallbackKey)) {
-          map.set(fallbackKey, {
-            email: "",
-            name: cleanName,
-            key: fallbackKey,
-            count: 1,
-            aliases: new Set([cleanName.toLowerCase()]),
-          });
-        } else {
-          map.get(fallbackKey).count += 1;
-        }
+      const emailHint = a.bookedByEmail || a.agentEmail || "";
+      const raw = a.bookedByName || a.bookedBy || a.agentName || a.agent_name || a.agentId || emailHint;
+      if (!raw && !emailHint) return;
+      const fullName = formatAgentFullName(raw, staffMap, emailHint);
+      if (!fullName || fullName === "Agent") return;
+      const key = fullName.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, {
+          name: fullName,
+          key: fullName,
+          count: 1,
+        });
+      } else {
+        map.get(key)!.count += 1;
       }
     });
 
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [appointments]);
+  }, [appointments, staffMap]);
 
   // Filtered Appointments
   const filteredAppointments = useMemo(() => {
@@ -2325,57 +2254,41 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
       // Status Filter
       if (statusFilter !== "all") {
-        const appStatus = (app.status || "scheduled").toLowerCase();
+        const stage = getEffectiveAppointmentStage(app);
+        const isFollowUpClosed = app.followUpStatus === "closed";
+        const needsFollowUp = app.followUpStatus !== "closed" && stage !== "cancelled" && (app.status || "").toLowerCase() !== "cancelled";
         const isNonClin = isNonClinicalAppointment(app);
-        // An appointment is ONLY visited/attended after the Pharmacist dispenses/completes it
-        const isPharmacistDispensed = Boolean(
-          app.dispensedAt ||
-          app.dispensedBy ||
-          app.pharmacistName ||
-          appStatus === "dispensed" ||
-          appStatus === "completed" ||
-          Boolean(app.isCompleted) ||
-          (isNonClin && (appStatus === "visited" || app.completedAt))
-        );
 
-        if (statusFilter === "visited") {
-          // Show visited/attended consultations (strictly after pharmacy dispensation)
-          if (!isPharmacistDispensed || appStatus === "cancelled") {
-            return false;
-          }
-        } else if (statusFilter === "scheduled") {
-          // Scheduled only includes pending clinical visits (not yet dispensed by pharmacist)
-          if (isPharmacistDispensed || appStatus === "cancelled") {
-            return false;
-          }
+        if (statusFilter === "scheduled") {
+          if (stage !== "scheduled") return false;
+        } else if (statusFilter === "with_doctor") {
+          if (stage !== "with_doctor") return false;
+        } else if (statusFilter === "with_pharmacist") {
+          if (stage !== "with_pharmacist") return false;
+        } else if (statusFilter === "clinical") {
+          if (isNonClin) return false;
+        } else if (statusFilter === "non_clinical") {
+          if (!isNonClin) return false;
+        } else if (statusFilter === "follow_up_done") {
+          if (!isFollowUpClosed) return false;
+        } else if (statusFilter === "need_follow_up") {
+          if (!needsFollowUp) return false;
+        } else if (statusFilter === "visited") {
+          if (stage !== "completed") return false;
         } else if (statusFilter === "cancelled") {
-          if (appStatus !== "cancelled") return false;
-        } else if (appStatus !== statusFilter.toLowerCase()) {
+          if (stage !== "cancelled") return false;
+        } else if ((app.status || "").toLowerCase() !== statusFilter.toLowerCase()) {
           return false;
         }
       }
 
-      // Agent Filter (Tracked primarily by email, matching through name updates)
+      // Agent Filter (by clean Full Name as in profile)
       if (agentFilter !== "all") {
-        const selectedKey = agentFilter.trim().toLowerCase();
-        const appEmail = (app.bookedByEmail || app.agentEmail || "").trim().toLowerCase();
-        const rawName = app.bookedByName || app.bookedBy || app.agentName || app.agentId;
-        const appName = rawName ? String(rawName).split("(")[0].replace(/<.*?>/, "").trim().toLowerCase() : "";
-
-        if (selectedKey.startsWith("name_")) {
-          const targetName = selectedKey.replace(/^name_/, "");
-          if (appName !== targetName) return false;
-        } else {
-          if (appEmail) {
-            if (appEmail !== selectedKey) return false;
-          } else {
-            const matchingAgent = uniqueAgents.find((ag) => ag.email === selectedKey);
-            if (matchingAgent && appName) {
-              if (!matchingAgent.aliases.has(appName)) return false;
-            } else {
-              return false;
-            }
-          }
+        const emailHint = app.bookedByEmail || app.agentEmail || "";
+        const raw = app.bookedByName || app.bookedBy || app.agentName || app.agent_name || app.agentId || emailHint;
+        const appFullName = formatAgentFullName(raw, staffMap, emailHint);
+        if (appFullName.toLowerCase() !== agentFilter.trim().toLowerCase()) {
+          return false;
         }
       }
 
@@ -2427,27 +2340,13 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         }
       }
 
-      // 2. Agent Filter
+      // 2. Agent Filter (by clean Full Name as in profile)
       if (agentFilter !== "all") {
-        const selectedKey = agentFilter.trim().toLowerCase();
-        const appEmail = (app.bookedByEmail || app.agentEmail || "").trim().toLowerCase();
-        const rawName = app.bookedByName || app.bookedBy || app.agentName || app.agentId;
-        const appName = rawName ? String(rawName).split("(")[0].replace(/<.*?>/, "").trim().toLowerCase() : "";
-
-        if (selectedKey.startsWith("name_")) {
-          const targetName = selectedKey.replace(/^name_/, "");
-          if (appName !== targetName) return;
-        } else {
-          if (appEmail) {
-            if (appEmail !== selectedKey) return;
-          } else {
-            const matchingAgent = uniqueAgents.find((ag) => ag.email === selectedKey);
-            if (matchingAgent && appName) {
-              if (!matchingAgent.aliases.has(appName)) return;
-            } else {
-              return;
-            }
-          }
+        const emailHint = app.bookedByEmail || app.agentEmail || "";
+        const raw = app.bookedByName || app.bookedBy || app.agentName || app.agent_name || app.agentId || emailHint;
+        const appFullName = formatAgentFullName(raw, staffMap, emailHint);
+        if (appFullName.toLowerCase() !== agentFilter.trim().toLowerCase()) {
+          return;
         }
       }
 
@@ -2805,9 +2704,9 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
       {/* Search Bar (Left) & Select All / Bulk Delete (Right) on the same line */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full">
-        {/* Left Side: Search Bar */}
-        <div className="flex items-center gap-2.5 flex-1 min-w-0">
-          <div className="relative w-full sm:w-80 lg:w-96">
+        {/* Left Side: Search Bar & Status Filter */}
+        <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
+          <div className="relative w-full sm:w-72 lg:w-80">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
@@ -2827,11 +2726,36 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
               </button>
             )}
           </div>
+
+          {/* Status Filter Dropdown */}
+          <div className="relative">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs transition"
+              title="Filter appointments by workflow status"
+            >
+              <option value="all">All Status</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="with_doctor">With Doctor</option>
+              <option value="with_pharmacist">With Pharmacist</option>
+              <option value="clinical">Clinical Visit</option>
+              <option value="non_clinical">Non-Clinical Visit</option>
+              <option value="follow_up_done">Follow Up Done</option>
+              <option value="need_follow_up">Need Follow Up</option>
+            </select>
+          </div>
         </div>
 
-        {/* Right Side: Select All Button & Bulk Actions (Admins Only) */}
-        {isAdmin && filteredAppointments.length > 0 && (
-          <div className="flex items-center gap-2 shrink-0">
+        {/* Right Side: Single Filter Result Count & Bulk Actions */}
+        <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+          <div className="text-xs font-bold text-slate-700 bg-slate-100 border border-slate-200/90 px-3 py-1.5 rounded-xl shadow-2xs whitespace-nowrap">
+            Showing <span className="text-blue-700 font-extrabold">{filteredAppointments.length}</span> {filteredAppointments.length === 1 ? "Appointment" : "Appointments"}
+          </div>
+
+          {/* Select All Button & Bulk Actions (Admins Only) */}
+          {isAdmin && filteredAppointments.length > 0 && (
+            <div className="flex items-center gap-2 shrink-0">
             {/* Select All Button */}
             {(() => {
               const isAllSelected = filteredAppointments.length > 0 && selectedIds.size === filteredAppointments.length;
@@ -2875,6 +2799,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
             )}
           </div>
         )}
+        </div>
       </div>
 
       {/* Appointments List / Grid */}
@@ -3055,11 +2980,11 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                       {(app.bookedAt || app.createdAt) && (
                         <span
                           className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-700 bg-amber-50/90 border border-amber-200/80 rounded-md px-2.5 py-0.5 shadow-2xs"
-                          title={`Booked on ${formatBookingDateTime(app.bookedAt, app.createdAt)} by ${app.bookedByName || app.bookedBy || app.agentName || (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : 'Agent')}`}
+                          title={`Booked on ${formatBookingDateTime(app.bookedAt, app.createdAt)} by ${formatAgentFullName(app.bookedByName || app.bookedBy || app.agentName || app.agent_name || app.bookedByEmail || app.agentEmail, staffMap, app.bookedByEmail || app.agentEmail)}`}
                         >
                           <Clock className="w-3 h-3 text-amber-600 shrink-0" />
                           <span>Booked: {formatBookingDateTime(app.bookedAt, app.createdAt)}</span>
-                          <span className="text-slate-600 font-semibold">• {app.bookedByName || app.bookedBy || app.agentName || (app.bookedByEmail ? app.bookedByEmail.split('@')[0] : 'Agent')}</span>
+                          <span className="text-slate-600 font-semibold">• {formatAgentFullName(app.bookedByName || app.bookedBy || app.agentName || app.agent_name || app.bookedByEmail || app.agentEmail, staffMap, app.bookedByEmail || app.agentEmail)}</span>
                         </span>
                       )}
                     </div>
@@ -3386,52 +3311,67 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       {/* RESCHEDULE MODAL */}
       {/* =================================================================== */}
       {rescheduleModal.open && rescheduleModal.app && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl border border-slate-200 animate-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-2xl sm:max-w-3xl w-full p-5 sm:p-6 space-y-4 shadow-2xl border border-slate-200 my-auto animate-in zoom-in-95 max-h-[92vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 shrink-0">
               <div className="flex items-center gap-2">
                 <Edit3 className="w-5 h-5 text-amber-600" />
-                <h3 className="font-bold text-slate-900 text-sm">Reschedule Appointment</h3>
+                <h3 className="font-bold text-slate-900 text-sm sm:text-base">Reschedule Appointment</h3>
+                <span className="rounded-md border border-amber-500/30 bg-amber-50 px-2 py-0.5 text-[10.5px] font-bold text-amber-900">
+                  {rescheduleModal.app.tokenNo}
+                </span>
               </div>
               <button
                 type="button"
                 onClick={() => setRescheduleModal({ open: false, app: null, newDate: "", newSlot: "", notes: "" })}
-                className="text-slate-400 hover:text-slate-600 p-1"
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 text-xs space-y-1">
-              <div className="font-bold text-slate-800">
-                Beneficiary: {rescheduleModal.app.patientName} (Token: {rescheduleModal.app.tokenNo})
+            <div className="overflow-y-auto space-y-4 pr-1 flex-1">
+              {/* Beneficiary & Facility summary */}
+              <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 text-xs flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="text-slate-500">Beneficiary: </span>
+                  <span className="font-bold text-slate-900">{rescheduleModal.app.patientName}</span>
+                  {rescheduleModal.app.phone && <span className="text-slate-500 ml-1">({rescheduleModal.app.phone})</span>}
+                </div>
+                <div>
+                  <span className="text-slate-500">Facility: </span>
+                  <span className="font-bold text-slate-800">{rescheduleModal.app.dispensaryName || rescheduleModal.app.facilityName}</span>
+                </div>
+                <div className="w-full text-amber-800 font-semibold border-t border-slate-200/60 pt-1 mt-0.5">
+                  Current Scheduled Slot: <span className="font-bold">{rescheduleModal.app.date}</span> at <span className="font-bold">{rescheduleModal.app.timeSlot}</span>
+                </div>
               </div>
-              <div className="text-slate-500">
-                Facility: {rescheduleModal.app.dispensaryName || rescheduleModal.app.facilityName}
-              </div>
-              <div className="text-amber-800 font-semibold">
-                Current Slot: {rescheduleModal.app.date} ({rescheduleModal.app.timeSlot})
-              </div>
-            </div>
 
-            <div className="space-y-4">
+              {/* Consultation Date */}
               <div className="space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">New Consultation Date</label>
-                <div className="flex items-center gap-2">
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  New Consultation Date
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setRescheduleModal((prev) => ({ ...prev, newDate: todayStr }))}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-xl border transition ${
-                      rescheduleModal.newDate === todayStr ? "bg-amber-600 text-white border-amber-600" : "bg-slate-50 border-slate-200 text-slate-700"
+                    onClick={() => {
+                      setRescheduleModal((prev) => ({ ...prev, newDate: todayStr }));
+                    }}
+                    className={`px-3.5 py-1.5 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                      rescheduleModal.newDate === todayStr ? "bg-amber-600 text-white border-amber-600 shadow-2xs" : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
                     }`}
                   >
                     Today
                   </button>
                   <button
                     type="button"
-                    onClick={() => setRescheduleModal((prev) => ({ ...prev, newDate: tomorrowStr }))}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-xl border transition ${
-                      rescheduleModal.newDate === tomorrowStr ? "bg-amber-600 text-white border-amber-600" : "bg-slate-50 border-slate-200 text-slate-700"
+                    onClick={() => {
+                      setRescheduleModal((prev) => ({ ...prev, newDate: tomorrowStr }));
+                    }}
+                    className={`px-3.5 py-1.5 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                      rescheduleModal.newDate === tomorrowStr ? "bg-amber-600 text-white border-amber-600 shadow-2xs" : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
                     }`}
                   >
                     Tomorrow
@@ -3442,7 +3382,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     value={rescheduleModal.newDate}
                     onClick={(e) => {
                       try {
-                        e.target.showPicker?.();
+                        (e.target as any).showPicker?.();
                       } catch (err) {}
                     }}
                     onChange={(e) => {
@@ -3454,16 +3394,44 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                         setRescheduleModal((prev) => ({ ...prev, newDate: val }));
                       }
                     }}
-                    className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
+                    className="flex-1 min-w-[140px] px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
                   />
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold text-slate-700">Select Time Slot</label>
-                  <span className="text-[10px] font-semibold text-emerald-600">Mon–Fri 10AM–4PM · 1st/3rd/5th Sat 10AM–12PM</span>
+              {/* Slots Section */}
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-1">
+                  <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                    Select Available Time Slot
+                  </label>
+                  {/* Legend */}
+                  <div className="flex items-center gap-3 text-[10px] font-semibold">
+                    <span className="flex items-center gap-1 text-emerald-700">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span> Available
+                    </span>
+                    <span className="flex items-center gap-1 text-rose-700">
+                      <span className="w-2 h-2 rounded-full bg-rose-500"></span> Reserved
+                    </span>
+                    <span className="flex items-center gap-1 text-slate-500">
+                      <span className="w-2 h-2 rounded-full bg-slate-400"></span> Past / Lunch
+                    </span>
+                  </div>
                 </div>
+
+                {/* Operating hours note banner */}
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-xl border border-sky-200 bg-sky-50 text-[11px] text-sky-900">
+                  <span className="font-semibold">
+                    Dispensary OPD: Mon–Sat 10:00 AM – 04:00 PM (Closed Sunday)
+                  </span>
+                  {rescheduleModal.newSlot && (
+                    <span className="font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-md">
+                      Selected Slot: {rescheduleModal.newSlot}
+                    </span>
+                  )}
+                </div>
+
+                {/* Doctor availability or Sunday closure warnings */}
                 {rescheduleDoctorAvail.totalDoctors > 0 && !rescheduleDoctorAvail.isAvailable ? (
                   <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center justify-between gap-1 shadow-2xs">
                     <div className="flex items-center gap-1.5">
@@ -3487,40 +3455,108 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     </button>
                   </div>
                 ) : isWeekendOrHoliday(rescheduleModal.newDate) ? (
-                  <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center justify-between gap-1">
-                    <span>Dispensaries are closed on Sunday. Mon–Sat: 10:00 AM – 04:00 PM.</span>
+                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center justify-between gap-1 shadow-2xs">
+                    <div className="flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                      <span>Dispensaries are closed on Sunday. Mon–Sat operates 10:00 AM – 04:00 PM.</span>
+                    </div>
                     <button
                       type="button"
                       onClick={() => setRescheduleModal((prev) => ({ ...prev, newDate: getNextWorkingDateString(prev.newDate) }))}
-                      className="text-rose-700 font-bold underline hover:text-rose-900 cursor-pointer"
+                      className="text-rose-700 font-bold underline hover:text-rose-900 cursor-pointer text-[10px] shrink-0"
                     >
                       Next Working Day
                     </button>
                   </div>
                 ) : null}
-                <select
-                  value={rescheduleModal.newSlot}
-                  onChange={(e) => setRescheduleModal((prev) => ({ ...prev, newSlot: e.target.value }))}
-                  disabled={rescheduleDoctorAvail.totalDoctors > 0 && !rescheduleDoctorAvail.isAvailable}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {TIME_SLOTS.map((slot) => {
+
+                {/* Compact & Responsive 3-Minute Slot Grid */}
+                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5 border border-slate-200 rounded-2xl p-2.5 bg-slate-50/50 max-h-[260px] overflow-y-auto">
+                  {ALL_OPD_TIME_SLOTS.map((slot) => {
                     const isLunch = isLunchSlot(slot);
+                    const isWeekend = isWeekendOrHoliday(rescheduleModal.newDate);
+                    const isNoDoc = rescheduleDoctorAvail.totalDoctors > 0 && !rescheduleDoctorAvail.isAvailable;
                     const targetFac = rescheduleModal.app?.dispensaryName || rescheduleModal.app?.facilityName;
                     const curId = rescheduleModal.app?.id || rescheduleModal.app?.tokenNo || rescheduleModal.app?.referenceNo;
-                    const isReserved = isSlotReserved(slot, rescheduleModal.newDate || todayStr, targetFac, appointments, curId);
-                    const isPast = isSlotInPast(slot, rescheduleModal.newDate || todayStr);
-                    const isNoDoc = rescheduleDoctorAvail.totalDoctors > 0 && !rescheduleDoctorAvail.isAvailable;
-                    const isDisabled = isLunch || isReserved || isPast || isNoDoc;
+                    const isReserved = !isLunch && !isWeekend && !isNoDoc && isSlotReserved(slot, rescheduleModal.newDate || todayStr, targetFac, appointments, curId);
+                    const isPast = !isLunch && !isWeekend && !isNoDoc && isSlotInPast(slot, rescheduleModal.newDate || todayStr);
+                    const isDisabled = isLunch || isWeekend || isNoDoc || isReserved || isPast;
+                    const isSelected = rescheduleModal.newSlot === slot && !isDisabled;
+
                     return (
-                      <option key={slot} value={slot} disabled={isDisabled}>
-                        {slot} {isLunch ? " (Lunch Break)" : isNoDoc ? " (No Doctor Available)" : isReserved ? " (Reserved)" : isPast ? " (Unavailable)" : ""}
-                      </option>
+                      <button
+                        key={slot}
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => !isDisabled && setRescheduleModal((prev) => ({ ...prev, newSlot: slot }))}
+                        className={`rounded-lg py-1 px-1 text-[9px] font-semibold transition text-center border flex flex-col items-center justify-center gap-0.5 shadow-2xs ${
+                          isLunch
+                            ? "bg-amber-50 border-amber-300 text-amber-900 cursor-not-allowed select-none opacity-85"
+                            : isWeekend
+                            ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed select-none opacity-50"
+                            : isNoDoc
+                            ? "bg-rose-50/70 border-rose-200 text-rose-500 cursor-not-allowed select-none opacity-60"
+                            : isReserved
+                            ? "bg-rose-50 border-rose-300 text-rose-800 cursor-not-allowed select-none opacity-85"
+                            : isPast
+                            ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed select-none opacity-50"
+                            : isSelected
+                            ? "bg-amber-600 text-white border-amber-600 shadow-sm shadow-amber-600/30 ring-2 ring-amber-500/40 cursor-pointer font-bold scale-[1.02]"
+                            : "bg-white hover:bg-amber-50 hover:border-amber-300 border-slate-200 text-slate-800 cursor-pointer"
+                        }`}
+                        title={
+                          isLunch
+                            ? "Lunch Break (01:00 PM – 02:00 PM)"
+                            : isWeekend
+                            ? "Closed on Sunday"
+                            : isNoDoc
+                            ? "Booking unavailable: All doctors on leave"
+                            : isReserved
+                            ? "Slot is already reserved/booked"
+                            : isPast
+                            ? "This slot has already passed for today"
+                            : `Select ${slot}`
+                        }
+                      >
+                        <span className={isPast || isReserved || isNoDoc ? "line-through opacity-75" : ""}>{slot}</span>
+                        <span
+                          className={`text-[8.5px] uppercase font-extrabold ${
+                            isLunch
+                              ? "text-amber-700"
+                              : isWeekend
+                              ? "text-slate-400"
+                              : isNoDoc
+                              ? "text-rose-600"
+                              : isReserved
+                              ? "text-rose-600"
+                              : isPast
+                              ? "text-slate-400"
+                              : isSelected
+                              ? "text-amber-100"
+                              : "text-emerald-700"
+                          }`}
+                        >
+                          {isLunch
+                            ? "Lunch"
+                            : isWeekend
+                            ? "Closed"
+                            : isNoDoc
+                            ? "No Doctor"
+                            : isReserved
+                            ? "Reserved"
+                            : isPast
+                            ? "Past"
+                            : isSelected
+                            ? "Selected"
+                            : "Available"}
+                        </span>
+                      </button>
                     );
                   })}
-                </select>
+                </div>
               </div>
 
+              {/* Notes */}
               <div className="space-y-1.5">
                 <label className="block text-xs font-bold text-slate-700">Reason / Notes (Optional)</label>
                 <input
@@ -3533,19 +3569,20 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+            {/* Footer Buttons */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 shrink-0">
               <button
                 type="button"
                 onClick={() => setRescheduleModal({ open: false, app: null, newDate: "", newSlot: "", notes: "" })}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmReschedule}
-                disabled={actionLoading || (rescheduleDoctorAvail.totalDoctors > 0 && !rescheduleDoctorAvail.isAvailable)}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition shadow-xs flex items-center gap-1.5"
+                disabled={actionLoading || !rescheduleModal.newSlot || (rescheduleDoctorAvail.totalDoctors > 0 && !rescheduleDoctorAvail.isAvailable)}
+                className="px-5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
               >
                 {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
                 <span>Confirm Reschedule</span>

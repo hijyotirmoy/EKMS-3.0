@@ -9,7 +9,7 @@ import { extractClinicalAndStaffDetails } from "@/lib/googleSheetsSync";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const RECORDS_FILE_PATH = path.join(process.cwd(), "src", "data", "google_sheets_records.json");
+const RECORDS_FILE_PATH = path.join(process.cwd(), "data", "google_sheets_records.json");
 const GOOGLE_SHEET_ID = "1be-yMMFGcXJToYbQI3KJnadURgjWeGncGmxGbJzFLso";
 const GOOGLE_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1be-yMMFGcXJToYbQI3KJnadURgjWeGncGmxGbJzFLso/edit?usp=sharing";
@@ -219,7 +219,8 @@ export async function POST(request) {
         const res = await fetch(webhookUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(6000),
+          redirect: "follow",
+          signal: AbortSignal.timeout(15000),
           body: JSON.stringify({
             action: "batch_sync",
             records: synchronizedList,

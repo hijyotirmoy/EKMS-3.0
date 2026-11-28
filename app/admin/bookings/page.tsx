@@ -24,7 +24,7 @@ import { db, bookingDb } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
 import { DayAvailability, BookingRecord, RescheduleLog } from "@/lib/types";
-import { getISTMidnight, getFollowUpInfo, mergeBookingData, deleteBookingRecordCompletely } from "@/lib/utils";
+import { getISTMidnight, getFollowUpInfo, mergeBookingData, deleteBookingRecordCompletely, formatAgentFullName, formatAgentFirstName } from "@/lib/utils";
 import { getCachedData, setCachedData, clearCachedData } from "@/lib/firestoreCache";
 import { maskIpName, maskPhone } from "@/lib/maskUtils";
 import { logUserActivity } from "@/lib/activityLogger";
@@ -417,14 +417,18 @@ export default function AdminBookingsPage() {
     };
   }, [liveBookings, userProfiles, rescheduleLogs, followUpDays]);
 
-  // Unique Agents for filter dropdown
+  // Unique Agents for filter dropdown (clean Full Name as in profile)
   const uniqueAgents = useMemo(() => {
     const set = new Set<string>();
     allBookings.forEach((b) => {
-      if (b.agentName) set.add(b.agentName);
+      const raw = b.agentName || b.agentEmail || (b as any).bookedByName || (b as any).bookedBy;
+      if (raw) {
+        const fName = formatAgentFullName(raw, userProfiles);
+        if (fName && fName !== "Agent") set.add(fName);
+      }
     });
     return Array.from(set).sort();
-  }, [allBookings]);
+  }, [allBookings, userProfiles]);
 
   // All Agent Options for Master Admin Reassignment
   const allAgentOptions = useMemo(() => {
@@ -458,7 +462,10 @@ export default function AdminBookingsPage() {
     const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
     if (agentFilter !== "all") {
-      result = result.filter((b) => b.agentName === agentFilter);
+      result = result.filter((b) => {
+        const raw = b.agentName || b.agentEmail || (b as any).bookedByName || (b as any).bookedBy;
+        return formatAgentFullName(raw, userProfiles).toLowerCase() === agentFilter.toLowerCase();
+      });
     }
 
     if (searchTerm.trim()) {

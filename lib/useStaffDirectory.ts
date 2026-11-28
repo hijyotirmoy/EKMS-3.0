@@ -4,11 +4,13 @@ import { useState, useEffect } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
+import { CANONICAL_AGENT_MAP } from "@/lib/utils";
 
 // In-memory global singleton for staff directory map across all pages & desk tabs
 let globalStaffMap: Record<string, string> = {
-  "jyoc90@gmail.com": "Jyotirmoy",
-  "jyoc90": "Jyotirmoy",
+  ...CANONICAL_AGENT_MAP,
+  "jyoc90@gmail.com": "Jyotirmoy Choudhury",
+  "jyoc90": "Jyotirmoy Choudhury",
 };
 let lastStaffFetch = 0;
 const STAFF_TTL = 10 * 60 * 1000; // 10 minutes in-memory / session TTL
@@ -59,12 +61,13 @@ export function useStaffDirectory() {
         if (!isMounted) return;
 
         const map: Record<string, string> = {
-          "jyoc90@gmail.com": "Jyotirmoy",
-          "jyoc90": "Jyotirmoy",
+          ...CANONICAL_AGENT_MAP,
+          "jyoc90@gmail.com": "Jyotirmoy Choudhury",
+          "jyoc90": "Jyotirmoy Choudhury",
         };
         snap.forEach((d) => {
           const data = d.data();
-          const realName = (
+          let realName = (
             data.displayName ||
             data.name ||
             data.fullName ||
@@ -73,19 +76,23 @@ export function useStaffDirectory() {
           ).trim();
           const email = (data.email || d.id || "").toLowerCase().trim();
           if (realName) {
-            if (email) map[email] = realName;
-            map[d.id.toLowerCase().trim()] = realName;
+            if (realName.includes("@")) realName = realName.split("@")[0].trim();
+            if (realName.includes(".") || realName.includes("_")) {
+              realName = realName.split(/[._]+/).map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+            }
+            if (email) map[email] = CANONICAL_AGENT_MAP[email] || realName;
+            map[d.id.toLowerCase().trim()] = CANONICAL_AGENT_MAP[d.id.toLowerCase().trim()] || realName;
             map[realName.toLowerCase()] = realName;
             const prefix = email.split("@")[0];
             if (prefix && !map[prefix]) {
-              map[prefix] = realName;
+              map[prefix] = CANONICAL_AGENT_MAP[prefix] || realName;
             }
           }
         });
 
-        // Strict guarantee for jyoc90
-        map["jyoc90@gmail.com"] = "Jyotirmoy";
-        map["jyoc90"] = "Jyotirmoy";
+        // Strict guarantees
+        map["jyoc90@gmail.com"] = "Jyotirmoy Choudhury";
+        map["jyoc90"] = "Jyotirmoy Choudhury";
 
         globalStaffMap = map;
         lastStaffFetch = Date.now();

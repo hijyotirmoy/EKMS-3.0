@@ -32,7 +32,6 @@ import {
 } from "@/lib/recentlyDeleted";
 import { UserProfile } from "@/lib/types";
 import { ALL_AGENT_PAGES, ALL_ADMIN_PAGES, AppPageDef, isPageRestricted } from "@/lib/pageAccess";
-import { ApiKeyDoc, generateApiKey } from "@/lib/apiKeyAuth";
 import {
   Settings,
   Image as ImageIcon,
@@ -99,7 +98,7 @@ export default function AdminSettingsPage() {
   const { userProfile, isMasterAdmin } = useAuth();
   const { toast, showConfirm } = usePopup();
   const [activeTab, setActiveTab] = useState<
-    "facility" | "privacy" | "access" | "api" | "logs" | "deleted" | "session" | "maintenance"
+    "facility" | "privacy" | "access" | "logs" | "deleted" | "session" | "maintenance"
   >("facility");
 
   // Facility Availability State (Matches Triage & Screenshot 1 - Ultra Low Reads/Writes)
@@ -120,6 +119,30 @@ export default function AdminSettingsPage() {
         }
       })
       .catch(() => {});
+
+    // Ensure all 316 facilities from Firestore & cache are loaded
+    const cached = getCachedFacilities();
+    if (cached && cached.length > 0) {
+      setFacilities(cached);
+    }
+    import("firebase/firestore").then(({ collection, getDocs }) => {
+      import("@/lib/firebase").then(({ db }) => {
+        if (db) {
+          getDocs(collection(db, "facilities")).then((snap) => {
+            if (!snap.empty) {
+              const list: any[] = [];
+              snap.forEach((d) => {
+                const data = d.data();
+                list.push({ id: d.id, ...data, facility_type: data.type || data.facility_type || "Facility" });
+              });
+              list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+              setFacilities(list);
+              setCachedFacilities(list);
+            }
+          }).catch(() => {});
+        }
+      });
+    });
   }, []);
 
   // System Logs State (Initial load from localStorage for 0-read instant render)
@@ -205,142 +228,6 @@ export default function AdminSettingsPage() {
   // Image Settings
   const [autoCompress, setAutoCompress] = useState(true);
   const [maxImageSize, setMaxImageSize] = useState(2);
-
-  // Developer API & Keys State
-  const [apiKeys, setApiKeys] = useState<ApiKeyDoc[]>([]);
-  const [loadingApiKeys, setLoadingApiKeys] = useState(false);
-  const [newKeyModalOpen, setNewKeyModalOpen] = useState(false);
-  const [newKeyName, setNewKeyName] = useState("");
-  const [newKeyPermissions, setNewKeyPermissions] = useState<string[]>([
-    "appointments:read",
-    "appointments:create",
-    "appointments:update",
-    "appointments:delete",
-  ]);
-  const [generatingKey, setGeneratingKey] = useState(false);
-  const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
-  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
-  const [visibleKeyIds, setVisibleKeyIds] = useState<Set<string>>(new Set());
-  const [apiKeySearch, setApiKeySearch] = useState("");
-  const [apiDocTab, setApiDocTab] = useState<"curl" | "fetch" | "python">("curl");
-
-  // Real-time API Keys listener from bookingDb
-  useEffect(() => {
-    setLoadingApiKeys(true);
-    const unsub = onSnapshot(
-      collection(bookingDb, "api_keys"),
-      (snapshot) => {
-        const list: ApiKeyDoc[] = [];
-        snapshot.forEach((d) => {
-          list.push({ id: d.id, ...d.data() } as ApiKeyDoc);
-        });
-        list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        setApiKeys(list);
-        setLoadingApiKeys(false);
-      },
-      (err) => {
-        console.warn("api_keys fetch error:", err);
-        setLoadingApiKeys(false);
-      }
-    );
-    return () => unsub();
-  }, []);
-
-  // Toggle API key reveal
-  const toggleKeyVisibility = (keyId: string) => {
-    setVisibleKeyIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(keyId)) next.delete(keyId);
-      else next.add(keyId);
-      return next;
-    });
-  };
-
-  // Copy API key
-  const handleCopyKey = (key: string, id: string) => {
-    if (typeof window !== "undefined" && navigator?.clipboard) {
-      navigator.clipboard.writeText(key);
-    }
-    setCopiedKeyId(id);
-    toast.success("API Key copied to clipboard!");
-    setTimeout(() => setCopiedKeyId(null), 2500);
-  };
-
-  // Create new API Key
-  const handleCreateApiKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newKeyName.trim()) {
-      toast.error("Please enter a name for this API key.");
-      return;
-    }
-    setGeneratingKey(true);
-    try {
-      const generated = generateApiKey();
-      const docId = `key_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
-      const newKeyDoc: ApiKeyDoc = {
-        id: docId,
-        name: newKeyName.trim(),
-        key: generated,
-        status: "active",
-        permissions: newKeyPermissions.length > 0 ? newKeyPermissions : ["appointments:read", "appointments:create"],
-        createdBy: userProfile?.email || "admin",
-        createdAt: Date.now(),
-        usageCount: 0,
-      };
-
-      await setDoc(doc(bookingDb, "api_keys", docId), newKeyDoc);
-
-      logUserActivity(userProfile?.email, {
-        desc: `Generated new API key for consumer: ${newKeyName.trim()}`,
-        type: "settings",
-      });
-
-      setNewlyCreatedKey(generated);
-      toast.success("API Key successfully generated!");
-      setNewKeyName("");
-      setNewKeyModalOpen(false);
-    } catch (err: any) {
-      toast.error("Failed to generate API Key: " + err.message);
-    } finally {
-      setGeneratingKey(false);
-    }
-  };
-
-  // Toggle API key status (active / revoked)
-  const handleToggleKeyStatus = async (keyItem: ApiKeyDoc) => {
-    const nextStatus = keyItem.status === "active" ? "revoked" : "active";
-    try {
-      await updateDoc(doc(bookingDb, "api_keys", keyItem.id), {
-        status: nextStatus,
-        updatedAt: Date.now(),
-      });
-      logUserActivity(userProfile?.email, {
-        desc: `${nextStatus === "active" ? "Re-activated" : "Revoked"} API Key: ${keyItem.name}`,
-        type: "settings",
-      });
-      toast.success(`API Key is now ${nextStatus}.`);
-    } catch (err: any) {
-      toast.error("Failed to update status: " + err.message);
-    }
-  };
-
-  // Delete API Key
-  const handleDeleteApiKey = async (keyItem: ApiKeyDoc) => {
-    const confirmed = await showConfirm(
-      `Are you sure you want to permanently delete the API key for "${keyItem.name}"? Any external application (such as EKMS Triage) using this key will be disconnected immediately.`
-    );
-    if (!confirmed) return;
-    try {
-      await deleteDoc(doc(bookingDb, "api_keys", keyItem.id));
-      logUserActivity(userProfile?.email, {
-        desc: `Deleted API Key: ${keyItem.name}`,
-        type: "settings",
-      });
-      toast.success("API Key deleted.");
-    } catch (err: any) {
-      toast.error("Delete failed: " + err.message);
-    }
-  };
 
 
   // Fetch real-time System Activity Logs from logsDb (userActivityLogs & daily_activity)
@@ -679,7 +566,7 @@ export default function AdminSettingsPage() {
       const res = await fetch("/api/facilities/availability", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ availability: availabilityMap }),
+        body: JSON.stringify({ replace: true, availability: availabilityMap }),
       });
       if (res.ok) {
         toast.success("Facility operational status saved successfully!");
@@ -1399,18 +1286,6 @@ export default function AdminSettingsPage() {
           </button>
 
           <button
-            onClick={() => setActiveTab("api")}
-            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
-              activeTab === "api"
-                ? "bg-blue-600 text-white shadow-xs"
-                : "text-slate-700 hover:bg-slate-50"
-            }`}
-          >
-            <Key className="w-4 h-4 shrink-0" />
-            <span>Developer API & Keys</span>
-          </button>
-
-          <button
             onClick={() => setActiveTab("logs")}
             className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
               activeTab === "logs"
@@ -1608,7 +1483,7 @@ export default function AdminSettingsPage() {
                       key={facility.id || facility.name}
                       className="py-3.5 flex items-center justify-between gap-4 transition hover:bg-slate-50/50 rounded-xl px-2"
                     >
-                      <div className="space-y-1 min-w-0 flex-1">
+                      <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-bold text-xs text-slate-900 truncate">
                             {facility.name}
@@ -1625,12 +1500,6 @@ export default function AdminSettingsPage() {
                               OFFLINE / SUSPENDED
                             </span>
                           )}
-                        </div>
-
-                        <div className="text-[11px] text-slate-500 flex items-center gap-3">
-                          {facility.district && <span>District: {facility.district}</span>}
-                          {facility.pincode && <span>PIN: {facility.pincode}</span>}
-                          {facility.address && <span className="truncate max-w-xs">{facility.address}</span>}
                         </div>
                       </div>
 
@@ -2708,503 +2577,6 @@ export default function AdminSettingsPage() {
             </div>
           )}
 
-          {/* ----------------------------------------------------
-              TAB 6: DEVELOPER API & KEYS
-              ---------------------------------------------------- */}
-          {activeTab === "api" && (
-            <div className="space-y-6">
-              {/* Header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-                <div>
-                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Key className="w-4 h-4 text-blue-600" />
-                    Developer REST API & Keys
-                  </h3>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      setNewKeyName("");
-                      setNewKeyModalOpen(true);
-                    }}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-                  >
-                    <PlusCircle className="w-3.5 h-3.5" />
-                    Generate New Key
-                  </button>
-                </div>
-              </div>
-
-              {/* Newly Created Key Alert Banner */}
-              {newlyCreatedKey && (
-                <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-2xl space-y-2 animate-in fade-in duration-200">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 font-bold text-xs text-emerald-900">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>API Key Successfully Created</span>
-                    </div>
-                    <button
-                      onClick={() => setNewlyCreatedKey(null)}
-                      className="text-slate-400 hover:text-slate-600 text-xs font-bold"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-emerald-800">
-                    Copy and store this API key now. For security reasons, you will not be able to view the full unmasked key again after leaving this page.
-                  </p>
-                  <div className="flex items-center gap-2 p-2.5 bg-white border border-emerald-200 rounded-xl font-mono text-xs text-slate-900 select-all">
-                    <span className="flex-1 truncate font-bold text-emerald-800">{newlyCreatedKey}</span>
-                    <button
-                      onClick={() => handleCopyKey(newlyCreatedKey, "new_key")}
-                      className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-sans text-xs font-bold rounded-lg transition-colors cursor-pointer"
-                    >
-                      {copiedKeyId === "new_key" ? (
-                        <>
-                          <Check className="w-3.5 h-3.5" />
-                          Copied
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          Copy Key
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* API Keys Table / List */}
-              <div className="space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Configured API Keys ({apiKeys.length})
-                  </span>
-                  <div className="relative w-full sm:w-64">
-                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      placeholder="Search API keys..."
-                      value={apiKeySearch}
-                      onChange={(e) => setApiKeySearch(e.target.value)}
-                      className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-medium"
-                    />
-                  </div>
-                </div>
-
-                {loadingApiKeys ? (
-                  <div className="p-8 text-center text-xs text-slate-400">Loading API credentials...</div>
-                ) : apiKeys.length === 0 ? (
-                  <div className="p-8 text-center border border-dashed border-slate-200 rounded-2xl space-y-3">
-                    <Key className="w-8 h-8 text-slate-300 mx-auto" />
-                    <div className="text-xs font-bold text-slate-700">No API keys created yet</div>
-                    <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
-                      Generate an API key to allow EKMS Triage or external applications to integrate with EKMS appointments.
-                    </p>
-                    <button
-                      onClick={() => {
-                        setNewKeyName("");
-                        setNewKeyModalOpen(true);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl cursor-pointer"
-                    >
-                      <PlusCircle className="w-3.5 h-3.5" />
-                      Generate API Key
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {apiKeys
-                      .filter((k) => {
-                        if (!apiKeySearch.trim()) return true;
-                        const q = apiKeySearch.toLowerCase();
-                        return (
-                          k.name?.toLowerCase().includes(q) ||
-                          k.key?.toLowerCase().includes(q) ||
-                          k.createdBy?.toLowerCase().includes(q)
-                        );
-                      })
-                      .map((k) => {
-                        const isRevealed = visibleKeyIds.has(k.id);
-                        const isRevoked = k.status === "revoked";
-                        return (
-                          <div
-                            key={k.id}
-                            className={`p-4 rounded-2xl border transition-all ${
-                              isRevoked
-                                ? "bg-slate-50/70 border-slate-200 opacity-75"
-                                : "bg-white border-slate-200 hover:border-slate-300 shadow-2xs"
-                            }`}
-                          >
-                            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                              {/* Left: Consumer name and meta */}
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <h4 className="text-xs font-bold text-slate-900">{k.name}</h4>
-                                  <span
-                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                      isRevoked
-                                        ? "bg-rose-100 text-rose-700"
-                                        : "bg-emerald-100 text-emerald-800"
-                                    }`}
-                                  >
-                                    {isRevoked ? "Revoked" : "Active"}
-                                  </span>
-                                </div>
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
-                                  <span>Created: {new Date(k.createdAt).toLocaleDateString("en-IN")}</span>
-                                  {k.lastUsedAt && (
-                                    <span>Last used: {new Date(k.lastUsedAt).toLocaleDateString("en-IN")}</span>
-                                  )}
-                                  <span>Requests: {k.usageCount || 0}</span>
-                                </div>
-                              </div>
-
-                              {/* Middle: Masked Key with Copy and Toggle */}
-                              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl font-mono text-xs max-w-full sm:max-w-md">
-                                <span className="truncate text-slate-700 font-medium">
-                                  {isRevealed
-                                    ? k.key
-                                    : `${k.key.slice(0, 10)}••••••••••••••••${k.key.slice(-4)}`}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleKeyVisibility(k.id)}
-                                  className="text-slate-400 hover:text-slate-700 p-1 shrink-0"
-                                  title={isRevealed ? "Hide Key" : "Reveal Key"}
-                                >
-                                  {isRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyKey(k.key, k.id)}
-                                  className="text-blue-600 hover:text-blue-800 p-1 shrink-0 font-sans font-bold"
-                                  title="Copy API Key"
-                                >
-                                  {copiedKeyId === k.id ? (
-                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                  ) : (
-                                    <Copy className="w-3.5 h-3.5" />
-                                  )}
-                                </button>
-                              </div>
-
-                              {/* Right: Actions */}
-                              <div className="flex items-center gap-1.5 shrink-0 self-end lg:self-center">
-                                <button
-                                  onClick={() => handleToggleKeyStatus(k)}
-                                  className={`px-3 py-1.5 text-xs font-bold rounded-xl border transition-all ${
-                                    isRevoked
-                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
-                                      : "bg-slate-100 text-slate-700 border-slate-200 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200"
-                                  }`}
-                                  title={isRevoked ? "Activate Key" : "Revoke Key"}
-                                >
-                                  {isRevoked ? "Re-activate" : "Revoke"}
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteApiKey(k)}
-                                  className="p-1.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-rose-50 transition-colors"
-                                  title="Delete Key"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Permissions Pills */}
-                            {Array.isArray(k.permissions) && k.permissions.length > 0 && (
-                              <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
-                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mr-1">
-                                  Permissions:
-                                </span>
-                                {k.permissions.map((p) => (
-                                  <span
-                                    key={p}
-                                    className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-600"
-                                  >
-                                    {p}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </div>
-
-              {/* API Documentation & Integration Sandbox */}
-              <div className="mt-8 pt-6 border-t border-slate-200 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <Code2 className="w-4 h-4 text-blue-600" />
-                      API Integration Reference & Code Samples
-                    </h4>
-                  </div>
-                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold">
-                    <button
-                      onClick={() => setApiDocTab("curl")}
-                      className={`px-2.5 py-1 rounded-lg transition-all ${
-                        apiDocTab === "curl" ? "bg-white text-slate-900 shadow-xs" : "text-slate-500 hover:text-slate-800"
-                      }`}
-                    >
-                      cURL
-                    </button>
-                    <button
-                      onClick={() => setApiDocTab("fetch")}
-                      className={`px-2.5 py-1 rounded-lg transition-all ${
-                        apiDocTab === "fetch" ? "bg-white text-slate-900 shadow-xs" : "text-slate-500 hover:text-slate-800"
-                      }`}
-                    >
-                      JavaScript
-                    </button>
-                    <button
-                      onClick={() => setApiDocTab("python")}
-                      className={`px-2.5 py-1 rounded-lg transition-all ${
-                        apiDocTab === "python" ? "bg-white text-slate-900 shadow-xs" : "text-slate-500 hover:text-slate-800"
-                      }`}
-                    >
-                      Python
-                    </button>
-                  </div>
-                </div>
-
-                {/* Base URL info */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs font-mono">
-                    <div className="flex items-center gap-2 text-slate-700">
-                      <Globe className="w-3.5 h-3.5 text-blue-600" />
-                      <span className="font-bold text-blue-600 font-sans">Production API (ekms.in):</span>
-                    </div>
-                    <div className="text-[11.5px] text-slate-800 font-semibold select-all truncate">
-                      https://ekms.in/api/v1/appointments
-                    </div>
-                  </div>
-
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs font-mono">
-                    <div className="flex items-center gap-2 text-slate-700">
-                      <Terminal className="w-3.5 h-3.5 text-slate-600" />
-                      <span className="font-bold text-slate-700 font-sans">Current Environment Endpoint:</span>
-                    </div>
-                    <div className="text-[11.5px] text-slate-800 font-semibold select-all truncate">
-                      {typeof window !== "undefined" ? `${window.location.origin}/api/v1/appointments` : "https://ekms.in/api/v1/appointments"}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Code Box */}
-                <div className="bg-slate-950 text-slate-200 rounded-2xl p-4 font-mono text-[11.5px] overflow-x-auto border border-slate-800 relative">
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2 border-b border-slate-800 pb-2">
-                    <span className="font-bold text-slate-300">
-                      {apiDocTab === "curl" && "1. Book Appointment (cURL)"}
-                      {apiDocTab === "fetch" && "1. Book Appointment (JavaScript Fetch)"}
-                      {apiDocTab === "python" && "1. Book Appointment (Python Requests)"}
-                    </span>
-                    <button
-                      onClick={() => {
-                        const targetUrl = typeof window !== "undefined" && window.location.hostname !== "localhost" ? `${window.location.origin}/api/v1/appointments` : "https://ekms.in/api/v1/appointments";
-                        const snippet =
-                          apiDocTab === "curl"
-                            ? `curl -X POST ${targetUrl} \\\n  -H "Content-Type: application/json" \\\n  -H "x-api-key: ${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}" \\\n  -d '{\n    "patientName": "Jyotimoy Choudhury",\n    "phone": "6002283107",\n    "dispensaryName": "Beltola ESIS Dispensary",\n    "date": "2026-11-16",\n    "timeSlot": "10:30 AM - 11:00 AM",\n    "purpose": "Fever & Chills",\n    "source": "EKMS Triage"\n  }'`
-                            : apiDocTab === "fetch"
-                            ? `const response = await fetch("${targetUrl}", {\n  method: "POST",\n  headers: {\n    "Content-Type": "application/json",\n    "x-api-key": "${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}"\n  },\n  body: JSON.stringify({\n    patientName: "Jyotimoy Choudhury",\n    phone: "6002283107",\n    dispensaryName: "Beltola ESIS Dispensary",\n    date: "2026-11-16",\n    timeSlot: "10:30 AM - 11:00 AM",\n    purpose: "Fever & Chills",\n    source: "EKMS Triage"\n  })\n});\nconst result = await response.json();\nconsole.log(result.appointment.tokenNo);`
-                            : `import requests\n\nurl = "${targetUrl}"\nheaders = {\n    "Content-Type": "application/json",\n    "x-api-key": "${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}"\n}\npayload = {\n    "patientName": "Jyotimoy Choudhury",\n    "phone": "6002283107",\n    "dispensaryName": "Beltola ESIS Dispensary",\n    "date": "2026-11-16",\n    "timeSlot": "10:30 AM - 11:00 AM",\n    "purpose": "Fever & Chills",\n    "source": "EKMS Triage"\n}\nresponse = requests.post(url, json=payload, headers=headers)\nprint(response.json())`;
-                        navigator.clipboard.writeText(snippet);
-                        toast.success("Code snippet copied!");
-                      }}
-                      className="text-xs text-blue-400 hover:text-blue-300 font-sans font-bold flex items-center gap-1 cursor-pointer"
-                    >
-                      <Copy className="w-3 h-3" />
-                      Copy Snippet
-                    </button>
-                  </div>
-
-                  <pre className="text-slate-300 leading-relaxed">
-                    {apiDocTab === "curl" &&
-                      `# Book Appointment (Production or Local)
-curl -X POST https://ekms.in/api/v1/appointments \\
-  -H "Content-Type: application/json" \\
-  -H "x-api-key: ${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}" \\
-  -d '{
-    "patientName": "Jyotimoy Choudhury",
-    "phone": "6002283107",
-    "dispensaryName": "Beltola ESIS Dispensary",
-    "date": "2026-11-16",
-    "timeSlot": "10:30 AM - 11:00 AM",
-    "purpose": "Fever & Chills",
-    "source": "EKMS Triage"
-  }'
-
-# Query Appointments for a Dispensary
-curl -X GET "https://ekms.in/api/v1/appointments?dispensary=Beltola&status=scheduled" \\
-  -H "x-api-key: ${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}"
-
-# Cancel Appointment by Token Number
-curl -X PATCH "https://ekms.in/api/v1/appointments/ESIC-00335-DISP" \\
-  -H "Content-Type: application/json" \\
-  -H "x-api-key: ${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}" \\
-  -d '{ "status": "cancelled", "cancellationReason": "Patient requested cancellation" }'`}
-
-                    {apiDocTab === "fetch" &&
-                      `// 1. Book Appointment
-const targetUrl = typeof window !== "undefined" && window.location.hostname !== "localhost" 
-  ? window.location.origin + "/api/v1/appointments" 
-  : "https://ekms.in/api/v1/appointments";
-
-const bookRes = await fetch(targetUrl, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "x-api-key": "${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}"
-  },
-  body: JSON.stringify({
-    patientName: "Jyotimoy Choudhury",
-    phone: "6002283107",
-    dispensaryName: "Beltola ESIS Dispensary",
-    date: "2026-11-16",
-    timeSlot: "10:30 AM - 11:00 AM",
-    purpose: "Fever & Chills",
-    source: "EKMS Triage"
-  })
-});
-const data = await bookRes.json();
-console.log("Booked Token:", data.appointment?.tokenNo);
-
-// 2. Cancel Appointment
-await fetch(targetUrl + "/" + data.appointment.id, {
-  method: "PATCH",
-  headers: {
-    "Content-Type": "application/json",
-    "x-api-key": "${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}"
-  },
-  body: JSON.stringify({
-    status: "cancelled",
-    cancellationReason: "Cancelled via Triage"
-  })
-});`}
-
-                    {apiDocTab === "python" &&
-                      `import requests
-
-API_KEY = "${apiKeys[0]?.key || "YOUR_GENERATED_API_KEY"}"
-BASE_URL = "https://ekms.in/api/v1/appointments"  # Or "http://localhost:3000/api/v1/appointments" for local
-
-headers = {
-    "Content-Type": "application/json",
-    "x-api-key": API_KEY
-}
-
-# Book appointment
-payload = {
-    "patientName": "Jyotimoy Choudhury",
-    "phone": "6002283107",
-    "dispensaryName": "Beltola ESIS Dispensary",
-    "date": "2026-11-16",
-    "timeSlot": "10:30 AM - 11:00 AM",
-    "purpose": "Fever & Chills",
-    "source": "EKMS Triage"
-}
-response = requests.post(BASE_URL, json=payload, headers=headers)
-print(response.json())`}
-                  </pre>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ----------------------------------------------------
-              MODAL: GENERATE NEW API KEY
-              ---------------------------------------------------- */}
-          {newKeyModalOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-in fade-in duration-150">
-              <div className="bg-white rounded-3xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-5 animate-in zoom-in-95 duration-150">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                      <Key className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-900">Generate Developer API Key</h4>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setNewKeyModalOpen(false)}
-                    className="text-slate-400 hover:text-slate-600 p-1"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <form onSubmit={handleCreateApiKey} className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                      Application / Consumer Name *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. EKMS Triage App, Hospital Portal, Field Bot"
-                      value={newKeyName}
-                      onChange={(e) => setNewKeyName(e.target.value)}
-                      className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-semibold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                      Permissions
-                    </label>
-                    <div className="space-y-2">
-                      {[
-                        { id: "appointments:create", label: "Book Appointments (POST /appointments)" },
-                        { id: "appointments:read", label: "View Appointments (GET /appointments)" },
-                        { id: "appointments:update", label: "Update Status & Notes (PATCH /appointments/:id)" },
-                        { id: "appointments:delete", label: "Cancel Appointments (DELETE /appointments/:id)" },
-                      ].map((perm) => (
-                        <label key={perm.id} className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={newKeyPermissions.includes(perm.id)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setNewKeyPermissions([...newKeyPermissions, perm.id]);
-                              } else {
-                                setNewKeyPermissions(newKeyPermissions.filter((p) => p !== perm.id));
-                              }
-                            }}
-                            className="w-4 h-4 text-blue-600 rounded border-slate-300"
-                          />
-                          <span>{perm.label}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setNewKeyModalOpen(false)}
-                      className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-all"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={generatingKey || !newKeyName.trim()}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-1.5"
-                    >
-                      {generatingKey ? "Generating..." : "Generate Key"}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>

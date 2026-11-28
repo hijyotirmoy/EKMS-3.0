@@ -437,3 +437,207 @@ export async function deleteBookingRecordCompletely(
   return totalRemovedCount;
 }
 
+export const CANONICAL_AGENT_MAP: Record<string, string> = {
+  // Mohsin Ansari
+  "mohsin.ansari@ekms.in": "Mohsin Ansari",
+  "mohsin.ansari": "Mohsin Ansari",
+  "mohsin ansari": "Mohsin Ansari",
+  "mohsin": "Mohsin Ansari",
+  "esic012t": "Mohsin Ansari",
+  "esic012": "Mohsin Ansari",
+
+  // Kaushik Das
+  "kaushik.das@ekms.in": "Kaushik Das",
+  "kaushik.das": "Kaushik Das",
+  "kaushik das": "Kaushik Das",
+  "kaushik": "Kaushik Das",
+  "esic011t": "Kaushik Das",
+  "esic011": "Kaushik Das",
+
+  // Neha Thakur
+  "neha.thakur@ekms.in": "Neha Thakur",
+  "neha.thakur": "Neha Thakur",
+  "neha thakur": "Neha Thakur",
+  "neha": "Neha Thakur",
+  "esic014t": "Neha Thakur",
+  "esic014": "Neha Thakur",
+
+  // Ankita Barichowa
+  "ankita.barichowa@ekms.in": "Ankita Barichowa",
+  "ankita.barichowa": "Ankita Barichowa",
+  "ankita barichowa": "Ankita Barichowa",
+  "ankita": "Ankita Barichowa",
+  "esic015t": "Ankita Barichowa",
+  "esic015": "Ankita Barichowa",
+
+  // Himangshu Bezbaruah
+  "himangshu.bezbaruah@ekms.in": "Himangshu Bezbaruah",
+  "himangshu.bezbaruah": "Himangshu Bezbaruah",
+  "himangshu bezbaruah": "Himangshu Bezbaruah",
+  "himangshu@ekms.in": "Himangshu Bezbaruah",
+  "himangshu": "Himangshu Bezbaruah",
+  "esic008t": "Himangshu Bezbaruah",
+  "esic008": "Himangshu Bezbaruah",
+
+  // Esha Doley
+  "esha.doley@ekms.in": "Esha Doley",
+  "esha.doley": "Esha Doley",
+  "esha doley": "Esha Doley",
+  "esha@ekms.in": "Esha Doley",
+  "esha": "Esha Doley",
+  "esic007t": "Esha Doley",
+  "esic007": "Esha Doley",
+
+  // Joysmita Tete
+  "joysmita.tete@ekms.in": "Joysmita Tete",
+  "joysmita.tete": "Joysmita Tete",
+  "joysmita tete": "Joysmita Tete",
+  "joysmita@ekms.in": "Joysmita Tete",
+  "joysmita": "Joysmita Tete",
+  "esic009t": "Joysmita Tete",
+  "esic009": "Joysmita Tete",
+
+  // Munmi Boruah
+  "munmi.boruah@ekms.in": "Munmi Boruah",
+  "munmi.boruah": "Munmi Boruah",
+  "munmi boruah": "Munmi Boruah",
+  "munmi@ekms.in": "Munmi Boruah",
+  "munmi": "Munmi Boruah",
+  "esic013t": "Munmi Boruah",
+  "esic013": "Munmi Boruah",
+
+  // Jyotirmoy Choudhury
+  "jyoc90@gmail.com": "Jyotirmoy Choudhury",
+  "jyoc90": "Jyotirmoy Choudhury",
+  "jyotirmoy.choudhury": "Jyotirmoy Choudhury",
+  "jyotirmoy choudhury": "Jyotirmoy Choudhury",
+  "jyotirmoy": "Jyotirmoy Choudhury",
+  "esic010t": "Jyotirmoy Choudhury",
+  "esic010": "Jyotirmoy Choudhury",
+
+  // EKMS Office
+  "ekmsoffice@gmail.com": "EKMS Office",
+  "ekmsoffice@ekms.in": "EKMS Office",
+  "ekmsoffice": "EKMS Office",
+  "ekms office": "EKMS Office",
+  "esic001t": "EKMS Office",
+  "esic001": "EKMS Office",
+
+  // System Entities
+  "triage": "EKMS Triage",
+  "ekms triage": "EKMS Triage",
+  "ekmstriage": "EKMS Triage",
+  "esic002t": "EKMS Triage",
+  "esic002": "EKMS Triage",
+};
+
+/**
+ * Formats an agent's name to their full display name (as written on profile page).
+ * Resolves duplicate entries like "mohsin.ansari", "Mohsin", and "Mohsin Ansari" to "Mohsin Ansari".
+ * Checks against email hint, canonical directory, and staffMap/userProfiles dictionary.
+ */
+export function formatAgentFullName(
+  raw?: string | null,
+  staffMap?: Record<string, string> | null,
+  emailHint?: string | null
+): string {
+  if (!raw && !emailHint) return "Agent";
+
+  // 1. Check canonical directory against email hint first
+  if (emailHint) {
+    const cleanEmail = String(emailHint).toLowerCase().trim();
+    if (CANONICAL_AGENT_MAP[cleanEmail]) return CANONICAL_AGENT_MAP[cleanEmail];
+    const emailPrefix = cleanEmail.includes("@") ? cleanEmail.split("@")[0].trim() : cleanEmail;
+    if (CANONICAL_AGENT_MAP[emailPrefix]) return CANONICAL_AGENT_MAP[emailPrefix];
+  }
+
+  let str = String(raw || emailHint || "").trim();
+  if (!str) return "Agent";
+
+  // Remove email domain if present
+  if (str.includes("@")) {
+    const rawEmail = str.toLowerCase();
+    if (CANONICAL_AGENT_MAP[rawEmail]) return CANONICAL_AGENT_MAP[rawEmail];
+    str = str.split("@")[0].trim();
+  }
+
+  // Remove parenthetical details like "(All Registered Agents)"
+  str = str.replace(/\(.*?\)/g, "").trim();
+
+  const lower = str.toLowerCase();
+
+  // 2. Direct match in canonical directory
+  if (CANONICAL_AGENT_MAP[lower]) return CANONICAL_AGENT_MAP[lower];
+  const cleanLowerKey = lower.replace(/[._]/g, " ").trim();
+  if (CANONICAL_AGENT_MAP[cleanLowerKey]) return CANONICAL_AGENT_MAP[cleanLowerKey];
+
+  // 3. Check in dynamic staffMap / userProfiles if provided
+  if (staffMap && typeof staffMap === "object") {
+    if (staffMap[lower] && !staffMap[lower].includes("@")) {
+      const v = staffMap[lower].trim();
+      return CANONICAL_AGENT_MAP[v.toLowerCase()] || v;
+    }
+    if (staffMap[cleanLowerKey] && !staffMap[cleanLowerKey].includes("@")) {
+      const v = staffMap[cleanLowerKey].trim();
+      return CANONICAL_AGENT_MAP[v.toLowerCase()] || v;
+    }
+  }
+
+  // 4. Handle system entities
+  if (lower.includes("triage")) return "EKMS Triage";
+  if (lower === "admin" || lower.startsWith("admin ")) return "Admin";
+  if (lower === "system") return "System";
+
+  // 5. If already a clean capitalized multi-word name (e.g. "Mohsin Ansari"), preserve it
+  if (!str.includes(".") && !str.includes("_") && str.includes(" ")) {
+    return str
+      .split(/\s+/)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  // 6. If dotted or underscored username (e.g. "mohsin.ansari" or "ankita.barichowa"), convert to Title Case!
+  const parts = str.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length > 0) {
+    return parts
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+/**
+ * Formats an agent's name to their clean First Name only.
+ * Resolves duplicate entries like "kaushik.das" and "Kaushik Das" to "Kaushik".
+ * Preserves system entities like "EKMS Triage".
+ */
+export function formatAgentFirstName(raw?: string | null): string {
+  if (!raw) return "Agent";
+  let str = String(raw).trim();
+  if (!str) return "Agent";
+
+  // If email, extract username before domain
+  if (str.includes("@")) {
+    str = str.split("@")[0].trim();
+  }
+
+  // Remove parenthetical details like "(All Registered Agents)"
+  str = str.replace(/\(.*?\)/g, "").trim();
+
+  const lower = str.toLowerCase();
+  if (lower.includes("triage")) return "EKMS Triage";
+  if (lower === "admin" || lower.startsWith("admin ")) return "Admin";
+  if (lower === "system") return "System";
+
+  // Split by whitespace, dot, underscore, dash
+  const segments = str.split(/[\s._-]+/).filter(Boolean);
+  if (segments.length > 0) {
+    const first = segments[0];
+    return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+  }
+
+  return "Agent";
+}
+
+
