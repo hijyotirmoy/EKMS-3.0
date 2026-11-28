@@ -63,10 +63,49 @@ import BulkUploadModal, { downloadBulkUploadTemplate } from "@/components/appoin
 import { GOOGLE_SHEET_URL, recordAppointmentBookingToSheet } from "@/lib/googleSheetsSync";
 import { useStaffDirectory } from "@/lib/useStaffDirectory";
 import { extractIpNumber, isNonClinicalAppointment, formatStaffTimestamp, getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
+import { areDatesMatching, getYesterdayDateString, getTomorrowDateString } from "@/lib/slotTiming";
 import { deleteAppointmentFromTriageApi } from "@/lib/triageSync";
 import { maskDispensaryIpNumber, maskDispensaryMobile, isDispensaryStaffAccount } from "@/lib/maskUtils";
 import { archiveToRecentlyDeleted } from "@/lib/recentlyDeleted";
 import { formatAgentFullName, formatAgentFirstName } from "@/lib/utils";
+
+// Persistent deletion cache across tabs and reloads
+const deletedAppointmentKeys = new Set<string>();
+if (typeof window !== "undefined") {
+  try {
+    const saved = localStorage.getItem("ekms_deleted_app_keys") || sessionStorage.getItem("ekms_deleted_app_keys");
+    if (saved) {
+      const arr = JSON.parse(saved);
+      if (Array.isArray(arr)) {
+        arr.forEach((k: any) => {
+          const s = String(k).trim();
+          if (s) {
+            deletedAppointmentKeys.add(s);
+            deletedAppointmentKeys.add(s.toUpperCase());
+          }
+        });
+      }
+    }
+  } catch (_) {}
+}
+
+function markAppointmentDeleted(identifiers: any = []) {
+  const ids = Array.isArray(identifiers) ? identifiers : [identifiers];
+  ids.filter(Boolean).forEach((ident) => {
+    const s = String(ident).trim();
+    if (s) {
+      deletedAppointmentKeys.add(s);
+      deletedAppointmentKeys.add(s.toUpperCase());
+    }
+  });
+  try {
+    if (typeof window !== "undefined") {
+      const serialized = JSON.stringify(Array.from(deletedAppointmentKeys).slice(-1000));
+      localStorage.setItem("ekms_deleted_app_keys", serialized);
+      sessionStorage.setItem("ekms_deleted_app_keys", serialized);
+    }
+  } catch (_) {}
+}
 
 function normalizeDispensaryName(str: string): string {
   if (!str) return "";
@@ -220,6 +259,39 @@ export default function AdminManageAppointmentPage() {
     let isMounted = true;
     let unsubPrimary: (() => void) | null = null;
     let unsubSecondary: (() => void) | null = null;
+    let unsubDeletions: (() => void) | null = null;
+
+    // Real-time deletion sync from shared system_sync/deletions
+    try {
+      const bDb = getBookingDb() || getFirestoreDb();
+      if (bDb) {
+        unsubDeletions = onSnapshot(doc(bDb, "system_sync", "deletions"), (delSnap) => {
+          if (delSnap.exists() && isMounted) {
+            const d = delSnap.data();
+            const keys = [
+              ...(Array.isArray(d.keys) ? d.keys : []),
+              ...(Array.isArray(d.latestDeleted) ? d.latestDeleted : []),
+            ];
+            if (keys.length > 0) {
+              markAppointmentDeleted(keys);
+              setAppointments((prev) => {
+                const filtered = prev.filter((a) => {
+                  const id = String(a.id || "").trim();
+                  const tok = String(a.tokenNo || "").trim();
+                  const ref = String(a.referenceNo || "").trim();
+                  if (deletedAppointmentKeys.has(id) || deletedAppointmentKeys.has(id.toUpperCase())) return false;
+                  if (deletedAppointmentKeys.has(tok) || deletedAppointmentKeys.has(tok.toUpperCase())) return false;
+                  if (deletedAppointmentKeys.has(ref) || deletedAppointmentKeys.has(ref.toUpperCase())) return false;
+                  return true;
+                });
+                setCachedAppointments(filtered);
+                return filtered;
+              });
+            }
+          }
+        });
+      }
+    } catch (_) {}
 
     const setupLiveListener = (useSecondary: boolean) => {
       const targetDb = useSecondary ? casesSettingsDb : bookingDb;
@@ -236,6 +308,25 @@ export default function AdminManageAppointmentPage() {
           const list: AppointmentRecord[] = [];
           snap.forEach((d) => {
             const data = d.data();
+            const key = String(data.tokenNo || data.referenceNo || d.id || "").trim();
+            const tokKey = String(data.tokenNo || "").trim();
+            const idKey = String(d.id || "").trim();
+            const pName = String(data.ipName || data.patientName || "").trim().toLowerCase();
+
+            // Strictly filter out legacy ESIC tokens, anonymous test cases, and deleted keys
+            if (
+              key.startsWith("ESIC-") ||
+              (idKey && idKey.startsWith("ESIC-")) ||
+              (tokKey && tokKey.startsWith("ESIC-")) ||
+              pName.includes("anonymous") ||
+              deletedAppointmentKeys.has(key) ||
+              deletedAppointmentKeys.has(key.toUpperCase()) ||
+              (idKey && (deletedAppointmentKeys.has(idKey) || deletedAppointmentKeys.has(idKey.toUpperCase()))) ||
+              (tokKey && (deletedAppointmentKeys.has(tokKey) || deletedAppointmentKeys.has(tokKey.toUpperCase())))
+            ) {
+              return;
+            }
+
             list.push({
               ...data,
               id: d.id,
@@ -291,18 +382,8 @@ export default function AdminManageAppointmentPage() {
             });
           });
           if (isMounted) {
-            setAppointments((prev) => {
-              const map = new Map<string, AppointmentRecord>();
-              list.forEach((a) => map.set(a.id, a));
-              prev.forEach((a) => {
-                if (!map.has(a.id)) {
-                  map.set(a.id, a);
-                }
-              });
-              const merged = Array.from(map.values());
-              setCachedAppointments(merged);
-              return merged;
-            });
+            setAppointments(list);
+            setCachedAppointments(list);
             setLoading(false);
           }
         },
@@ -377,6 +458,7 @@ export default function AdminManageAppointmentPage() {
       if (unsubPrimary) unsubPrimary();
       if (unsubSecondary) unsubSecondary();
       if (unsubStaff) unsubStaff();
+      if (unsubDeletions) unsubDeletions();
     };
   }, []);
 
@@ -384,8 +466,28 @@ export default function AdminManageAppointmentPage() {
   const filteredAppointments = useMemo(() => {
     const q = searchTerm.toLowerCase().trim();
     const todayStr = new Date().toISOString().slice(0, 10);
+    const tomorrowStr = getTomorrowDateString();
 
     return appointments.filter((app) => {
+      // 0. Exclude deleted keys, legacy ESIC tokens, and anonymous beneficiaries
+      const key = String(app.id || app.tokenNo || app.referenceNo || "").trim();
+      const tokKey = String(app.tokenNo || "").trim();
+      const idKey = String(app.id || "").trim();
+      const pName = String(app.ipName || app.patientName || "").trim().toLowerCase();
+
+      if (
+        key.startsWith("ESIC-") ||
+        (idKey && idKey.startsWith("ESIC-")) ||
+        (tokKey && tokKey.startsWith("ESIC-")) ||
+        pName.includes("anonymous") ||
+        deletedAppointmentKeys.has(key) ||
+        deletedAppointmentKeys.has(key.toUpperCase()) ||
+        (idKey && (deletedAppointmentKeys.has(idKey) || deletedAppointmentKeys.has(idKey.toUpperCase()))) ||
+        (tokKey && (deletedAppointmentKeys.has(tokKey) || deletedAppointmentKeys.has(tokKey.toUpperCase())))
+      ) {
+        return false;
+      }
+
       // Dispensary filter
       if (dispensaryFilter !== "all") {
         if (!isDispensaryMatch(app.dispensaryName, dispensaryFilter, app.dispensaryId)) {
@@ -445,10 +547,15 @@ export default function AdminManageAppointmentPage() {
         }
       }
 
-      if (dateFilter === "today") {
-        if (app.date !== todayStr) return false;
-      } else if (dateFilter && app.date !== dateFilter) {
-        return false;
+      // Robust date matching supporting DD-MM-YYYY, YYYY-MM-DD, and timestamps
+      if (dateFilter === "yesterday") {
+        if (!areDatesMatching(app.date, getYesterdayDateString())) return false;
+      } else if (dateFilter === "today") {
+        if (!areDatesMatching(app.date, todayStr)) return false;
+      } else if (dateFilter === "tomorrow") {
+        if (!areDatesMatching(app.date, tomorrowStr)) return false;
+      } else if (dateFilter && dateFilter !== "all") {
+        if (!areDatesMatching(app.date, dateFilter)) return false;
       }
 
       if (q) {
@@ -474,13 +581,37 @@ export default function AdminManageAppointmentPage() {
   // Metrics: Derived using actual lifecycle stage, dynamically filtered by selected date and scope
   const metrics = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
+    const tomorrowStr = getTomorrowDateString();
 
     const scopedForMetrics = appointments.filter((app) => {
-      // Date filter
-      if (dateFilter === "today") {
-        if (app.date !== todayStr) return false;
-      } else if (dateFilter && app.date !== dateFilter) {
+      // 0. Exclude deleted keys, legacy ESIC tokens, and anonymous beneficiaries
+      const key = String(app.id || app.tokenNo || app.referenceNo || "").trim();
+      const tokKey = String(app.tokenNo || "").trim();
+      const idKey = String(app.id || "").trim();
+      const pName = String(app.ipName || app.patientName || "").trim().toLowerCase();
+
+      if (
+        key.startsWith("ESIC-") ||
+        (idKey && idKey.startsWith("ESIC-")) ||
+        (tokKey && tokKey.startsWith("ESIC-")) ||
+        pName.includes("anonymous") ||
+        deletedAppointmentKeys.has(key) ||
+        deletedAppointmentKeys.has(key.toUpperCase()) ||
+        (idKey && (deletedAppointmentKeys.has(idKey) || deletedAppointmentKeys.has(idKey.toUpperCase()))) ||
+        (tokKey && (deletedAppointmentKeys.has(tokKey) || deletedAppointmentKeys.has(tokKey.toUpperCase())))
+      ) {
         return false;
+      }
+
+      // Date filter with robust date matching
+      if (dateFilter === "yesterday") {
+        if (!areDatesMatching(app.date, getYesterdayDateString())) return false;
+      } else if (dateFilter === "today") {
+        if (!areDatesMatching(app.date, todayStr)) return false;
+      } else if (dateFilter === "tomorrow") {
+        if (!areDatesMatching(app.date, tomorrowStr)) return false;
+      } else if (dateFilter && dateFilter !== "all") {
+        if (!areDatesMatching(app.date, dateFilter)) return false;
       }
 
       // Dispensary filter
@@ -594,7 +725,8 @@ export default function AdminManageAppointmentPage() {
 
   // Helper to ensure an appointment is completely purged from all databases
   const deleteAppointmentFromAllDatabases = async (app: AppointmentRecord) => {
-    // 0. Instantly notify Triage tab and local EKMS state with 0 ms latency
+    // 0. Instantly mark deleted in persistent cache and state
+    markAppointmentDeleted([app.id, app.tokenNo, app.referenceNo]);
     try {
       const delPayload = {
         tokenNo: app.tokenNo,
@@ -612,7 +744,7 @@ export default function AdminManageAppointmentPage() {
     } catch (_) {}
 
     setAppointments((prev) =>
-      prev.filter((a) => a.id !== app.id && (!app.tokenNo || a.tokenNo !== app.tokenNo))
+      prev.filter((a) => a.id !== app.id && (!app.tokenNo || a.tokenNo !== app.tokenNo) && (!app.referenceNo || a.referenceNo !== app.referenceNo))
     );
 
     const promises: Promise<any>[] = [];
@@ -737,6 +869,7 @@ export default function AdminManageAppointmentPage() {
       const appsToDelete = appointments.filter((a) => selectedIds.has(a.id));
       const tokens = appsToDelete.map((a) => a.tokenNo).filter(Boolean);
       const ids = appsToDelete.map((a) => a.id).filter(Boolean);
+      markAppointmentDeleted([...tokens, ...ids]);
 
       try {
         const bulkPayload = {

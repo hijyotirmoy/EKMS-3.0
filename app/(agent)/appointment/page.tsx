@@ -344,13 +344,23 @@ const STATUS_PROGRESSION_RANK: Record<string, number> = {
   scheduled: 1,
 };
 
-  // Cache of deleted appointment keys to prevent deleted appointments from reappearing without refresh
+  // Cache of deleted appointment keys to prevent deleted appointments from reappearing
 const deletedAppointmentKeys = new Set<string>();
 if (typeof window !== "undefined") {
   try {
-    sessionStorage.removeItem("ekms_deleted_app_keys");
-    localStorage.removeItem("ekms_deleted_app_keys");
-    deletedAppointmentKeys.clear();
+    const saved = localStorage.getItem("ekms_deleted_app_keys") || sessionStorage.getItem("ekms_deleted_app_keys");
+    if (saved) {
+      const arr = JSON.parse(saved);
+      if (Array.isArray(arr)) {
+        arr.forEach((k: any) => {
+          const s = String(k).trim();
+          if (s) {
+            deletedAppointmentKeys.add(s);
+            deletedAppointmentKeys.add(s.toUpperCase());
+          }
+        });
+      }
+    }
   } catch (_) {}
 }
 
@@ -365,7 +375,9 @@ function markAppointmentDeleted(identifiers: any = []) {
   });
   try {
     if (typeof window !== "undefined") {
-      sessionStorage.setItem("ekms_deleted_app_keys", JSON.stringify(Array.from(deletedAppointmentKeys).slice(-500)));
+      const serialized = JSON.stringify(Array.from(deletedAppointmentKeys).slice(-1000));
+      localStorage.setItem("ekms_deleted_app_keys", serialized);
+      sessionStorage.setItem("ekms_deleted_app_keys", serialized);
     }
   } catch (_) {}
 }
@@ -564,10 +576,17 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
 
       map.set(key, merged);
     } else {
+      // If live list is active and item falls within live query window, it was deleted in Firestore: do not resurrect!
+      const isWithinLiveTimeframe = liveList.length > 0 && (
+        liveList.length < 250 || (prev.createdAt && Number(prev.createdAt) >= oldestLiveTime)
+      );
+
       if (
+        !isWithinLiveTimeframe &&
         !deletedAppointmentKeys.has(key) &&
-        !(idKey && deletedAppointmentKeys.has(idKey)) &&
-        !(tokKey && deletedAppointmentKeys.has(tokKey))
+        !deletedAppointmentKeys.has(key.toUpperCase()) &&
+        !(idKey && (deletedAppointmentKeys.has(idKey) || deletedAppointmentKeys.has(idKey.toUpperCase()))) &&
+        !(tokKey && (deletedAppointmentKeys.has(tokKey) || deletedAppointmentKeys.has(tokKey.toUpperCase())))
       ) {
         map.set(key, prev);
       }
@@ -982,18 +1001,39 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
   // Firebase Real-time Live Synchronization (ekmsbooking & triage databases)
   useEffect(() => {
-    // Clear any stale deleted keys on mount so no appointments are hidden falsely
-    deletedAppointmentKeys.clear();
-    try {
-      sessionStorage.removeItem("ekms_deleted_app_keys");
-      localStorage.removeItem("ekms_deleted_app_keys");
-    } catch (_) {}
-
-    let unsubBooking = null;
+    let unsubBooking: (() => void) | null = null;
+    let unsubDeletions: (() => void) | null = null;
 
     try {
-      const bDb = getBookingDb();
+      const bDb = getBookingDb() || getFirestoreDb();
       if (bDb) {
+        // Real-time deletion sync across all devices / agent accounts
+        unsubDeletions = onSnapshot(doc(bDb, "system_sync", "deletions"), (delSnap) => {
+          if (delSnap.exists()) {
+            const d = delSnap.data();
+            const keys = [
+              ...(Array.isArray(d.keys) ? d.keys : []),
+              ...(Array.isArray(d.latestDeleted) ? d.latestDeleted : []),
+            ];
+            if (keys.length > 0) {
+              markAppointmentDeleted(keys);
+              setAppointments((prev) => {
+                const filtered = prev.filter((a) => {
+                  const id = String(a.id || "").trim();
+                  const tok = String(a.tokenNo || "").trim();
+                  const ref = String(a.referenceNo || "").trim();
+                  if (deletedAppointmentKeys.has(id) || deletedAppointmentKeys.has(id.toUpperCase())) return false;
+                  if (deletedAppointmentKeys.has(tok) || deletedAppointmentKeys.has(tok.toUpperCase())) return false;
+                  if (deletedAppointmentKeys.has(ref) || deletedAppointmentKeys.has(ref.toUpperCase())) return false;
+                  return true;
+                });
+                setCachedAppointments(filtered);
+                return filtered;
+              });
+            }
+          }
+        });
+
         const q = query(collection(bDb, "dispensary_appointments"), orderBy("createdAt", "desc"), limit(250));
         unsubBooking = onSnapshot(
           q,
@@ -1019,13 +1059,16 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
               }
             });
 
-            const list = [];
+            const list: any[] = [];
             snap.forEach((d) => {
               const data = d.data();
-              const key = data.tokenNo || data.referenceNo || d.id;
+              const key = String(data.tokenNo || data.referenceNo || d.id || "").trim();
+              const idStr = String(d.id || "").trim();
               if (
-                !deletedAppointmentKeys.has(String(key).trim()) &&
-                !deletedAppointmentKeys.has(String(d.id).trim())
+                !deletedAppointmentKeys.has(key) &&
+                !deletedAppointmentKeys.has(key.toUpperCase()) &&
+                !deletedAppointmentKeys.has(idStr) &&
+                !deletedAppointmentKeys.has(idStr.toUpperCase())
               ) {
                 list.push({ id: d.id, ...data });
               }
@@ -1062,6 +1105,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
     return () => {
       unsubBooking?.();
+      unsubDeletions?.();
       clearInterval(pollInterval);
     };
   }, [loadAppointments]);

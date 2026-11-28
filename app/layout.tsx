@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { Roboto } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { PopupProvider } from "@/context/PopupContext";
@@ -12,12 +11,9 @@ import PageTitleUpdater from "@/components/common/PageTitleUpdater";
 import NativeNotificationSync from "@/components/common/NativeNotificationSync";
 import AppUpdateBanner from "@/components/common/AppUpdateBanner";
 
-const roboto = Roboto({
-  weight: ["300", "400", "500", "700", "900"],
-  subsets: ["latin"],
+const roboto = {
   variable: "--font-roboto",
-  display: "swap",
-});
+};
 
 export const viewport: Viewport = {
   width: "device-width",

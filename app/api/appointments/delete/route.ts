@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { doc, deleteDoc, getDocs, query, collection, where } from "firebase/firestore";
+import { doc, deleteDoc, getDocs, getDoc, setDoc, query, collection, where } from "firebase/firestore";
 import { getFirestoreDb, getBookingDb, getOldBookingDb, getCrmFirestoreDb } from "@/lib/firebase";
 
 export const dynamic = "force-dynamic";
@@ -141,10 +141,49 @@ async function handleDelete(request) {
       }
     }
 
+    // 5. Update system_sync/deletions and tombstone collection across all databases
+    // This instantly notifies all connected agent clients in real-time across devices!
+    for (const { db } of databases) {
+      try {
+        const syncDocRef = doc(db, "system_sync", "deletions");
+        const currentSnap = await getDoc(syncDocRef).catch(() => null);
+        let existingKeys = [];
+        if (currentSnap && currentSnap.exists()) {
+          const d = currentSnap.data();
+          existingKeys = Array.isArray(d.keys) ? d.keys : [];
+        }
+        const combinedKeys = Array.from(new Set([...existingKeys, ...allIdentifiers])).slice(-1000);
+        await setDoc(
+          syncDocRef,
+          {
+            keys: combinedKeys,
+            latestDeleted: allIdentifiers,
+            updatedAt: Date.now(),
+          },
+          { merge: true }
+        );
+
+        // Also record individual tombstone records
+        for (const ident of allIdentifiers) {
+          const sanitized = ident.replace(/[^a-zA-Z0-9_-]/g, "_");
+          await setDoc(
+            doc(db, "deleted_appointments", sanitized),
+            {
+              identifier: ident,
+              deletedAt: Date.now(),
+            },
+            { merge: true }
+          ).catch(() => {});
+        }
+      } catch (syncErr) {
+        console.warn("Notice updating system_sync/deletions:", syncErr?.message || syncErr);
+      }
+    }
+
     return NextResponse.json(
       {
         success: true,
-        message: `Successfully deleted appointment(s) from Triage database.`,
+        message: `Successfully deleted appointment(s) and broadcast tombstone to all agent systems.`,
         identifiers: allIdentifiers,
         deletedOperations: deletedCount,
       },
