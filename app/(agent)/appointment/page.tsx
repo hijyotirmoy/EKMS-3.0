@@ -1410,7 +1410,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       broadcastEvent("APPOINTMENTS_UPDATED", {
         appointment: { ...rescheduleModal.app, ...updates },
       });
-      recordAppointmentBookingToSheet({ ...rescheduleModal.app, ...updates }, currentAgent).catch(() => {});
+      recordAppointmentBookingToSheet({ ...rescheduleModal.app, ...updates, is_status_update: true }, currentAgent).catch(() => {});
 
       toast.success(
         `Appointment #${rescheduleModal.app.tokenNo || targetId} rescheduled to ${rescheduleModal.newDate} (${rescheduleModal.newSlot})`

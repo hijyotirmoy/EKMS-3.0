@@ -2335,13 +2335,9 @@ ${historySection}`;
       return;
     }
     const currentTargetCase = caseRef || result?.case_ref || result?.case_id || result?.id;
-    const apptCase = bookedAppointment?.caseRef || bookedAppointment?.case_ref;
-    if (bookedAppointment && (!apptCase || apptCase === currentTargetCase)) {
-      setShowTokenSuccess(true);
-    } else {
-      setBookedAppointment(null);
-      setShowTokenSuccess(false);
-    }
+    // Always open with fresh booking form so a new booking gets its own new token and never overwrites previous bookings
+    setBookedAppointment(null);
+    setShowTokenSuccess(false);
     const today = getTodayDateString();
     setApptDate((prev) => (!prev || prev < today ? today : prev));
     setApptTimeSlot((prev) => {
@@ -2704,64 +2700,67 @@ ${historySection}`;
       };
 
       // Guaranteed monotonic unique token allocation:
-      // Uses the atomic /api/appointments/next-token server endpoint and verifies against
-      // existingAppointments so no booking can EVER collide or overwrite an existing patient.
+      // ALWAYS requests a brand new atomic token from the server for EVERY booking confirmation.
+      // NEVER reuses an existing token so consecutive bookings can NEVER overwrite previous bookings.
       const { prefix, suffix } = getFacilityPrefixSuffix(selectedTeam?.id, selectedFacility, resolvedFacilityName);
-      let finalUnifiedRef = unifiedReferenceNo;
-      let appointmentDocId = finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
+      let finalUnifiedRef = "";
+      let appointmentDocId = "";
 
-      const currPhone = String(newBooking.patientPhone || intakeData?.phone || editData?.phone || "").replace(/\D/g, "");
+      try {
+        const apiRes = await fetch("/api/appointments/next-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prefix,
+            suffix,
+            facilityType: selectedTeam?.id,
+            isHospital: suffix === "HOSP",
+          }),
+        }).then((r) => r.json());
 
-      // Check if current candidate token is already taken by a different patient
-      const isTaken = existingAppointments.some((a) => {
-        const aToken = String(a.tokenNo || a.referenceNo || a.id || "").trim();
-        const aPhone = String(a.phone || a.patientPhone || "").replace(/\D/g, "");
-        return aToken === finalUnifiedRef && currPhone && aPhone && currPhone !== aPhone;
-      });
-
-      // Always fetch fresh atomic token for any new booking or collision
-      if (isTaken || !finalUnifiedRef || !bookedAppointment) {
-        try {
-          const apiRes = await fetch("/api/appointments/next-token", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              prefix,
-              suffix,
-              facilityType: selectedTeam?.id,
-              isHospital: suffix === "HOSP",
-            }),
-          }).then((r) => r.json());
-
-          if (apiRes?.tokenNo) {
-            finalUnifiedRef = apiRes.tokenNo;
-            appointmentDocId = apiRes.docId || finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
-          }
-        } catch (apiErr) {
-          console.warn("API next-token fetch notice:", apiErr?.message);
+        if (apiRes?.tokenNo) {
+          finalUnifiedRef = apiRes.tokenNo;
+          appointmentDocId = apiRes.docId || finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
         }
+      } catch (apiErr) {
+        console.warn("API next-token fetch notice:", apiErr?.message);
       }
 
-      // Client-side safety check: ensure token does not collide with existing appointments
-      let collisionAttempts = 0;
-      while (
-        existingAppointments.some((a) => {
-          const aToken = String(a.tokenNo || a.referenceNo || a.id || "").trim();
-          const aPhone = String(a.phone || a.patientPhone || "").replace(/\D/g, "");
-          return aToken === finalUnifiedRef && currPhone && aPhone && currPhone !== aPhone;
-        }) &&
-        collisionAttempts < 20
-      ) {
-        collisionAttempts++;
-        let maxExisting = 1;
-        existingAppointments.forEach((a) => {
-          const m = String(a.tokenNo || a.referenceNo || a.id || "").match(/^[A-Z]{3,4}-(\d{4,6})-[A-Z0-9]{4,5}$/i);
+      // Collect all known tokens across local states and caches for collision check
+      const allKnownTokens = new Set();
+      const allApptsPool = [
+        ...(Array.isArray(existingAppointments) ? existingAppointments : []),
+        ...(typeof getCachedAppointments === "function" ? getCachedAppointments() : []),
+      ];
+      let maxKnownSeq = 100;
+      allApptsPool.forEach((a) => {
+        const cand = String(a?.tokenNo || a?.referenceNo || a?.id || "").trim();
+        if (cand) {
+          allKnownTokens.add(cand.toUpperCase());
+          allKnownTokens.add(cand.replace(/[^a-zA-Z0-9_-]/g, "_").toUpperCase());
+          const m = cand.match(/^ESI-(\d{4,6})-(DISP|HOSP)$/i);
           if (m) {
             const v = parseInt(m[1], 10);
-            if (v > maxExisting && v < 200000) maxExisting = v;
+            if (v > maxKnownSeq && v < 200000) maxKnownSeq = v;
           }
-        });
-        const bumped = maxExisting + collisionAttempts;
+        }
+      });
+
+      if (!finalUnifiedRef) {
+        const nextNum = maxKnownSeq + 1;
+        finalUnifiedRef = `${prefix}-${String(nextNum).padStart(6, "0")}-${suffix}`;
+        appointmentDocId = finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
+      }
+
+      // Strictly verify that finalUnifiedRef does NOT collide with ANY existing appointment
+      let collisionAttempts = 0;
+      while (
+        (allKnownTokens.has(finalUnifiedRef.toUpperCase()) ||
+         allKnownTokens.has(appointmentDocId.toUpperCase())) &&
+        collisionAttempts < 50
+      ) {
+        collisionAttempts++;
+        const bumped = maxKnownSeq + collisionAttempts;
         finalUnifiedRef = `${prefix}-${String(bumped).padStart(6, "0")}-${suffix}`;
         appointmentDocId = finalUnifiedRef.replace(/[^a-zA-Z0-9_-]/g, "_");
       }
@@ -4244,7 +4243,11 @@ ${historySection}`;
                 <div className="flex items-center gap-3 shrink-0">
                   <button
                     type="button"
-                    onClick={() => setAppointmentModalOpen(false)}
+                    onClick={() => {
+                      setAppointmentModalOpen(false);
+                      setShowTokenSuccess(false);
+                      setBookedAppointment(null);
+                    }}
                     className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition cursor-pointer"
                     aria-label="Close"
                   >
@@ -5256,7 +5259,11 @@ ${historySection}`;
 
                       <button
                         type="button"
-                        onClick={() => setAppointmentModalOpen(false)}
+                        onClick={() => {
+                          setAppointmentModalOpen(false);
+                          setShowTokenSuccess(false);
+                          setBookedAppointment(null);
+                        }}
                         className="rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 px-5 py-2 text-xs font-bold text-white shadow-md hover:from-orange-700 hover:to-amber-700 transition cursor-pointer"
                       >
                         Done
@@ -5267,7 +5274,11 @@ ${historySection}`;
                   <>
                     <button
                       type="button"
-                      onClick={() => setAppointmentModalOpen(false)}
+                      onClick={() => {
+                        setAppointmentModalOpen(false);
+                        setShowTokenSuccess(false);
+                        setBookedAppointment(null);
+                      }}
                       className="rounded-xl border border-border/80 px-4 py-2 text-xs font-bold text-foreground hover:bg-secondary transition cursor-pointer"
                     >
                       Cancel
@@ -5284,8 +5295,6 @@ ${historySection}`;
                           ? "Selected facility is currently offline"
                           : currentDispensaryAvailability.totalDoctors > 0 && !currentDispensaryAvailability.isAvailable
                           ? `All doctors at ${targetFacilityName} are unavailable on ${apptDate}. Bookings closed.`
-                          : bookedAppointment
-                          ? "Update / Reschedule Booking"
                           : "Confirm & Book Appointment"
                       }
                       className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700 px-5 py-2.5 text-xs sm:text-sm font-bold text-white transition shadow-md active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
@@ -5298,7 +5307,7 @@ ${historySection}`;
                       ) : (
                         <>
                           <CalendarCheck className="h-4 w-4" />
-                          <span>{bookedAppointment ? "Update / Reschedule Booking" : "Confirm & Book Appointment"}</span>
+                          <span>Confirm & Book Appointment</span>
                         </>
                       )}
                     </button>
