@@ -1,12 +1,11 @@
 "use client";
 
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Sparkles, RefreshCw, X, Rocket, CheckCircle2, ArrowRight } from "lucide-react";
 
 export const APP_BUILD_VERSION = "3.0.2";
-const CLIENT_BUILD_TIME = process.env.NEXT_PUBLIC_BUILD_TIME || "dev-build";
 
 export default function AppUpdateBanner() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -14,12 +13,15 @@ export default function AppUpdateBanner() {
   const [changelog, setChangelog] = useState<string>("");
   const [dismissed, setDismissed] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const checkTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleUpdate = useCallback(async () => {
     setIsUpdating(true);
     try {
       if (typeof window !== "undefined") {
+        const verToSave = remoteVersion || APP_BUILD_VERSION;
+        localStorage.setItem("ekms_applied_version", verToSave);
+        sessionStorage.setItem("ekms_dismissed_update", verToSave);
+
         if ("caches" in window) {
           const names = await caches.keys();
           await Promise.all(names.map((n) => caches.delete(n)));
@@ -30,49 +32,51 @@ export default function AppUpdateBanner() {
         }
         setTimeout(() => {
           window.location.reload();
-        }, 800);
+        }, 600);
       }
     } catch (_) {
       window.location.reload();
     }
-  }, []);
+  }, [remoteVersion]);
 
-  // 1. Dynamic API check for new deployment (Vercel / Netlify live deployment update)
-  const checkForDeploymentUpdate = useCallback(async () => {
+  // Check version from dynamic API endpoint
+  const checkVersion = useCallback(async () => {
     try {
       const res = await fetch(`/api/version?_t=${Date.now()}`, {
         cache: "no-store",
-        headers: { "Pragma": "no-cache", "Cache-Control": "no-cache" },
+        headers: { Pragma: "no-cache", "Cache-Control": "no-cache" },
       });
       if (res.ok) {
         const data = await res.json();
-        const serverBuild = String(data.buildTime || "");
+        const latestVer = String(data.version || "").trim();
+        const appliedVer = typeof window !== "undefined" ? localStorage.getItem("ekms_applied_version") : null;
+        const dismissedVer = typeof window !== "undefined" ? sessionStorage.getItem("ekms_dismissed_update") : null;
+
+        // ONLY trigger if remote version strictly differs from APP_BUILD_VERSION and hasn't been applied or dismissed
         if (
-          serverBuild &&
-          CLIENT_BUILD_TIME &&
-          CLIENT_BUILD_TIME !== "dev-build" &&
-          serverBuild !== "dev-build" &&
-          serverBuild !== CLIENT_BUILD_TIME
+          latestVer &&
+          latestVer !== APP_BUILD_VERSION &&
+          latestVer !== appliedVer &&
+          latestVer !== dismissedVer
         ) {
-          setRemoteVersion(data.version || "New Release");
-          setChangelog("A new EKMS update has been deployed with latest features & fixes.");
+          setRemoteVersion(latestVer);
+          setChangelog("A new EKMS update has been released with latest improvements.");
           setUpdateAvailable(true);
+        } else {
+          setUpdateAvailable(false);
         }
       }
     } catch (_) {}
   }, []);
 
   useEffect(() => {
-    // Immediate check
-    checkForDeploymentUpdate();
+    checkVersion();
 
-    // Periodic check every 45 seconds
-    const interval = setInterval(checkForDeploymentUpdate, 45000);
+    const interval = setInterval(checkVersion, 60000);
 
-    // Check on tab focus or visibility change (e.g. when agent switches to tab)
     const onFocusOrVisible = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        checkForDeploymentUpdate();
+        checkVersion();
       }
     };
     window.addEventListener("focus", onFocusOrVisible);
@@ -83,25 +87,30 @@ export default function AppUpdateBanner() {
       window.removeEventListener("focus", onFocusOrVisible);
       document.removeEventListener("visibilitychange", onFocusOrVisible);
     };
-  }, [checkForDeploymentUpdate]);
+  }, [checkVersion]);
 
-  // 2. Firestore fallback listener
+  // Firestore system/app_version listener fallback
   useEffect(() => {
-    const lastDismissedVer = typeof window !== "undefined" ? sessionStorage.getItem("ekms_dismissed_update") : null;
-
     const unsub = onSnapshot(
       doc(db, "system", "app_version"),
       (snap) => {
         if (snap.exists()) {
           const data = snap.data();
-          const latest = data.latestVersion || APP_BUILD_VERSION;
-          setRemoteVersion(latest);
-          if (data.changelog) setChangelog(data.changelog);
+          const latest = String(data.latestVersion || "").trim();
+          const appliedVer = typeof window !== "undefined" ? localStorage.getItem("ekms_applied_version") : null;
+          const dismissedVer = typeof window !== "undefined" ? sessionStorage.getItem("ekms_dismissed_update") : null;
 
-          if (latest !== APP_BUILD_VERSION) {
-            if (lastDismissedVer !== latest) {
-              setUpdateAvailable(true);
-            }
+          if (
+            latest &&
+            latest !== APP_BUILD_VERSION &&
+            latest !== appliedVer &&
+            latest !== dismissedVer
+          ) {
+            setRemoteVersion(latest);
+            if (data.changelog) setChangelog(data.changelog);
+            setUpdateAvailable(true);
+          } else if (latest === APP_BUILD_VERSION) {
+            setUpdateAvailable(false);
           }
         }
       },
@@ -121,6 +130,7 @@ export default function AppUpdateBanner() {
     setDismissed(true);
     if (typeof window !== "undefined" && remoteVersion) {
       sessionStorage.setItem("ekms_dismissed_update", remoteVersion);
+      localStorage.setItem("ekms_applied_version", remoteVersion);
     }
   };
 
@@ -134,7 +144,7 @@ export default function AppUpdateBanner() {
         <button
           onClick={handleDismiss}
           disabled={isUpdating}
-          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-full bg-slate-800/60 hover:bg-slate-800 transition-colors"
+          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-full bg-slate-800/60 hover:bg-slate-800 transition-colors cursor-pointer"
           title="Dismiss for now"
         >
           <X className="w-4 h-4" />
