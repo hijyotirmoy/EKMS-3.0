@@ -41,7 +41,15 @@ async function handleDelete(request) {
       ...(Array.isArray(body.ids) ? body.ids : []),
     ].filter(Boolean);
 
-    const allIdentifiers = Array.from(new Set(rawIdentifiers.map((v) => String(v).trim()).filter(Boolean)));
+    // Strictly isolate deletion to specific appointment tokens & doc IDs
+    // NEVER delete or broadcast broad Case IDs (e.g. CA0142AB01) which would delete sibling bookings!
+    const allIdentifiers = Array.from(
+      new Set(
+        rawIdentifiers
+          .map((v) => String(v).trim())
+          .filter((v) => Boolean(v) && !/^CA\d{3,6}[A-Z0-9]*$/i.test(v))
+      )
+    );
 
     if (allIdentifiers.length === 0) {
       return NextResponse.json(

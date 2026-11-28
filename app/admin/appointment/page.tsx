@@ -268,20 +268,22 @@ export default function AdminManageAppointmentPage() {
         unsubDeletions = onSnapshot(doc(bDb, "system_sync", "deletions"), (delSnap) => {
           if (delSnap.exists() && isMounted) {
             const d = delSnap.data();
-            const keys = [
+            const rawKeys = [
               ...(Array.isArray(d.keys) ? d.keys : []),
               ...(Array.isArray(d.latestDeleted) ? d.latestDeleted : []),
             ];
+            const keys = rawKeys
+              .map((k) => String(k).trim())
+              .filter((k) => Boolean(k) && !/^CA\d+/i.test(k));
+
             if (keys.length > 0) {
               markAppointmentDeleted(keys);
               setAppointments((prev) => {
                 const filtered = prev.filter((a) => {
                   const id = String(a.id || "").trim();
                   const tok = String(a.tokenNo || "").trim();
-                  const ref = String(a.referenceNo || "").trim();
                   if (deletedAppointmentKeys.has(id) || deletedAppointmentKeys.has(id.toUpperCase())) return false;
                   if (deletedAppointmentKeys.has(tok) || deletedAppointmentKeys.has(tok.toUpperCase())) return false;
-                  if (deletedAppointmentKeys.has(ref) || deletedAppointmentKeys.has(ref.toUpperCase())) return false;
                   return true;
                 });
                 setCachedAppointments(filtered);
@@ -308,16 +310,18 @@ export default function AdminManageAppointmentPage() {
           const list: AppointmentRecord[] = [];
           snap.forEach((d) => {
             const data = d.data();
-            const key = String(data.tokenNo || data.referenceNo || d.id || "").trim();
-            const tokKey = String(data.tokenNo || "").trim();
-            const idKey = String(d.id || "").trim();
+            let key = String(data.tokenNo || data.referenceNo || d.id || "").trim();
+            let tokKey = String(data.tokenNo || "").trim();
+            let idKey = String(d.id || "").trim();
             const pName = String(data.ipName || data.patientName || "").trim().toLowerCase();
 
-            // Strictly filter out legacy ESIC tokens, anonymous test cases, and deleted keys
+            // Auto-normalize legacy ESIC- prefix to canonical ESI- format
+            if (key.startsWith("ESIC-")) key = key.replace(/^ESIC-/i, "ESI-");
+            if (idKey.startsWith("ESIC-")) idKey = idKey.replace(/^ESIC-/i, "ESI-");
+            if (tokKey.startsWith("ESIC-")) tokKey = tokKey.replace(/^ESIC-/i, "ESI-");
+
             if (
-              key.startsWith("ESIC-") ||
-              (idKey && idKey.startsWith("ESIC-")) ||
-              (tokKey && tokKey.startsWith("ESIC-")) ||
+              !key ||
               pName.includes("anonymous") ||
               deletedAppointmentKeys.has(key) ||
               deletedAppointmentKeys.has(key.toUpperCase()) ||
@@ -469,16 +473,18 @@ export default function AdminManageAppointmentPage() {
     const tomorrowStr = getTomorrowDateString();
 
     return appointments.filter((app) => {
-      // 0. Exclude deleted keys, legacy ESIC tokens, and anonymous beneficiaries
-      const key = String(app.id || app.tokenNo || app.referenceNo || "").trim();
-      const tokKey = String(app.tokenNo || "").trim();
-      const idKey = String(app.id || "").trim();
+      // 0. Exclude deleted keys and anonymous beneficiaries
+      let key = String(app.id || app.tokenNo || app.referenceNo || "").trim();
+      let tokKey = String(app.tokenNo || "").trim();
+      let idKey = String(app.id || "").trim();
       const pName = String(app.ipName || app.patientName || "").trim().toLowerCase();
 
+      if (key.startsWith("ESIC-")) key = key.replace(/^ESIC-/i, "ESI-");
+      if (idKey.startsWith("ESIC-")) idKey = idKey.replace(/^ESIC-/i, "ESI-");
+      if (tokKey.startsWith("ESIC-")) tokKey = tokKey.replace(/^ESIC-/i, "ESI-");
+
       if (
-        key.startsWith("ESIC-") ||
-        (idKey && idKey.startsWith("ESIC-")) ||
-        (tokKey && tokKey.startsWith("ESIC-")) ||
+        !key ||
         pName.includes("anonymous") ||
         deletedAppointmentKeys.has(key) ||
         deletedAppointmentKeys.has(key.toUpperCase()) ||
@@ -584,16 +590,18 @@ export default function AdminManageAppointmentPage() {
     const tomorrowStr = getTomorrowDateString();
 
     const scopedForMetrics = appointments.filter((app) => {
-      // 0. Exclude deleted keys, legacy ESIC tokens, and anonymous beneficiaries
-      const key = String(app.id || app.tokenNo || app.referenceNo || "").trim();
-      const tokKey = String(app.tokenNo || "").trim();
-      const idKey = String(app.id || "").trim();
+      // 0. Exclude deleted keys and anonymous beneficiaries
+      let key = String(app.id || app.tokenNo || app.referenceNo || "").trim();
+      let tokKey = String(app.tokenNo || "").trim();
+      let idKey = String(app.id || "").trim();
       const pName = String(app.ipName || app.patientName || "").trim().toLowerCase();
 
+      if (key.startsWith("ESIC-")) key = key.replace(/^ESIC-/i, "ESI-");
+      if (idKey.startsWith("ESIC-")) idKey = idKey.replace(/^ESIC-/i, "ESI-");
+      if (tokKey.startsWith("ESIC-")) tokKey = tokKey.replace(/^ESIC-/i, "ESI-");
+
       if (
-        key.startsWith("ESIC-") ||
-        (idKey && idKey.startsWith("ESIC-")) ||
-        (tokKey && tokKey.startsWith("ESIC-")) ||
+        !key ||
         pName.includes("anonymous") ||
         deletedAppointmentKeys.has(key) ||
         deletedAppointmentKeys.has(key.toUpperCase()) ||
@@ -725,15 +733,20 @@ export default function AdminManageAppointmentPage() {
 
   // Helper to ensure an appointment is completely purged from all databases
   const deleteAppointmentFromAllDatabases = async (app: AppointmentRecord) => {
-    // 0. Instantly mark deleted in persistent cache and state
-    markAppointmentDeleted([app.id, app.tokenNo, app.referenceNo]);
+    // 0. Instantly mark deleted in persistent cache and state (strictly isolated to this specific appointment)
+    const specificToken = app.tokenNo;
+    const specificId = app.id;
+    const cleanRef = (app.referenceNo && !/^CA\d+/i.test(app.referenceNo)) ? app.referenceNo : null;
+    const specificKeys = Array.from(new Set([specificId, specificToken, cleanRef].filter(Boolean))) as string[];
+
+    markAppointmentDeleted(specificKeys);
     try {
       const delPayload = {
-        tokenNo: app.tokenNo,
-        referenceNo: app.referenceNo,
-        tokens: [app.tokenNo, app.referenceNo].filter(Boolean),
-        id: app.id,
-        ids: [app.id].filter(Boolean),
+        tokenNo: specificToken,
+        referenceNo: cleanRef || specificToken,
+        tokens: specificKeys,
+        id: specificId,
+        ids: [specificId].filter(Boolean),
         timestamp: Date.now(),
       };
       localStorage.setItem("ekms_deleted_appointment", JSON.stringify(delPayload));
@@ -744,7 +757,11 @@ export default function AdminManageAppointmentPage() {
     } catch (_) {}
 
     setAppointments((prev) =>
-      prev.filter((a) => a.id !== app.id && (!app.tokenNo || a.tokenNo !== app.tokenNo) && (!app.referenceNo || a.referenceNo !== app.referenceNo))
+      prev.filter((a) => {
+        if (specificId && a.id === specificId) return false;
+        if (specificToken && a.tokenNo === specificToken) return false;
+        return true;
+      })
     );
 
     const promises: Promise<any>[] = [];
@@ -758,7 +775,7 @@ export default function AdminManageAppointmentPage() {
       promises.push(deleteDoc(doc(casesSettingsDb, "appointments", app.id)).catch(() => {}));
     }
 
-    const identifiers = [app.tokenNo, app.referenceNo, app.id].filter(Boolean) as string[];
+    const identifiers = specificKeys;
     for (const ident of identifiers) {
       promises.push(
         getDocs(query(collection(bookingDb, "dispensary_appointments"), where("tokenNo", "==", ident)))
@@ -787,7 +804,7 @@ export default function AdminManageAppointmentPage() {
       deleteAppointmentFromTriageApi({
         id: app.id,
         tokenNo: app.tokenNo,
-        referenceNo: app.referenceNo,
+        referenceNo: cleanRef || app.tokenNo,
       }).catch((e) => console.warn("Triage API appointment delete notice:", e))
     );
 

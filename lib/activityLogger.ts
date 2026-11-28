@@ -180,10 +180,13 @@ export async function logUserActivity(
 // Triage & Call Center Agent Formatting & Activity Extensions
 // =========================================================================
 
+import { formatAgentFullName, CANONICAL_AGENT_MAP } from "./utils";
+
 const KNOWN_AGENT_MAP: Record<string, string> = {
-  ESIC001T: "Ekmsoffice",
-  ESIC001: "Ekmsoffice",
-  ESIC002T: "Agent",
+  ...CANONICAL_AGENT_MAP,
+  ESIC001T: "EKMS Office",
+  ESIC001: "EKMS Office",
+  ESIC002T: "EKMS Triage",
   ESIC007T: "Esha Doley",
   ESIC008T: "Himangshu Bezbaruah",
   ESIC009T: "Joysmita Tete",
@@ -192,6 +195,7 @@ const KNOWN_AGENT_MAP: Record<string, string> = {
   ESIC012T: "Mohsin Ansari",
   ESIC013T: "Munmi Boruah",
   ESIC014T: "Neha Thakur",
+  ESIC015T: "Ankita Barichowa",
 };
 
 export function formatTriageAgentId(id: any): string {
@@ -207,31 +211,9 @@ export function formatTriageAgentId(id: any): string {
 }
 
 export function formatAgentDisplayName(rawName?: any, rawEmail?: any, rawId?: any): string {
-  if (rawName && typeof rawName === "string" && rawName.trim()) {
-    const cleaned = rawName.split("(")[0].replace(/<.*?>/, "").trim();
-    if (cleaned && cleaned.toLowerCase() !== "agent" && cleaned.toLowerCase() !== "staff") {
-      return cleaned;
-    }
-  }
-
-  const candidate = rawEmail || rawId || rawName;
-  if (!candidate) return "Agent";
-
-  let str = String(candidate).trim();
-  if (str.includes("@")) {
-    str = str.split("@")[0];
-  }
-
-  const cleanId = String(rawId || "").toUpperCase().trim();
-  if (cleanId && KNOWN_AGENT_MAP[cleanId]) return KNOWN_AGENT_MAP[cleanId];
-  const candidateUpper = str.toUpperCase();
-  if (KNOWN_AGENT_MAP[candidateUpper]) return KNOWN_AGENT_MAP[candidateUpper];
-
-  const parts = str.split(/[._\-\s]+/).filter(Boolean);
-  if (parts.length > 0) {
-    return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
-  }
-  return str.charAt(0).toUpperCase() + str.slice(1);
+  const candidate = rawName || rawEmail || rawId;
+  const emailCandidate = rawEmail || (typeof rawName === "string" && rawName.includes("@") ? rawName : undefined);
+  return formatAgentFullName(candidate, null, emailCandidate);
 }
 
 export function unrecordDeletedCase(caseRef: any): void {

@@ -45,6 +45,7 @@ import { doc, setDoc, getDoc, getDocs, where, collection, onSnapshot, query, run
 import {
   isSlotInPast,
   getFirstAvailableSlot,
+  findNextAvailableSlot,
   areAllSlotsPastToday,
   ALL_OPD_TIME_SLOTS,
   getTodayDateString,
@@ -623,6 +624,7 @@ export function CaseHandoverForwarding({
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
   const [bookedAppointment, setBookedAppointment] = useState(null);
   const [isBookingSubmitting, setIsBookingSubmitting] = useState(false);
+  const bookingLockRef = useRef(false);
   const [showTokenSuccess, setShowTokenSuccess] = useState(false);
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -2356,6 +2358,13 @@ ${historySection}`;
 
   const handleConfirmBooking = async (e) => {
     e?.preventDefault();
+    if (bookingLockRef.current || isBookingSubmitting) {
+      return;
+    }
+    if (bookedAppointment?.tokenNo && !isRescheduling) {
+      toast.info(`Appointment is already booked with Token: ${bookedAppointment.tokenNo}. Use Reschedule to change.`);
+      return;
+    }
     if (isForwardedToTeleOrAmbulance) {
       toast.error(
         `Cannot book appointment. Clinical summary is already forwarded to ${sentStatus.shortName || sentStatus.teamName}. Both referral and appointment must be for the same facility.`
@@ -2413,25 +2422,42 @@ ${historySection}`;
     }
     const targetFacForCheck = selectedFacility?.name || facilityDisplayName;
     const curDocIdForCheck = bookedAppointment?.id || bookedAppointment?.tokenNo || bookedAppointment?.referenceNo || caseRef;
-    if (isSlotReserved(apptTimeSlot, apptDate, targetFacForCheck, existingAppointments, curDocIdForCheck)) {
-      toast.error(`Slot ${apptTimeSlot} is already reserved at ${targetFacForCheck} for ${apptDate}. Each slot can only be booked once per day. Please select another slot.`);
-      return;
+    let activeSlotToBook = apptTimeSlot;
+
+    // Check slot availability; if already reserved, automatically bump to the very next available slot!
+    if (isSlotReserved(activeSlotToBook, apptDate, targetFacForCheck, existingAppointments, curDocIdForCheck)) {
+      const nextSlot = findNextAvailableSlot(activeSlotToBook, apptDate, targetFacForCheck, existingAppointments, curDocIdForCheck);
+      if (nextSlot) {
+        activeSlotToBook = nextSlot;
+        setApptTimeSlot(nextSlot);
+        toast.info(`Slot ${apptTimeSlot} was reserved. Automatically assigned next available slot: ${nextSlot}`);
+      } else {
+        toast.error(`All slots at ${targetFacForCheck} for ${apptDate} are fully booked. Please select another date.`);
+        return;
+      }
     }
-    if (isSlotInPast(apptTimeSlot, apptDate)) {
-      toast.error("Selected time slot is unavailable or has already passed. Please select an upcoming future time slot.");
-      return;
+    if (isSlotInPast(activeSlotToBook, apptDate)) {
+      const nextSlot = findNextAvailableSlot(activeSlotToBook, apptDate, targetFacForCheck, existingAppointments, curDocIdForCheck);
+      if (nextSlot) {
+        activeSlotToBook = nextSlot;
+        setApptTimeSlot(nextSlot);
+      } else {
+        toast.error("Selected time slot is unavailable or has already passed. Please select an upcoming future time slot.");
+        return;
+      }
     }
+    bookingLockRef.current = true;
     setIsBookingSubmitting(true);
     try {
       const resolvedFacilityName = selectedFacility?.name || facilityDisplayName;
 
-      // Fast non-blocking live double booking check with 300ms race fallback
+      // Fast non-blocking live double booking check with 400ms race fallback
       const bDbCheck = getBookingDb();
       if (bDbCheck && typeof getDocs === "function") {
         try {
           const liveCheckSnap = await Promise.race([
             getDocs(query(collection(bDbCheck, "dispensary_appointments"), where("date", "==", apptDate))),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("fast_fallback")), 300))
+            new Promise((_, reject) => setTimeout(() => reject(new Error("fast_fallback")), 400))
           ]);
           if (liveCheckSnap?.docs) {
             const liveConflict = liveCheckSnap.docs.find((d) => {
@@ -2439,12 +2465,24 @@ ${historySection}`;
               if (data.status === "cancelled") return false;
               if (curDocIdForCheck && (data.id === curDocIdForCheck || data.tokenNo === curDocIdForCheck || data.referenceNo === curDocIdForCheck)) return false;
               const fac = data.dispensaryName || data.facilityName || "";
-              return areFacilitiesMatching(fac, targetFacForCheck) && areSlotsMatching(data.timeSlot, apptTimeSlot);
+              return areFacilitiesMatching(fac, targetFacForCheck) && areSlotsMatching(data.timeSlot, activeSlotToBook);
             });
             if (liveConflict) {
-              setIsBookingSubmitting(false);
-              toast.error(`Slot ${apptTimeSlot} was just booked and locked for ${targetFacForCheck}. Please choose another slot.`);
-              return;
+              const liveAllAppts = [
+                ...(Array.isArray(existingAppointments) ? existingAppointments : []),
+                ...(liveCheckSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+              ];
+              const nextSlot = findNextAvailableSlot(activeSlotToBook, apptDate, targetFacForCheck, liveAllAppts, curDocIdForCheck);
+              if (nextSlot) {
+                activeSlotToBook = nextSlot;
+                setApptTimeSlot(nextSlot);
+                toast.info(`Slot was just taken in real-time. Automatically assigned next available slot: ${nextSlot}`);
+              } else {
+                toast.error(`Slot ${activeSlotToBook} was just booked and all other slots are full. Please choose another date.`);
+                setIsBookingSubmitting(false);
+                bookingLockRef.current = false;
+                return;
+              }
             }
           }
         } catch (e) {
@@ -2661,7 +2699,7 @@ ${historySection}`;
         agentName: activeAgentName,
         agentId: activeAgent?.agentId || "",
         date: apptDate,
-        timeSlot: apptTimeSlot,
+        timeSlot: activeSlotToBook,
         appointmentType: apptType || (finalIsNonClinical ? "Non-Clinical Visit" : "Regular OPD Consultation"),
         callType: finalIsNonClinical ? "non_clinical" : "clinical",
         enquiryType: finalIsNonClinical ? enquiryType : null,
@@ -2794,7 +2832,7 @@ ${historySection}`;
         district: selectedFacility?.district || newBooking.facilityDistrict || "",
         location: selectedFacility?.address || selectedFacility?.location || newBooking.patientAddress || "",
         date: apptDate,
-        timeSlot: apptTimeSlot,
+        timeSlot: activeSlotToBook,
         department: apptDepartment || (finalIsNonClinical ? "Non-Clinical Visit" : "General Medicine / Primary Care OPD"),
         appointmentType: apptType || (finalIsNonClinical ? "Non-Clinical Visit" : "Regular OPD Consultation"),
         callType: finalIsNonClinical ? "non_clinical" : "clinical",
@@ -3050,7 +3088,7 @@ ${historySection}`;
             dispensaryName: (typeof targetFacilityName === "string" && targetFacilityName) ? targetFacilityName : (selectedFacility?.name || facilityDisplayName || newBooking.facilityName || newBooking.dispensaryName || "ESIS Dispensary"),
             facilityName: (typeof targetFacilityName === "string" && targetFacilityName) ? targetFacilityName : (selectedFacility?.name || facilityDisplayName || newBooking.facilityName || newBooking.dispensaryName || "ESIS Dispensary"),
             date: apptDate || newBooking.date || "",
-            timeSlot: apptTimeSlot || newBooking.timeSlot || "",
+            timeSlot: activeSlotToBook || newBooking.timeSlot || "",
             chiefComplaint: resolvedChiefComplaint || newBooking.purpose || newBooking.chiefComplaint || "",
           },
           activeAgentName,
@@ -3068,8 +3106,10 @@ ${historySection}`;
 
     } catch (err) {
       console.error("Booking error:", err);
-      setIsBookingSubmitting(false);
       toast.error("Failed to complete booking: " + (err?.message || "Please try again."));
+    } finally {
+      setIsBookingSubmitting(false);
+      bookingLockRef.current = false;
     }
   };
 

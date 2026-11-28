@@ -554,6 +554,9 @@ export function formatAgentFullName(
   let str = String(raw || emailHint || "").trim();
   if (!str) return "Agent";
 
+  // Strip leading "Agent:" or "Agent -" prefix if present
+  str = str.replace(/^agent[:\s-]+/i, "").trim();
+
   // Remove email domain if present
   if (str.includes("@")) {
     const rawEmail = str.toLowerCase();

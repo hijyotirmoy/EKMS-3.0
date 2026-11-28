@@ -7,6 +7,23 @@ import { Sparkles, RefreshCw, X, Rocket, CheckCircle2, ArrowRight } from "lucide
 
 export const APP_BUILD_VERSION = "3.0.2";
 
+function cleanVersion(v: string | null | undefined): string {
+  if (!v) return "";
+  return String(v).replace(/^v/i, "").trim();
+}
+
+function isVersionNewer(remote: string, current: string): boolean {
+  const r = cleanVersion(remote).split(".").map((n) => parseInt(n, 10) || 0);
+  const c = cleanVersion(current).split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(r.length, c.length); i++) {
+    const rVal = r[i] || 0;
+    const cVal = c[i] || 0;
+    if (rVal > cVal) return true;
+    if (rVal < cVal) return false;
+  }
+  return false;
+}
+
 export default function AppUpdateBanner() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [remoteVersion, setRemoteVersion] = useState<string>("");
@@ -18,7 +35,7 @@ export default function AppUpdateBanner() {
     setIsUpdating(true);
     try {
       if (typeof window !== "undefined") {
-        const verToSave = remoteVersion || APP_BUILD_VERSION;
+        const verToSave = cleanVersion(remoteVersion || APP_BUILD_VERSION);
         localStorage.setItem("ekms_applied_version", verToSave);
         sessionStorage.setItem("ekms_dismissed_update", verToSave);
 
@@ -48,14 +65,16 @@ export default function AppUpdateBanner() {
       });
       if (res.ok) {
         const data = await res.json();
-        const latestVer = String(data.version || "").trim();
-        const appliedVer = typeof window !== "undefined" ? localStorage.getItem("ekms_applied_version") : null;
-        const dismissedVer = typeof window !== "undefined" ? sessionStorage.getItem("ekms_dismissed_update") : null;
+        const latestVer = cleanVersion(data.version);
+        const currentVer = cleanVersion(APP_BUILD_VERSION);
+        const appliedVer = typeof window !== "undefined" ? cleanVersion(localStorage.getItem("ekms_applied_version")) : "";
+        const dismissedVer = typeof window !== "undefined" ? cleanVersion(sessionStorage.getItem("ekms_dismissed_update")) : "";
 
-        // ONLY trigger if remote version strictly differs from APP_BUILD_VERSION and hasn't been applied or dismissed
+        // STRICTLY trigger ONLY if remote version is strictly newer than current build version
+        // AND has not already been applied or dismissed in this browser session
         if (
           latestVer &&
-          latestVer !== APP_BUILD_VERSION &&
+          isVersionNewer(latestVer, currentVer) &&
           latestVer !== appliedVer &&
           latestVer !== dismissedVer
         ) {
@@ -96,20 +115,21 @@ export default function AppUpdateBanner() {
       (snap) => {
         if (snap.exists()) {
           const data = snap.data();
-          const latest = String(data.latestVersion || "").trim();
-          const appliedVer = typeof window !== "undefined" ? localStorage.getItem("ekms_applied_version") : null;
-          const dismissedVer = typeof window !== "undefined" ? sessionStorage.getItem("ekms_dismissed_update") : null;
+          const latest = cleanVersion(data.latestVersion);
+          const currentVer = cleanVersion(APP_BUILD_VERSION);
+          const appliedVer = typeof window !== "undefined" ? cleanVersion(localStorage.getItem("ekms_applied_version")) : "";
+          const dismissedVer = typeof window !== "undefined" ? cleanVersion(sessionStorage.getItem("ekms_dismissed_update")) : "";
 
           if (
             latest &&
-            latest !== APP_BUILD_VERSION &&
+            isVersionNewer(latest, currentVer) &&
             latest !== appliedVer &&
             latest !== dismissedVer
           ) {
             setRemoteVersion(latest);
             if (data.changelog) setChangelog(data.changelog);
             setUpdateAvailable(true);
-          } else if (latest === APP_BUILD_VERSION) {
+          } else {
             setUpdateAvailable(false);
           }
         }
@@ -128,9 +148,10 @@ export default function AppUpdateBanner() {
 
   const handleDismiss = () => {
     setDismissed(true);
-    if (typeof window !== "undefined" && remoteVersion) {
-      sessionStorage.setItem("ekms_dismissed_update", remoteVersion);
-      localStorage.setItem("ekms_applied_version", remoteVersion);
+    if (typeof window !== "undefined") {
+      const verToSave = cleanVersion(remoteVersion || APP_BUILD_VERSION);
+      sessionStorage.setItem("ekms_dismissed_update", verToSave);
+      localStorage.setItem("ekms_applied_version", verToSave);
     }
   };
 

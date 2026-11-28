@@ -105,12 +105,31 @@ async function handleGenerateToken(request: NextRequest) {
     }
   } catch (_) {}
 
-  // 1. Gather highest known sequence from all local stores and memory
+  // 1. Gather highest known sequence from all local stores, memory, and Firestore
   const fileSeq = getStoredFileSeq();
   const recordsMaxSeq = getMaxSeqFromLocalRecords();
   const safeFloor = 1;
 
   let currentHighest = Math.max(inMemoryLastSeq, fileSeq, recordsMaxSeq, safeFloor - 1);
+
+  // Fast check of global Firestore counter
+  try {
+    const primaryDb = getActiveBookingDb() || getCasesSettingsDb();
+    if (primaryDb) {
+      const snap = await Promise.race([
+        getDoc(doc(primaryDb, "counters", "bookingSequence")),
+        new Promise<any>((_, reject) => setTimeout(() => reject(new Error("timeout")), 400)),
+      ]).catch(() => null);
+
+      if (snap?.exists()) {
+        const last = snap.data()?.lastSeq;
+        if (typeof last === "number" && last > currentHighest && last < 200000) {
+          currentHighest = last;
+        }
+      }
+    }
+  } catch (_) {}
+
   const nextSeq = currentHighest + 1;
 
   const tokenNo = `${prefix}-${String(nextSeq).padStart(6, "0")}-${suffix}`;

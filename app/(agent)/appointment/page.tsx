@@ -388,23 +388,33 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
   // Authoritative live snapshot items:
   liveList.forEach((item) => {
     if (!item) return;
-    const key = String(item.id || item.tokenNo || item.referenceNo || "").trim();
-    const idKey = String(item.id || "").trim();
-    const tokKey = String(item.tokenNo || "").trim();
+    let key = String(item.id || item.tokenNo || item.referenceNo || "").trim();
+    let idKey = String(item.id || "").trim();
+    let tokKey = String(item.tokenNo || "").trim();
     const pName = String(item.patientName || item.ipName || "").trim().toLowerCase();
+
+    // Auto-normalize legacy ESIC- prefix to canonical ESI- format
+    if (key.startsWith("ESIC-")) key = key.replace(/^ESIC-/i, "ESI-");
+    if (idKey.startsWith("ESIC-")) idKey = idKey.replace(/^ESIC-/i, "ESI-");
+    if (tokKey.startsWith("ESIC-")) tokKey = tokKey.replace(/^ESIC-/i, "ESI-");
+
     if (
       !key ||
-      key.startsWith("ESIC-") ||
-      (idKey && idKey.startsWith("ESIC-")) ||
-      (tokKey && tokKey.startsWith("ESIC-")) ||
       pName.includes("anonymous") ||
       deletedAppointmentKeys.has(key) ||
-      (idKey && deletedAppointmentKeys.has(idKey)) ||
-      (tokKey && deletedAppointmentKeys.has(tokKey))
+      deletedAppointmentKeys.has(key.toUpperCase()) ||
+      (idKey && (deletedAppointmentKeys.has(idKey) || deletedAppointmentKeys.has(idKey.toUpperCase()))) ||
+      (tokKey && (deletedAppointmentKeys.has(tokKey) || deletedAppointmentKeys.has(tokKey.toUpperCase())))
     ) {
       return;
     }
     const itemCopy = { ...item };
+    if (itemCopy.tokenNo && String(itemCopy.tokenNo).startsWith("ESIC-")) {
+      itemCopy.tokenNo = String(itemCopy.tokenNo).replace(/^ESIC-/i, "ESI-");
+    }
+    if (itemCopy.referenceNo && String(itemCopy.referenceNo).startsWith("ESIC-")) {
+      itemCopy.referenceNo = String(itemCopy.referenceNo).replace(/^ESIC-/i, "ESI-");
+    }
     const hasRec = Boolean(itemCopy.receptionCheckedInAt || itemCopy.receptionCheckedInBy || itemCopy.visitedAt || itemCopy.visitedBy);
     const hasDoc = Boolean(itemCopy.doctorConsultedAt || itemCopy.doctorName || itemCopy.doctor || itemCopy.prescribedBy || itemCopy.doctorNotes);
     const hasDisp = Boolean(itemCopy.dispensedAt || itemCopy.dispensedBy || itemCopy.pharmacistName || itemCopy.dispensationNotes);
@@ -432,19 +442,23 @@ function reconcileWithLiveSnapshot(currentList: any[] = [], liveList: any[] = []
   // Reconcile status and notes from existing state without reviving deleted appointments:
   currentList.forEach((prev) => {
     if (!prev) return;
-    const key = String(prev.id || prev.tokenNo || prev.referenceNo || "").trim();
-    const idKey = String(prev.id || "").trim();
-    const tokKey = String(prev.tokenNo || "").trim();
+    let key = String(prev.id || prev.tokenNo || prev.referenceNo || "").trim();
+    let idKey = String(prev.id || "").trim();
+    let tokKey = String(prev.tokenNo || "").trim();
     const pName = String(prev.patientName || prev.ipName || "").trim().toLowerCase();
+
+    // Auto-normalize legacy ESIC- prefix to canonical ESI- format
+    if (key.startsWith("ESIC-")) key = key.replace(/^ESIC-/i, "ESI-");
+    if (idKey.startsWith("ESIC-")) idKey = idKey.replace(/^ESIC-/i, "ESI-");
+    if (tokKey.startsWith("ESIC-")) tokKey = tokKey.replace(/^ESIC-/i, "ESI-");
+
     if (
       !key ||
-      key.startsWith("ESIC-") ||
-      (idKey && idKey.startsWith("ESIC-")) ||
-      (tokKey && tokKey.startsWith("ESIC-")) ||
       pName.includes("anonymous") ||
       deletedAppointmentKeys.has(key) ||
-      (idKey && deletedAppointmentKeys.has(idKey)) ||
-      (tokKey && deletedAppointmentKeys.has(tokKey))
+      deletedAppointmentKeys.has(key.toUpperCase()) ||
+      (idKey && (deletedAppointmentKeys.has(idKey) || deletedAppointmentKeys.has(idKey.toUpperCase()))) ||
+      (tokKey && (deletedAppointmentKeys.has(tokKey) || deletedAppointmentKeys.has(tokKey.toUpperCase())))
     ) {
       return;
     }
@@ -935,7 +949,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
   useEffect(() => {
     const handleDeletedPayload = (payload: any) => {
       if (!payload) return;
-      const keysToDrop = [
+      const rawKeys = [
         payload.tokenNo,
         payload.referenceNo,
         payload.id,
@@ -943,16 +957,21 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         ...(Array.isArray(payload.ids) ? payload.ids : []),
       ].filter(Boolean);
 
+      // Strictly isolate deletion to specific appointment tokens & IDs; ignore broad case references like CA0142AB01
+      const keysToDrop = rawKeys
+        .map((k) => String(k).trim())
+        .filter((k) => Boolean(k) && !/^CA\d+/i.test(k));
+
       if (keysToDrop.length === 0) return;
       markAppointmentDeleted(keysToDrop);
 
       setAppointments((prev) => {
         const filtered = prev.filter((a) => {
           const t = String(a.tokenNo || "").trim();
-          const r = String(a.referenceNo || "").trim();
           const i = String(a.id || "").trim();
-          if (keysToDrop.includes(t) || keysToDrop.includes(r) || keysToDrop.includes(i)) return false;
-          if (deletedAppointmentKeys.has(t) || deletedAppointmentKeys.has(r) || deletedAppointmentKeys.has(i)) return false;
+          if (keysToDrop.includes(t) || keysToDrop.includes(i)) return false;
+          if (deletedAppointmentKeys.has(t) || deletedAppointmentKeys.has(t.toUpperCase())) return false;
+          if (deletedAppointmentKeys.has(i) || deletedAppointmentKeys.has(i.toUpperCase())) return false;
           return true;
         });
         setCachedAppointments(filtered);
@@ -1011,20 +1030,22 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         unsubDeletions = onSnapshot(doc(bDb, "system_sync", "deletions"), (delSnap) => {
           if (delSnap.exists()) {
             const d = delSnap.data();
-            const keys = [
+            const rawKeys = [
               ...(Array.isArray(d.keys) ? d.keys : []),
               ...(Array.isArray(d.latestDeleted) ? d.latestDeleted : []),
             ];
+            const keys = rawKeys
+              .map((k) => String(k).trim())
+              .filter((k) => Boolean(k) && !/^CA\d+/i.test(k));
+
             if (keys.length > 0) {
               markAppointmentDeleted(keys);
               setAppointments((prev) => {
                 const filtered = prev.filter((a) => {
                   const id = String(a.id || "").trim();
                   const tok = String(a.tokenNo || "").trim();
-                  const ref = String(a.referenceNo || "").trim();
                   if (deletedAppointmentKeys.has(id) || deletedAppointmentKeys.has(id.toUpperCase())) return false;
                   if (deletedAppointmentKeys.has(tok) || deletedAppointmentKeys.has(tok.toUpperCase())) return false;
-                  if (deletedAppointmentKeys.has(ref) || deletedAppointmentKeys.has(ref.toUpperCase())) return false;
                   return true;
                 });
                 setCachedAppointments(filtered);

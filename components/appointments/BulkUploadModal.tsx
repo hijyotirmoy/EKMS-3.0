@@ -19,7 +19,7 @@ import {
   UserCheck,
 } from "lucide-react";
 import { doc, setDoc } from "firebase/firestore";
-import { bookingDb, oldBookingDb, db } from "@/lib/firebase";
+import { bookingDb, oldBookingDb, db, casesSettingsDb } from "@/lib/firebase";
 import { getEffectiveAppointmentStage } from "@/lib/appointmentTypes";
 
 interface BulkUploadModalProps {
@@ -468,7 +468,10 @@ export function BulkUploadModal({
       }
 
       try {
-        let finalToken = row.token;
+        let finalToken = String(row.token || "").trim();
+        if (finalToken.toUpperCase().startsWith("ESIC-")) {
+          finalToken = finalToken.replace(/^ESIC-/i, "ESI-");
+        }
         if (!finalToken) {
           finalToken = `ESI-${String(currentSeq).padStart(6, "0")}-DISP`;
           currentSeq++;
@@ -567,8 +570,13 @@ export function BulkUploadModal({
           payload.completedAt = payload.dispensedAt;
         }
 
-        // Write directly to triage-booking DB and safety backup ekmsbooking DB
+        // Write directly to triage-booking DB, casesSettingsDb, and safety backup ekmsbooking DB
         await setDoc(doc(bookingDb, "dispensary_appointments", docId), payload, { merge: true });
+        if (casesSettingsDb) {
+          try {
+            await setDoc(doc(casesSettingsDb, "dispensary_appointments", docId), payload, { merge: true });
+          } catch (_) {}
+        }
         if (oldBookingDb) {
           try {
             await setDoc(doc(oldBookingDb, "dispensary_appointments", docId), payload, { merge: true });
