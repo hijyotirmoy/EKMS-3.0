@@ -53,7 +53,7 @@ import {
 import { toast } from "sonner";
 import { logSystemActivity } from "@/lib/activityLogger";
 import { getBookingDb, getOldBookingDb, getFirestoreDb, getSecondaryBookingDb, setBookingFailoverActive } from "@/lib/firebase";
-import { collection, onSnapshot, query, orderBy, limit, doc, setDoc, deleteDoc, getDoc, getDocs, runTransaction } from "firebase/firestore";
+import { collection, onSnapshot, query, orderBy, limit, doc, setDoc, deleteDoc, getDoc, getDocs, runTransaction, where } from "firebase/firestore";
 import {
   isSlotInPast,
   getFirstAvailableSlot,
@@ -715,7 +715,7 @@ function parseClinicalDossier(app: any) {
       callerId: app.callerId || app.caller_id || "",
       chiefComplaints: defaultComplaints,
       primaryComplaint: defaultComplaints[0],
-      redFlags: Array.isArray(app.redFlags) ? app.redFlags.filter(f => !/none reported/i.test(String(f))) : [],
+      redFlags: Array.isArray(app.redFlags) ? app.redFlags.filter((f: any) => !/none reported/i.test(String(f))) : [],
       hpiDuration: "",
       associatedSymptoms: "",
       comorbidity: "",
@@ -734,7 +734,7 @@ function parseClinicalDossier(app: any) {
         const compMatch = blockContent.match(/Chief Complaint:\s*([^\n]+)/i) || blockContent.match(/Notes:\s*([^\n]+)/i);
         const rfMatch = blockContent.match(/Clinical Red Flags:\s*([^\n]+)/i);
         const redFlagList = rfMatch && !rfMatch[1].includes("None reported")
-          ? rfMatch[1].split(/;|,/).map((s) => s.trim()).filter(Boolean)
+          ? rfMatch[1].split(/;|,/).map((s: string) => s.trim()).filter(Boolean)
           : [];
 
         past3Calls.push({
@@ -807,7 +807,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     Boolean(currentAgent?.isMasterAdmin);
 
   const canDeleteAppointment = useCallback(
-    () => {
+    (app?: any) => {
       // STRICT REQUIREMENT: No agent can delete any appointment (not even their own). ONLY Administrator can delete!
       return Boolean(isAdmin);
     },
@@ -836,26 +836,26 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
   }, [searchQuery, statusFilter, agentFilter, dispensaryFilter, dateFilter, customDate]);
 
   // Modals state
-  const [followUpModal, setFollowUpModal] = useState({ open: false, app: null, message: "" });
+  const [followUpModal, setFollowUpModal] = useState<{ open: boolean; app: any; message: string }>({ open: false, app: null, message: "" });
   const [followUpSaving, setFollowUpSaving] = useState(false);
-  const [rescheduleModal, setRescheduleModal] = useState({ open: false, app: null, newDate: "", newSlot: "", notes: "" });
-  const [cancelModal, setCancelModal] = useState({ open: false, app: null, reason: "Beneficiary requested cancellation" });
-  const [slipModal, setSlipModal] = useState({ open: false, app: null });
-  const [modalLiveCalls, setModalLiveCalls] = useState([]);
-  const [visitModal, setVisitModal] = useState({ open: false, app: null, visitedNotes: "", bp: "", pulse: "", temp: "", visitedBy: "" });
+  const [rescheduleModal, setRescheduleModal] = useState<{ open: boolean; app: any; newDate: string; newSlot: string; notes: string }>({ open: false, app: null, newDate: "", newSlot: "", notes: "" });
+  const [cancelModal, setCancelModal] = useState<{ open: boolean; app: any; reason: string }>({ open: false, app: null, reason: "Beneficiary requested cancellation" });
+  const [slipModal, setSlipModal] = useState<{ open: boolean; app: any }>({ open: false, app: null });
+  const [modalLiveCalls, setModalLiveCalls] = useState<any[]>([]);
+  const [visitModal, setVisitModal] = useState<{ open: boolean; app: any; visitedNotes: string; bp: string; pulse: string; temp: string; visitedBy: string }>({ open: false, app: null, visitedNotes: "", bp: "", pulse: "", temp: "", visitedBy: "" });
   const [actionLoading, setActionLoading] = useState(false);
 
   // Bulk Selection & Permanent Delete State
-  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<any>>(new Set());
   const [bulkDeleteModalOpen, setBulkDeleteModalOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  const [singleDeleteModal, setSingleDeleteModal] = useState({ open: false, app: null });
+  const [singleDeleteModal, setSingleDeleteModal] = useState<{ open: boolean; app: any }>({ open: false, app: null });
 
   // Slot Availability Overview Modal State
   const [showSlotModal, setShowSlotModal] = useState(false);
   const [slotModalFacility, setSlotModalFacility] = useState("");
   const [slotModalDate, setSlotModalDate] = useState(() => getTodayDateString());
-  const [selectedSlotDetail, setSelectedSlotDetail] = useState(null);
+  const [selectedSlotDetail, setSelectedSlotDetail] = useState<any>(null);
 
   useEffect(() => {
     if (!showSlotModal) return;
@@ -871,20 +871,20 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
   const [platformDoctors, setPlatformDoctors] = useState(() => getCachedDoctors());
 
   useEffect(() => {
-    let unsubAvail = null;
-    let unsubDispDocs = null;
+    let unsubAvail: (() => void) | null = null;
+    let unsubDispDocs: (() => void) | null = null;
 
     try {
       const bDb = getBookingDb() || getFirestoreDb();
       if (bDb) {
         unsubAvail = onSnapshot(collection(bDb, "doctor_availability"), (snap) => {
-          const list = [];
+          const list: any[] = [];
           snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
           setDoctorAvailabilityRecords(list);
           setCachedDoctorAvailability(list);
         });
         unsubDispDocs = onSnapshot(collection(bDb, "dispensary_doctors"), (snap) => {
-          const docs = [];
+          const docs: any[] = [];
           snap.forEach((d) => docs.push({ id: d.id, ...d.data(), email: (d.data().email || d.id).toLowerCase() }));
           if (docs.length > 0) {
             setPlatformDoctors((prev) => {
@@ -937,7 +937,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
           return reconciled;
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn("Direct Firestore load notice:", err);
     } finally {
       setLoading(false);
@@ -988,7 +988,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       });
     };
 
-    const unsubSync = subscribeToSync((event) => {
+    const unsubSync = subscribeToSync((event: any) => {
       if (event?.type === "APPOINTMENT_DELETED") {
         handleDeletedPayload(event.payload);
       } else if (
@@ -1168,7 +1168,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!isMounted || !data?.found || !Array.isArray(data?.history)) return;
-        const mapped = data.history.map((h, idx) => {
+        const mapped = data.history.map((h: any, idx: number) => {
           const norm = normalizeUrgency(h.urgency_level || h.urgency_score || "Moderate");
           const timeStr = h.created_at
             ? new Date(h.created_at).toLocaleString("en-IN", {
@@ -1236,7 +1236,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
   }, [rescheduleModal.open, rescheduleTargetFac, rescheduleModal.newDate, doctorAvailabilityRecords, platformDoctors]);
 
   // Handle Follow-up Action (Close the case / Next followup needed)
-  const handleSaveFollowUp = async (actionType) => {
+  const handleSaveFollowUp = async (actionType: "close" | "next_needed" | "next") => {
     if (!followUpModal.app || !followUpModal.message.trim()) {
       toast.error("Please enter a follow-up message first.");
       return;
@@ -1322,7 +1322,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       );
 
       setFollowUpModal({ open: false, app: null, message: "" });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error saving follow-up:", err);
       toast.error(err.message || "Failed to save follow-up");
     } finally {
@@ -1388,7 +1388,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
       toast.success(`Follow-up reset to initial state for #${followUpModal.app.tokenNo || targetId}.`);
       setFollowUpModal({ open: false, app: null, message: "" });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error resetting follow-up:", err);
       toast.error(err.message || "Failed to reset follow-up");
     } finally {
@@ -1482,7 +1482,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       );
       setRescheduleModal({ open: false, app: null, newDate: "", newSlot: "", notes: "" });
       loadAppointments(true);
-    } catch (err) {
+    } catch (err: any) {
       toast.error(err.message || "Failed to reschedule appointment");
     } finally {
       setActionLoading(false);
@@ -1563,7 +1563,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       toast.success(`Appointment #${cancelModal.app.tokenNo || targetId} cancelled.`);
       setCancelModal({ open: false, app: null, reason: "" });
       loadAppointments(true);
-    } catch (err) {
+    } catch (err: any) {
       toast.error(err.message || "Failed to cancel appointment");
     } finally {
       setActionLoading(false);
@@ -1610,32 +1610,32 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         } catch (_) {}
 
         const targetId = app.id || app.tokenNo || app.referenceNo;
-        const docIds = new Set();
-        if (app.id) docIds.add(app.id);
+        const docIds = new Set<string>();
+        if (app.id) docIds.add(String(app.id));
         if (app.tokenNo) {
-          docIds.add(app.tokenNo);
-          docIds.add(app.tokenNo.replace(/[^a-zA-Z0-9_-]/g, "_"));
+          docIds.add(String(app.tokenNo));
+          docIds.add(String(app.tokenNo).replace(/[^a-zA-Z0-9_-]/g, "_"));
         }
         if (app.referenceNo) {
-          docIds.add(app.referenceNo);
-          docIds.add(app.referenceNo.replace(/[^a-zA-Z0-9_-]/g, "_"));
+          docIds.add(String(app.referenceNo));
+          docIds.add(String(app.referenceNo).replace(/[^a-zA-Z0-9_-]/g, "_"));
         }
 
         // 1. Delete permanently from ekmsbooking Firestore
         if (bDb) {
-          for (const dId of docIds) {
+          for (const dId of Array.from(docIds)) {
             try {
               await deleteDoc(doc(bDb, "dispensary_appointments", dId));
-            } catch (e) {}
+            } catch (e: any) {}
           }
         }
 
         // 2. Delete permanently from Triage Firestore
         if (tDb) {
-          for (const dId of docIds) {
+          for (const dId of Array.from(docIds)) {
             try {
               await deleteDoc(doc(tDb, "dispensary_appointments", dId));
-            } catch (e) {}
+            } catch (e: any) {}
           }
         }
 
@@ -1690,7 +1690,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       setSelectedIds(new Set());
       setBulkDeleteModalOpen(false);
       loadAppointments(true);
-    } catch (err) {
+    } catch (err: any) {
       toast.error(err.message || "Failed to bulk delete appointments");
     } finally {
       setBulkDeleting(false);
@@ -1734,32 +1734,32 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
           ch.postMessage({ type: "APPOINTMENT_DELETED", payload });
         }
       } catch (_) {}
-      const docIds = new Set();
-      if (app.id) docIds.add(app.id);
+      const docIds = new Set<string>();
+      if (app.id) docIds.add(String(app.id));
       if (app.tokenNo) {
-        docIds.add(app.tokenNo);
-        docIds.add(app.tokenNo.replace(/[^a-zA-Z0-9_-]/g, "_"));
+        docIds.add(String(app.tokenNo));
+        docIds.add(String(app.tokenNo).replace(/[^a-zA-Z0-9_-]/g, "_"));
       }
       if (app.referenceNo) {
-        docIds.add(app.referenceNo);
-        docIds.add(app.referenceNo.replace(/[^a-zA-Z0-9_-]/g, "_"));
+        docIds.add(String(app.referenceNo));
+        docIds.add(String(app.referenceNo).replace(/[^a-zA-Z0-9_-]/g, "_"));
       }
 
       const bDb = getBookingDb();
       const tDb = getFirestoreDb();
 
       if (bDb) {
-        for (const dId of docIds) {
+        for (const dId of Array.from(docIds)) {
           try {
             await deleteDoc(doc(bDb, "dispensary_appointments", dId));
-          } catch (e) {}
+          } catch (e: any) {}
         }
       }
       if (tDb) {
-        for (const dId of docIds) {
+        for (const dId of Array.from(docIds)) {
           try {
             await deleteDoc(doc(tDb, "dispensary_appointments", dId));
-          } catch (e) {}
+          } catch (e: any) {}
         }
       }
 
@@ -1810,7 +1810,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       } catch (_) {}
       setSingleDeleteModal({ open: false, app: null });
       loadAppointments(true);
-    } catch (err) {
+    } catch (err: any) {
       toast.error(err.message || "Failed to delete appointment");
     } finally {
       setActionLoading(false);
@@ -1863,7 +1863,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
       recordAppointmentBookingToSheet({ ...visitModal.app, ...updates }, currentAgent).catch(() => {});
       setVisitModal({ open: false, app: null, visitedNotes: "", bp: "", pulse: "", temp: "", visitedBy: "" });
       loadAppointments(true);
-    } catch (err) {
+    } catch (err: any) {
       toast.error(err.message || "Failed to mark as visited");
     } finally {
       setActionLoading(false);
@@ -1912,8 +1912,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
   }, [facilityList, availabilityVersion]);
 
   const dispensaryFilterOptions = useMemo(() => {
-    const set = new Set();
-    enabledFacilities.forEach((f) => {
+    const set = new Set<string>();
+    enabledFacilities.forEach((f: any) => {
       if (f.name) set.add(f.name);
     });
     return ["All Dispensaries", ...Array.from(set)];
@@ -2003,7 +2003,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     );
   }, [manualBookingModal.open, manualBookingModal.dispensaryName, manualBookingModal.date, doctorAvailabilityRecords, platformDoctors, todayStr]);
 
-  const handleConfirmManualBooking = async (e) => {
+  const handleConfirmManualBooking = async (e?: any) => {
     e?.preventDefault();
     if (!manualBookingModal.patientName.trim()) {
       toast.error("Please enter beneficiary name");
@@ -2136,7 +2136,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         ipName: manualBookingModal.patientName.trim(),
         phone: manualBookingModal.phone.trim(),
         patientPhone: manualBookingModal.phone.trim(),
-        age: manualBookingModal.age ? String(manualBookingModal.age) : "35",
+        age: manualBookingModal.age ? String(manualBookingModal.age) : "",
         gender: manualBookingModal.gender || "Male",
         ipNumber: manualBookingModal.ipNumber.trim() || "N/A",
         dispensaryName: manualBookingModal.dispensaryName,
@@ -2166,7 +2166,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
           callerId: getCallerIdForPhone(manualBookingModal.phone.trim()) || `CID0004A${manualBookingModal.phone.trim().slice(-3)}`,
           callerName: manualBookingModal.patientName.trim(),
           phone: manualBookingModal.phone.trim(),
-          age: manualBookingModal.age ? String(manualBookingModal.age) : "35",
+          age: manualBookingModal.age ? String(manualBookingModal.age) : "",
           sex: manualBookingModal.gender || "Male",
           address: "Guwahati, Assam",
           chiefComplaints: [manualBookingModal.chiefComplaint.trim() || "OPD Consultation"],
@@ -2181,7 +2181,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
           callerId: getCallerIdForPhone(manualBookingModal.phone.trim()) || `CID0004A${manualBookingModal.phone.trim().slice(-3)}`,
           callerName: manualBookingModal.patientName.trim(),
           phone: manualBookingModal.phone.trim(),
-          age: manualBookingModal.age ? String(manualBookingModal.age) : "35",
+          age: manualBookingModal.age ? String(manualBookingModal.age) : "",
           sex: manualBookingModal.gender || "Male",
           address: "Guwahati, Assam",
           chiefComplaints: [manualBookingModal.chiefComplaint.trim() || "OPD Consultation"],
@@ -2269,7 +2269,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         notes: "",
       });
       loadAppointments(true);
-    } catch (err) {
+    } catch (err: any) {
       toast.error(err.message || "Failed to book appointment");
     } finally {
       setActionLoading(false);
@@ -2464,7 +2464,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
     }
   }, [selectedIds, filteredAppointments]);
 
-  const toggleSelectItem = useCallback((id) => {
+  const toggleSelectItem = useCallback((id: any) => {
     if (!id) return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -2598,8 +2598,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                 value={customDate}
                 onClick={(e) => {
                   try {
-                    e.target.showPicker?.();
-                  } catch (err) {}
+                    (e.target as any).showPicker?.();
+                  } catch (err: any) {}
                 }}
                 onChange={(e) => {
                   const val = e.target.value;
@@ -3448,7 +3448,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     onClick={(e) => {
                       try {
                         (e.target as any).showPicker?.();
-                      } catch (err) {}
+                      } catch (err: any) {}
                     }}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -3871,8 +3871,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     value={manualBookingModal.date || todayStr}
                     onClick={(e) => {
                       try {
-                        e.target.showPicker?.();
-                      } catch (err) {}
+                        (e.target as any).showPicker?.();
+                      } catch (err: any) {}
                     }}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -4087,8 +4087,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         const callerId = rawCid || (callerPhone ? getCallerIdForPhone(callerPhone) : null) || "CID0004A396";
         const complaints = (clinicalRecord?.chiefComplaints || (slipModal.app.chiefComplaint ? [slipModal.app.chiefComplaint] : (slipModal.app.purpose ? [slipModal.app.purpose] : ["Primary OPD Consultation"]))).slice(0, 1);
         const redFlags = Array.isArray(clinicalRecord?.redFlags) && clinicalRecord.redFlags.length > 0
-          ? clinicalRecord.redFlags.filter(f => !/none reported/i.test(String(f)))
-          : (Array.isArray(slipModal.app.redFlags) ? slipModal.app.redFlags.filter(f => !/none reported/i.test(String(f))) : []);
+          ? clinicalRecord.redFlags.filter((f: any) => !/none reported/i.test(String(f)))
+          : (Array.isArray(slipModal.app.redFlags) ? slipModal.app.redFlags.filter((f: any) => !/none reported/i.test(String(f))) : []);
 
         const hpiDur = cleanValue(clinicalRecord?.hpiDuration);
         const assocSym = cleanValue(clinicalRecord?.associatedSymptoms);
@@ -4115,7 +4115,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
         // Deduplicate and ensure active appointment is present
         const seenVisitKeys = new Set();
-        const dispensaryVisits = [];
+        const dispensaryVisits: any[] = [];
         [slipModal.app, ...rawVisits].forEach((vis) => {
           if (!vis) return;
           const key = String(vis.tokenNo || vis.referenceNo || vis.id || "").trim();
@@ -4183,7 +4183,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
         // Include any call-only encounters (calls made where no appointment was booked, e.g. CA0385AB01)
         const callsSource = modalLiveCalls.length > 0 ? modalLiveCalls : (past3Calls || []);
         const callOnlyEncounters = callsSource
-          .filter((c) => {
+          .filter((c: any) => {
             // Strictly exclude if this call already resulted in a booked appointment:
             if (c.has_appointment || c.booked_appointment || c.appointment_id || c.token || c.tokenNo) {
               return false;
@@ -4211,7 +4211,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
 
             return true;
           })
-          .map((c, cIdx) => {
+          .map((c: any, cIdx: number) => {
             const isCallNonClin = isNonClinicalAppointment(c);
             return {
               id: c.id || `call-${cIdx}`,
@@ -4359,7 +4359,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     <li className="space-y-1">
                       <span className="font-bold text-slate-800 block text-xs">• Chief Complaint:</span>
                       <div className="pl-4 space-y-1">
-                        {complaints.map((comp, idx) => (
+                        {complaints.map((comp: any, idx: number) => (
                           <p key={idx} className="text-xs sm:text-sm font-semibold text-slate-900 leading-relaxed">
                             {comp}
                           </p>
@@ -4372,7 +4372,7 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                       <div className="pl-4">
                         {redFlags.length > 0 ? (
                           <div className="space-y-1">
-                            {redFlags.map((flag, idx) => {
+                            {redFlags.map((flag: any, idx: number) => {
                               const val = typeof flag === "string" ? flag : flag.label || flag.name || String(flag);
                               return (
                                 <p key={idx} className="text-xs sm:text-sm font-semibold text-slate-900 leading-relaxed">
@@ -5124,8 +5124,8 @@ function AppointmentsContent({ currentAgent, onOpenLogin }: { currentAgent: any;
                     value={slotModalDate}
                     onClick={(e) => {
                       try {
-                        e.target.showPicker?.();
-                      } catch (err) {}
+                        (e.target as any).showPicker?.();
+                      } catch (err: any) {}
                     }}
                     onChange={(e) => {
                       const val = e.target.value;

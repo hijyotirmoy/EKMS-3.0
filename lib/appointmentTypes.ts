@@ -93,6 +93,17 @@ export interface AppointmentRecord {
   updatedBy?: string;
   source?: string;
 
+  // Agent & follow-up tracking
+  agentEmail?: string;
+  bookedBy?: string;
+  agentName?: string;
+  agentId?: string;
+  followUpStatus?: string;
+  followUpNotes?: string;
+  followUpAt?: string;
+  followUpHistory?: any[];
+  [key: string]: any;
+
   // Clinical Summary Dossier from EKMS Triage
   callerId?: string;
   caller_id?: string;

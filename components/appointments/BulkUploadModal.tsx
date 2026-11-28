@@ -522,7 +522,7 @@ export function BulkUploadModal({
           ipNo: row.ipNumber,
           esicNumber: row.ipNumber,
           callerId: row.callerId || null,
-          age: row.age || "35",
+          age: row.age || "",
           gender: row.gender || "Male",
           facilityName: row.dispensary,
           dispensaryName: row.dispensary,

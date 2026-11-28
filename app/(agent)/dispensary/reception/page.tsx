@@ -175,9 +175,9 @@ export default function ReceptionDeskPage() {
         a.visitedAt ||
         a.visitedBy ||
         a.status === "completed" ||
-        a.status === "dispensed" ||
+        (a.status as string) === "dispensed" ||
         a.status === "with_doctor" ||
-        a.status === "with_pharmacist" ||
+        (a.status as string) === "with_pharmacist" ||
         a.status === "visited" ||
         a.status === "pharmacy_queue"
       );

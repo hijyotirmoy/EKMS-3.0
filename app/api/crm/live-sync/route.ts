@@ -14,9 +14,9 @@ const targetedSyncStore = new Map();
 
 function cleanupStaleRecords() {
   const now = Date.now();
-  for (const [key, value] of targetedSyncStore.entries()) {
+  for (const [key, value] of Array.from(targetedSyncStore.entries())) {
     const maxAge = 5 * 60 * 1000; // 5 minutes TTL
-    if (now - (value.timestamp || 0) > maxAge) {
+    if (now - ((value as any)?.timestamp || 0) > maxAge) {
       targetedSyncStore.delete(key);
     }
   }
@@ -55,7 +55,7 @@ const ASSAM_DISTRICTS = [
   "Udalguri",
 ];
 
-function extractAssamDistrict(rawDistrict) {
+function extractAssamDistrict(rawDistrict: any) {
   if (!rawDistrict) return "";
   const cleaned = String(rawDistrict).trim();
   if (!cleaned || /select/i.test(cleaned) || /^n\/?a$/i.test(cleaned)) return "";
@@ -108,7 +108,7 @@ export async function OPTIONS() {
   });
 }
 
-export async function GET(request) {
+export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const since = Number(searchParams.get("since") || 0);
   const clientId = (searchParams.get("client_id") || "").trim();
@@ -144,10 +144,10 @@ export async function GET(request) {
   // Strictly ONLY return if there is an explicit match for THIS client/agent:
   if (matchedEntry && matchedEntry.timestamp > since) {
     // Delete all keys referencing this entry so it can NEVER bleed to another agent or browser!
-    for (const [k, v] of targetedSyncStore.entries()) {
+    for (const [k, v] of Array.from(targetedSyncStore.entries())) {
       if (
         v === matchedEntry ||
-        (v?.timestamp === matchedEntry.timestamp && v?.beneficiary?.beneficiary_id === matchedEntry?.beneficiary?.beneficiary_id)
+        ((v as any)?.timestamp === matchedEntry.timestamp && (v as any)?.beneficiary?.beneficiary_id === matchedEntry?.beneficiary?.beneficiary_id)
       ) {
         targetedSyncStore.delete(k);
       }
@@ -172,12 +172,12 @@ export async function GET(request) {
   );
 }
 
-export async function POST(request) {
+export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    const cleanDigits = (str) => String(str || "").replace(/\D/g, "");
-    const cleanText = (str) => String(str || "").trim();
+    const cleanDigits = (str: any) => String(str || "").replace(/\D/g, "");
+    const cleanText = (str: any) => String(str || "").trim();
 
     // Extract and sanitize fields
     const rawPhone = cleanDigits(body.phone || body.phoneNumber || body.contact_no || "");
@@ -245,7 +245,7 @@ export async function POST(request) {
       }
     }
 
-    for (const key of targetKeys) {
+    for (const key of Array.from(targetKeys)) {
       targetedSyncStore.set(key, { beneficiary: newBeneficiary, timestamp });
     }
 
@@ -258,9 +258,9 @@ export async function POST(request) {
       },
       { status: 200, headers: corsHeaders }
     );
-  } catch (err) {
+  } catch (err: any) {
     return NextResponse.json(
-      { success: false, error: err.message || "Failed to process CRM sync payload" },
+      { success: false, error: err?.message || "Failed to process CRM sync payload" },
       { status: 400, headers: corsHeaders }
     );
   }

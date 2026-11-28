@@ -19,7 +19,7 @@ import {
   isFacilityAccepting,
   normalizeFacilityKey,
 } from "@/lib/facilityAvailability";
-import { getCachedFacilities } from "@/lib/clientCache";
+import { getCachedFacilities, setCachedFacilities } from "@/lib/clientCache";
 import {
   getRecentlyDeletedList,
   restoreRecentlyDeletedItem,
@@ -619,7 +619,7 @@ export default function AdminSettingsPage() {
   const handleRestoreItem = async (item: any) => {
     setRestoringId(item.id);
     try {
-      const res = await restoreRecentlyDeletedItem(item.id, userProfile);
+      const res = await restoreRecentlyDeletedItem(item.id, userProfile as any);
       if (res.success) {
         toast.success(`${item.title || "Record"} successfully restored!`);
         setDeletedItems((prev) => prev.filter((x) => x.id !== item.id));

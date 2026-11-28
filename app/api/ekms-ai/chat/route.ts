@@ -37,7 +37,7 @@ export async function POST(request: Request) {
       facilities,
     };
 
-    const doctorResult = await processDoctorConsultationTurn({
+    const doctorResult: any = await (processDoctorConsultationTurn as any)({
       message: inputPrompt,
       history,
       currentClinicalState: state,
@@ -101,7 +101,7 @@ export async function POST(request: Request) {
     );
 
     try {
-      const fallback = buildLocalDoctorConsultationFallback(inputPrompt, history, state);
+      const fallback: any = buildLocalDoctorConsultationFallback(inputPrompt, history, state);
       return NextResponse.json({
         probingQuestion: fallback.probingQuestion,
         agentScript: fallback.probingQuestion,

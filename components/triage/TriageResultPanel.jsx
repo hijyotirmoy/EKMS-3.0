@@ -2284,109 +2284,29 @@ export const TriageResultPanel = ({
           </div>
         )}
 
-        {/* ASSAM HEALTH NETWORK MAP CONTAINER */}
-        <div className="mt-4 rounded-xl border border-border/80 bg-card overflow-hidden shadow-xs">
-          {/* Map Top Control Toolbar */}
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-secondary/40 px-3.5 py-2 text-xs">
-            <div className="flex items-center gap-2">
-              <MapIcon className="h-4 w-4 text-primary shrink-0" />
-              <span className="font-bold text-foreground">Assam Health Map</span>
-            </div>
-
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {/* Layer Switcher: Minimal vs Detailed */}
-              <div className="inline-flex rounded-lg border border-border/80 bg-background p-0.5 shadow-2xs">
-                <button
-                  type="button"
-                  onClick={() => setMapLayer("minimal")}
-                  className={`rounded px-2 py-0.5 text-[11px] font-bold transition-colors cursor-pointer ${
-                    mapLayer === "minimal"
-                      ? "bg-primary text-primary-foreground shadow-2xs"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  title="Minimal Map Layer (CARTO Voyager)"
-                >
-                  Minimal
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMapLayer("detailed")}
-                  className={`rounded px-2 py-0.5 text-[11px] font-bold transition-colors cursor-pointer ${
-                    mapLayer === "detailed"
-                      ? "bg-primary text-primary-foreground shadow-2xs"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  title="Detailed Map Layer (Google Maps)"
-                >
-                  Detailed
-                </button>
+        {/* Click here to view large map Button */}
+        <div className="mt-3.5 mb-2">
+          <button
+            type="button"
+            onClick={() => setIsMapExpanded(true)}
+            className="w-full flex items-center justify-between gap-3 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-2xl bg-gradient-to-r from-blue-600/10 via-indigo-600/10 to-teal-600/10 hover:from-blue-600/20 hover:via-indigo-600/20 hover:to-teal-600/20 border border-blue-500/30 hover:border-blue-500/50 text-foreground transition-all shadow-xs cursor-pointer active:scale-[0.99] group"
+            title="Click here to view large Assam Health Map"
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-xs group-hover:scale-105 transition-transform">
+                <MapIcon className="h-4.5 w-4.5" />
               </div>
-
-              {/* Drop Pin Toggle */}
-              <button
-                type="button"
-                onClick={() => setIsPinModeActive((prev) => !prev)}
-                className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all cursor-pointer shadow-2xs border ${
-                  isPinModeActive
-                    ? "bg-rose-600 text-white border-rose-500 animate-pulse"
-                    : "bg-background border-border/80 text-foreground hover:bg-secondary hover:border-primary/50"
-                }`}
-                title="Drop custom pin on map to set location"
-              >
-                <Crosshair className="h-3 w-3" />
-                <span>{isPinModeActive ? "Click on Map" : "Drop Pin"}</span>
-              </button>
-
-              {/* Reset View */}
-              <button
-                type="button"
-                onClick={() => mapRef.current?.resetView()}
-                className="inline-flex items-center gap-1 rounded-lg border border-border/80 bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer shadow-2xs"
-                title="Reset Assam map view"
-              >
-                <RotateCcw className="h-3 w-3" />
-              </button>
-
-              {/* Full-Screen / Make Large Modal Button */}
-              <button
-                type="button"
-                onClick={() => setIsMapExpanded(true)}
-                className="inline-flex items-center gap-1 rounded-lg bg-primary/10 border border-primary/30 px-2.5 py-1 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-all cursor-pointer shadow-2xs"
-                title="Expand Assam Map Full Screen"
-              >
-                <Maximize2 className="h-3 w-3" />
-                <span>Large View</span>
-              </button>
+              <span className="font-bold text-slate-900 dark:text-white text-xs sm:text-sm">
+                Click here to view large map
+              </span>
             </div>
-          </div>
 
-          {/* Active Drop Pin Hint Banner */}
-          {isPinModeActive && (
-            <div className="bg-rose-500/15 border-b border-rose-500/30 px-3 py-1.5 text-center text-xs font-bold text-rose-700 dark:text-rose-300 animate-in fade-in">
-              📍 Drop Pin Active: Click anywhere inside Assam to set a custom location and recalculate distances!
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs shrink-0 transition-colors">
+              <Maximize2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">View Large Map</span>
+              <span className="sm:hidden">Open</span>
             </div>
-          )}
-
-          {/* Map Canvas */}
-          <div className="h-[340px] sm:h-[380px] w-full relative bg-[#0a1128]">
-            <MapWrapper
-              ref={mapRef}
-              theme="light"
-              isLargeView={false}
-              facilities={dynamicFacilities.slice(0, visibleFacilityCount)}
-              filters={{
-                mapLayer,
-                district: effectiveLoc?.district || "all",
-                searchQuery: searchPincode || "",
-                radius: 0,
-              }}
-              targetLocation={effectiveTargetLocation}
-              isPinModeActive={isPinModeActive}
-              onPinDropped={handlePinDropped}
-              onDistrictSelect={handleDistrictSelect}
-              selectedFacility={selectedFacilityForMap}
-            />
-          </div>
+          </button>
         </div>
 
         {/* Inline search bar to change/search another pincode anytime */}

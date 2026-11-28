@@ -11,7 +11,7 @@ export async function GET() {
     process.env.BUILD_ID ||
     "dev-build";
 
-  const appVersion = process.env.NEXT_PUBLIC_APP_VERSION || "3.0.2";
+  const appVersion = process.env.NEXT_PUBLIC_APP_VERSION || "3.0.3";
 
   return NextResponse.json(
     {

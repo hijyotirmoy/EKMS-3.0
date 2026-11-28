@@ -6,19 +6,27 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request) {
-  const { searchParams } = new URL(request.url);
-  const urgency = searchParams.get("urgency") || "all";
-  const q = searchParams.get("q") || "";
-  const since = searchParams.get("since") || null;
+  try {
+    const { searchParams } = new URL(request.url);
+    const urgency = searchParams.get("urgency") || "all";
+    const q = searchParams.get("q") || "";
+    const since = searchParams.get("since") || null;
 
-  const cases = await getCases({ urgency, q, since });
-  return NextResponse.json(cases, {
-    headers: {
-      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      Pragma: "no-cache",
-      Expires: "0",
-    },
-  });
+    const cases = await getCases({ urgency, q, since });
+    return NextResponse.json(cases, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
+    });
+  } catch (err) {
+    console.error("Error fetching cases:", err);
+    return NextResponse.json(
+      { detail: `Failed to fetch cases: ${err.message || err}`, cases: [] },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(request) {

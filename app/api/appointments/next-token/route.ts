@@ -71,6 +71,9 @@ function saveStoredFileSeq(seq: number, token: string) {
   }
 }
 
+let inMemoryLastSeq = 0;
+let sequenceMutex = Promise.resolve();
+
 export async function GET(request: NextRequest) {
   return handleGenerateToken(request);
 }
@@ -79,9 +82,25 @@ export async function POST(request: NextRequest) {
   return handleGenerateToken(request);
 }
 
-let inMemoryLastSeq = 0;
+async function handleGenerateToken(request: NextRequest): Promise<NextResponse> {
+  // Use sequential mutex queue so concurrent simultaneous requests execute strictly one-by-one!
+  return new Promise<NextResponse>((resolve) => {
+    sequenceMutex = sequenceMutex
+      .then(() => processTokenRequest(request))
+      .then(resolve)
+      .catch((err) => {
+        console.error("Token generation mutex error:", err);
+        resolve(
+          NextResponse.json(
+            { success: false, error: err?.message || "Token generation failed" },
+            { status: 500, headers: corsHeaders() }
+          )
+        );
+      });
+  });
+}
 
-async function handleGenerateToken(request: NextRequest) {
+async function processTokenRequest(request: NextRequest): Promise<NextResponse> {
   let prefix = "ESI";
   let suffix = "DISP";
   let isPreview = false;

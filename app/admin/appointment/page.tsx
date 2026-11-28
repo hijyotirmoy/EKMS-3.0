@@ -20,6 +20,8 @@ import {
   getActiveBookingDb,
   setBookingFailoverActive,
   getIsBookingFailoverActive,
+  getBookingDb,
+  getFirestoreDb,
 } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { usePopup } from "@/context/PopupContext";
@@ -54,7 +56,7 @@ import {
   UploadCloud,
   FileDown,
 } from "lucide-react";
-import { AppointmentRecord } from "@/app/(agent)/dispensary/appointment/page";
+import { AppointmentRecord } from "@/lib/appointmentTypes";
 import { ClinicalSummaryModal } from "@/components/appointments/ClinicalSummaryModal";
 import { CancelAppointmentModal } from "@/components/appointments/CancelAppointmentModal";
 import { DoctorAvailabilityModal } from "@/components/appointments/DoctorAvailabilityModal";

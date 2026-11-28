@@ -18,9 +18,9 @@ export async function OPTIONS() {
   });
 }
 
-async function handleDelete(request) {
+async function handleDelete(request: Request) {
   try {
-    let body = {};
+    let body: any = {};
     try {
       body = await request.json();
     } catch {
@@ -62,33 +62,33 @@ async function handleDelete(request) {
     }
 
     // Collect all database instances
-    const databases = [];
+    const databases: Array<{ name: string; db: any }> = [];
     try {
       const bDb = getBookingDb();
       if (bDb) databases.push({ name: "bookingDb", db: bDb });
-    } catch (e) {
-      console.warn("bDb init notice:", e.message);
+    } catch (e: any) {
+      console.warn("bDb init notice:", e?.message);
     }
 
     try {
       const oldBDb = getOldBookingDb();
       if (oldBDb) databases.push({ name: "oldBookingDb", db: oldBDb });
-    } catch (e) {
-      console.warn("oldBDb init notice:", e.message);
+    } catch (e: any) {
+      console.warn("oldBDb init notice:", e?.message);
     }
 
     try {
       const crmDb = getCrmFirestoreDb();
       if (crmDb) databases.push({ name: "crmDb", db: crmDb });
-    } catch (e) {
-      console.warn("crmDb init notice:", e.message);
+    } catch (e: any) {
+      console.warn("crmDb init notice:", e?.message);
     }
 
     try {
       const coreDb = getFirestoreDb();
       if (coreDb) databases.push({ name: "coreDb", db: coreDb });
-    } catch (e) {
-      console.warn("coreDb init notice:", e.message);
+    } catch (e: any) {
+      console.warn("coreDb init notice:", e?.message);
     }
 
     const targetCollections = ["dispensary_appointments", "appointments"];
@@ -183,7 +183,7 @@ async function handleDelete(request) {
             { merge: true }
           ).catch(() => {});
         }
-      } catch (syncErr) {
+      } catch (syncErr: any) {
         console.warn("Notice updating system_sync/deletions:", syncErr?.message || syncErr);
       }
     }
@@ -197,19 +197,19 @@ async function handleDelete(request) {
       },
       { status: 200, headers: CORS_HEADERS }
     );
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error deleting appointment from Triage database:", error);
     return NextResponse.json(
-      { success: false, error: error.message || "Failed to delete appointment from Triage database" },
+      { success: false, error: error?.message || "Failed to delete appointment from Triage database" },
       { status: 500, headers: CORS_HEADERS }
     );
   }
 }
 
-export async function POST(request) {
+export async function POST(request: Request) {
   return handleDelete(request);
 }
 
-export async function DELETE(request) {
+export async function DELETE(request: Request) {
   return handleDelete(request);
 }

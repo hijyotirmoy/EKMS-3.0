@@ -5,7 +5,7 @@ import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Sparkles, RefreshCw, X, Rocket, CheckCircle2, ArrowRight } from "lucide-react";
 
-export const APP_BUILD_VERSION = "3.0.2";
+export const APP_BUILD_VERSION = "3.0.3";
 
 function cleanVersion(v: string | null | undefined): string {
   if (!v) return "";

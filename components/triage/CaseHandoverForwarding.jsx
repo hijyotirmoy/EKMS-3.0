@@ -1478,16 +1478,16 @@ ${historySection}`;
       return { prefix: "ESI", suffix: "DISP" };
     }
 
-    // 5. ESIC Hospital -> ESIC-00001-HOSP
+    // 5. ESIC Hospital -> ESI-000001-HOSP
     if (
       teamId === "ESIC_HOSPITAL" ||
       isEsicHospital(facility) ||
       (rawName.includes("esic") && (rawName.includes("hospital") || type.includes("hospital")))
     ) {
-      return { prefix: "ESIC", suffix: "HOSP" };
+      return { prefix: "ESI", suffix: "HOSP" };
     }
 
-    // 6. Govt District Hospital -> GOVT-00001-HOSP
+    // 6. Govt District Hospital -> GOVT-000001-HOSP
     if (
       teamId === "DIST_HOSPITAL" ||
       isGovtDistrictHospital(facility) ||
@@ -1499,12 +1499,12 @@ ${historySection}`;
       return { prefix: "GOVT", suffix: "HOSP" };
     }
 
-    if (teamId === "ESIS_DISPENSARY") return { prefix: "ESIC", suffix: "DISP" };
-    if (teamId === "ESIC_HOSPITAL") return { prefix: "ESIC", suffix: "HOSP" };
+    if (teamId === "ESIS_DISPENSARY") return { prefix: "ESI", suffix: "DISP" };
+    if (teamId === "ESIC_HOSPITAL") return { prefix: "ESI", suffix: "HOSP" };
     if (teamId === "DIST_HOSPITAL") return { prefix: "GOVT", suffix: "HOSP" };
     if (teamId === "TIE_UP_FACILITY") return { prefix: "TIUP", suffix: "HOSP" };
 
-    return { prefix: "ESIC", suffix: "DISP" };
+    return { prefix: "ESI", suffix: "DISP" };
   };
 
   const getCaseNumericSeq = () => {
@@ -1515,8 +1515,8 @@ ${historySection}`;
     if (bookedAppointment && (!currPhone || !bookedPhone || currPhone === bookedPhone)) {
       const existing = bookedAppointment.referenceNo || bookedAppointment.tokenNo;
       if (existing) {
-        const match = String(existing).match(/^[A-Z]{4}-(\d{5})-[A-Z0-9]{4,5}$/i);
-        if (match) return match[1];
+        const match = String(existing).match(/^[A-Z]{3,4}-(\d{4,6})-[A-Z0-9]{4,5}$/i);
+        if (match) return String(parseInt(match[1], 10)).padStart(6, "0");
       }
     }
 
@@ -2623,7 +2623,7 @@ ${historySection}`;
         callerId: activeCallerId,
         callerName: intakeData.callerName || editData.callerName || result?.intake?.caller_name || result?.caller_name || "Patient",
         phone: intakeData.phone || editData.phone || result?.intake?.phone || result?.phone || "",
-        age: String(intakeData.age || editData.age || result?.intake?.age || "35"),
+        age: String(intakeData.age || editData.age || result?.intake?.age || ""),
         sex: intakeData.sex || editData.sex || result?.intake?.sex || "Male",
         address: intakeData.landmark || editData.landmark || effectiveLoc?.address || "",
         chiefComplaints: Array.isArray(editData.allReasons) && editData.allReasons.length > 0
@@ -2711,7 +2711,7 @@ ${historySection}`;
         ipNo: resolvedIpNumber,
         ip_no: resolvedIpNumber,
         patientPhone: intakeData.phone || editData.phone || result?.intake?.phone || result?.phone || "",
-        patientAge: intakeData.age || editData.age || result?.intake?.age || "35",
+        patientAge: intakeData.age || editData.age || result?.intake?.age || "",
         patientSex: intakeData.sex || editData.sex || result?.intake?.sex || "Male",
         patientAddress: intakeData.landmark || editData.landmark || effectiveLoc?.address || "",
         chiefComplaint: finalIsNonClinical ? `[${enquiryType}] ${chiefIssue}` : resolvedChiefComplaint,
@@ -4669,7 +4669,7 @@ ${historySection}`;
                           <div className="font-bold text-foreground text-xs sm:text-sm flex items-center gap-2">
                             <span>{intakeData.callerName || editData.callerName || result?.intake?.caller_name || result?.caller_name || "Patient"}</span>
                             <span className="text-[10.5px] text-muted-foreground font-normal">
-                              ({intakeData.age || editData.age || "35"}y / {intakeData.sex || editData.sex || "Male"})
+                              ({(intakeData.age || editData.age) ? `${intakeData.age || editData.age}y / ` : ""}{intakeData.sex || editData.sex || "Male"})
                             </span>
                           </div>
                           <div className="text-[11px] text-muted-foreground flex items-center gap-2 mt-0.5">
